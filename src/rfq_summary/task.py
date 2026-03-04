@@ -339,7 +339,6 @@ def run_pricing(settings: Settings, payload: InputPayload, run_id: Optional[str]
         web_findings=web_findings,
         pricing_estimate_text=out1,
         pricing_reasoning_text=out2,
-        rfq_summary_text="",
         raw_model_output=model_text,
         structured={"products_count": (len(products) if products else (1 if first else 0))},
         timings={
