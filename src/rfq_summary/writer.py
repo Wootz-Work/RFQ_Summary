@@ -4,8 +4,8 @@ import json
 from typing import Dict
 
 from .config import Settings
-from .schema import InputPayload, OutputPayload
-from .glide_client import glide_upsert_zai_response_by_rfq_id
+from .schema import InputPayload, OutputPayload, QueryPayload, TriageOutputPayload
+from .glide_client import glide_upsert_zai_response_by_rfq_id, glide_update_prospect_rfq_triage
 from .gsheet_logger import append_rows, build_chunked_log_rows
 
 
@@ -36,7 +36,7 @@ def _print_terminal(out: OutputPayload) -> None:
         print("\n=== OUTPUT 2 (Reasoning) ===\n")
         print(out.pricing_reasoning_text or "")
         print("\n=== OUTPUT 3 (RFQ Summary) ===\n")
-        print(out.rfq_summary_text or "")
+        print(out.summary_text or "")
     else:
         print("=== OUTPUT ===\n")
         print(out.raw_model_output or "")
@@ -134,6 +134,34 @@ def write_all(settings: Settings, inp: InputPayload, out: OutputPayload) -> None
         settings=settings,
         run_id=out.run_id,
         mode=out.mode,
+        row_id=out.row_id,
+        fields=fields,
+    )
+    append_rows(settings, rows)
+
+
+def write_triage(settings: Settings, inp: QueryPayload, out: TriageOutputPayload) -> None:
+    """
+    Writes triage output into Prospect RFQs table (column ZpJy4).
+    Also logs to Sheets (chunked).
+    """
+    if settings.enable_triage_writeback:
+        glide_update_prospect_rfq_triage(settings, out.row_id, out.triage_text or "")
+
+    # Log to Sheets (same sheet schema; different field names)
+    fields = {
+        "query_json": json.dumps(inp.query_json or {}, ensure_ascii=False),
+        "triage_text": out.triage_text or "",
+        "raw_model_output": out.raw_model_output or "",
+        "timings": json.dumps(out.timings or {}, ensure_ascii=False),
+        "docai": json.dumps(out.docai or {}, ensure_ascii=False),
+        "writeback_enabled": str(bool(settings.enable_triage_writeback)),
+    }
+
+    rows = build_chunked_log_rows(
+        settings=settings,
+        run_id=out.run_id,
+        mode="triage",
         row_id=out.row_id,
         fields=fields,
     )

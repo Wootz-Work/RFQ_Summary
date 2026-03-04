@@ -226,3 +226,57 @@ class OutputPayload(BaseModel):
     timings: Dict[str, Any] = Field(default_factory=dict)
     docai: Dict[str, Any] = Field(default_factory=dict)
     structured: Dict[str, Any] = Field(default_factory=dict)
+
+class QueryPayload(BaseModel):
+    """
+    Payload for Prospect RFQ triage.
+
+    Zapier should send:
+      - row_id: Row ID of the newly created Prospect RFQ row
+      - query_json: dict containing body/from/subject/etc
+      - attachment_urls: list[str] URLs (optional; can also be inside query_json)
+      - attached_media: list[str] image URLs (optional)
+    """
+    row_id: str = Field(default="", validation_alias=AliasChoices("rowID", "row_id"))
+    query_json: Dict[str, Any] = Field(default_factory=dict)
+    attachment_urls: List[str] = Field(default_factory=list)
+    attached_media: List[str] = Field(default_factory=list)
+
+    def all_attachment_urls(self) -> List[str]:
+        urls: List[str] = []
+
+        # explicit list
+        urls.extend(self.attachment_urls or [])
+
+        # common Zapier/Glide keys
+        q = self.query_json or {}
+        for k in ("attachments_url", "attachment_urls", "Attachments URL", "67jso"):
+            v = q.get(k)
+            if isinstance(v, list):
+                urls.extend(v)
+            elif isinstance(v, str) and v.strip():
+                urls.append(v.strip())
+
+        # dedupe + clean
+        seen = set()
+        out: List[str] = []
+        for u in urls:
+            u2 = _clean_url(u or "")
+            if u2 and u2 not in seen:
+                seen.add(u2)
+                out.append(u2)
+        return out
+
+
+class TriageOutputPayload(BaseModel):
+    run_id: str
+    mode: str = "triage"
+    row_id: str
+    triage_text: str = ""
+    raw_model_output: str = ""
+
+    attachment_findings: List[AttachmentFinding] = Field(default_factory=list)
+
+    timings: Dict[str, Any] = Field(default_factory=dict)
+    docai: Dict[str, Any] = Field(default_factory=dict)
+    structured: Dict[str, Any] = Field(default_factory=dict)

@@ -216,6 +216,10 @@ def analyze_pdf_bytes(settings: Settings, url: str, data: bytes) -> AttachmentFi
         docai_error = ""
         docai_pages_returned = 0
         docai_pages_used = 0
+        # If DocAI is enabled but not configured, record it clearly (no silent skip).
+        docai_configured = _docai_enabled(settings)
+        if scanned_like and getattr(settings, "enable_docai_ocr", False) and not docai_configured:
+            docai_error = "DocAI enabled but not configured (missing project/location/processor/SA JSON)."
         # If scanned-like, try DocAI OCR (retry once). No local OCR fallback.
         if scanned_like and _docai_enabled(settings):
             for attempt in (1, 2):

@@ -9,12 +9,12 @@ from fastapi import FastAPI, HTTPException, Response
 from pydantic import ValidationError
 
 from .config import load_settings, Settings
-from .schema import InputPayload
-from .task import run_pricing, run_summary, run_all
-from .writer import write_all
+from .schema import InputPayload, QueryPayload
+from .task import run_pricing, run_summary, run_all, run_query_triage
+from .writer import write_all, write_triage
 from .gsheet_logger import log_job_event, log_progress_event
 
-Mode = Literal["pricing", "summary", "all"]
+Mode = Literal["pricing", "summary", "all", "triage"]
 
 
 @dataclass(frozen=True)
@@ -87,6 +87,11 @@ def _validate(payload: dict) -> InputPayload:
     except ValidationError as e:
         raise HTTPException(status_code=422, detail=e.errors()) from e
 
+def _validate_query(payload: dict) -> QueryPayload:
+    try:
+        return QueryPayload.model_validate(payload)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=e.errors()) from e
 
 # -----------------------
 # In-memory queue + dispatcher
@@ -136,19 +141,32 @@ async def _run_job(job: Job) -> None:
         pass
 
     try:
-        obj = _validate(job.payload)
-        _require_row_id_if_writeback(settings, obj)
-
         async def _do_work():
             if job.mode == "pricing":
+                obj = _validate(job.payload)
+                _require_row_id_if_writeback(settings, obj)
                 out = await asyncio.to_thread(run_pricing, settings, obj, job.run_id)
-            elif job.mode == "summary":
-                out = await asyncio.to_thread(run_summary, settings, obj, job.run_id)
-            else:
-                # all = pricing + summary in one job (attachments parsed once)
-                out = await asyncio.to_thread(run_all, settings, obj, job.run_id)
+                await asyncio.to_thread(write_all, settings, obj, out)
 
-            await asyncio.to_thread(write_all, settings, obj, out)
+            elif job.mode == "summary":
+                obj = _validate(job.payload)
+                _require_row_id_if_writeback(settings, obj)
+                out = await asyncio.to_thread(run_summary, settings, obj, job.run_id)
+                await asyncio.to_thread(write_all, settings, obj, out)
+
+            elif job.mode == "all":
+                obj = _validate(job.payload)
+                _require_row_id_if_writeback(settings, obj)
+                out = await asyncio.to_thread(run_all, settings, obj, job.run_id)
+                await asyncio.to_thread(write_all, settings, obj, out)
+
+            elif job.mode == "triage":
+                qobj = _validate_query(job.payload)
+                out = await asyncio.to_thread(run_query_triage, settings, qobj, job.run_id)
+                await asyncio.to_thread(write_triage, settings, qobj, out)
+
+            else:
+                raise RuntimeError(f"Unknown job mode: {job.mode}")
 
         await asyncio.wait_for(_do_work(), timeout=max(30, int(settings.job_timeout_sec)))
 
@@ -307,7 +325,47 @@ async def _enqueue_or_reject(mode: Mode, data: dict, obj: InputPayload) -> Dict[
         "queue": {"qsize": _queue_size(), "max": max_q},
     }
 
+async def _enqueue_or_reject_triage(data: dict, qobj: QueryPayload) -> Dict[str, Any]:
+    settings = load_settings()
+    max_q = max(1, int(settings.max_queue_size))
 
+    run_id = uuid.uuid4().hex[:10]
+    row_id = (qobj.row_id or "").strip()
+    enq = time.perf_counter()
+
+    if _queue_size() >= max_q:
+        try:
+            log_job_event(
+                settings,
+                run_id=run_id,
+                mode="triage",
+                row_id=row_id,
+                status="REJECTED_QUEUE_FULL",
+                message=f"Queue full: qsize={_queue_size()} max={max_q}",
+            )
+        except Exception:
+            pass
+
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "ok": False,
+                "run_id": run_id,
+                "status": "rejected",
+                "reason": "QUEUE_FULL",
+            },
+        )
+
+    job = Job(run_id=run_id, mode="triage", payload=data, row_id=row_id, enqueued_at=enq)
+    await _get_queue().put(job)
+
+    print(f"[QUEUED] run_id={run_id} mode=triage row_id={row_id} qsize={_queue_size()}/{max_q}")
+    try:
+        log_progress_event(settings, run_id, "triage", row_id, event="QUEUED", message=f"qsize={_queue_size()}/{max_q}")
+    except Exception:
+        pass
+
+    return {"ok": True, "run_id": run_id, "status": "queued", "mode": "triage"}
 # -----------------------
 # Endpoints
 # -----------------------
@@ -350,5 +408,19 @@ async def rfq_summary(payload: dict, response: Response):
     _require_row_id_if_writeback(settings, obj)
 
     ack = await _enqueue_or_reject("summary", data, obj)
+    response.status_code = 202
+    return ack
+
+@app.post("/query/triage")
+async def query_triage(payload: dict, response: Response):
+    """
+    Prospect RFQ triage:
+      - Zapier should send row_id (Prospect RFQs Row ID) + query_json + attachment_urls
+      - Service parses attachments (same pipeline) and writes triage markdown into Prospect RFQs.ZpJy4
+    """
+    data = payload if isinstance(payload, dict) else {}
+    qobj = _validate_query(data)
+
+    ack = await _enqueue_or_reject_triage(data, qobj)
     response.status_code = 202
     return ack

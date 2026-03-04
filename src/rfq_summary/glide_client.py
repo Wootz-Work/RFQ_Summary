@@ -37,7 +37,43 @@ def _glide_headers(settings: Settings) -> Dict[str, str]:
         "Authorization": f"Bearer {settings.glide_api_key}",
     }
 
+def glide_update_prospect_rfq_triage(settings: Settings, row_id: str, triage_text: str) -> None:
+    """
+    Writes triage output into Prospect RFQs table, column glide_col_prospect_triage (default: ZpJy4).
+    row_id is the Row ID of the Prospect RFQ row (created by Zapier).
+    """
+    if not settings.enable_triage_writeback:
+        return
 
+    if not settings.glide_api_key or not settings.glide_app_id:
+        raise RuntimeError("Missing GLIDE_API_KEY/GLIDE_APP_ID.")
+
+    if not settings.glide_prospect_rfq_table:
+        raise RuntimeError("Missing GLIDE_PROSPECT_RFQ_TABLE (Prospect RFQs tableName).")
+
+    col = (settings.glide_col_prospect_triage or "").strip()
+    if not col:
+        raise RuntimeError("Missing GLIDE_COL_PROSPECT_TRIAGE (Prospect RFQ triage column id).")
+
+    if not (row_id or "").strip():
+        raise RuntimeError("Prospect RFQ row_id is empty; cannot write triage output.")
+
+    url = "https://api.glideapp.io/api/function/mutateTables"
+    payload = {
+        "appID": settings.glide_app_id,
+        "mutations": [
+            {
+                "kind": "set-columns-in-row",
+                "tableName": settings.glide_prospect_rfq_table,
+                "rowID": row_id.strip(),
+                "columnValues": {col: triage_text or ""},
+            }
+        ],
+    }
+
+    with httpx.Client(timeout=60) as client:
+        r = client.post(url, headers=_glide_headers(settings), json=payload)
+        r.raise_for_status()
 def _glide_query_rowid_by_rfq_id(settings: Settings, rfq_id: str) -> Optional[str]:
     """
     Uses Glide Advanced API (queryTables) with SQL to find the ZAI Responses row where:
