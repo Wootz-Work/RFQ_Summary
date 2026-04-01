@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, model_validator, AliasChoices
-
+from pydantic import BaseModel, Field, model_validator, AliasChoices, ConfigDict
+from datetime import datetime as dt_datetime
 
 def _clean_url(u: str) -> str:
     """
@@ -228,45 +228,60 @@ class OutputPayload(BaseModel):
     structured: Dict[str, Any] = Field(default_factory=dict)
 
 class QueryPayload(BaseModel):
-    """
-    Payload for Prospect RFQ triage.
+    model_config = ConfigDict(populate_by_name=True)
 
-    Zapier should send:
-      - row_id: Row ID of the newly created Prospect RFQ row
-      - query_json: dict containing body/from/subject/etc
-      - attachment_urls: list[str] URLs (optional; can also be inside query_json)
-      - attached_media: list[str] image URLs (optional)
-    """
     row_id: str = Field(default="", validation_alias=AliasChoices("rowID", "row_id"))
-    query_json: Dict[str, Any] = Field(default_factory=dict)
+    subject: str = Field(default="")
+    from_: str = Field(default="", alias="from_")
+    from_name: str = Field(default="")
+    body: str = Field(default="")
+    received_at: str = Field(default="")
     attachment_urls: List[str] = Field(default_factory=list)
     attached_media: List[str] = Field(default_factory=list)
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_glide_fields(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        # Unwrap single-element lists for string fields
+        for field in ("subject", "from_name", "body", "received_at", "from_"):
+            val = data.get(field)
+            if isinstance(val, list):
+                data[field] = val[0] if val else ""
+
+        # Split comma-joined attachment URLs
+        val = data.get("attachment_urls")
+        if isinstance(val, list):
+            expanded = []
+            for item in val:
+                if isinstance(item, str):
+                    expanded.extend([u.strip() for u in item.split(",") if u.strip()])
+            data["attachment_urls"] = expanded
+        elif isinstance(val, str) and val.strip():
+            data["attachment_urls"] = [u.strip() for u in val.split(",") if u.strip()]
+
+        # Normalize received_at to "YYYY-MM-DD HH:MM:SS"
+        raw_ts = data.get("received_at", "")
+        if isinstance(raw_ts, str) and raw_ts.strip():
+            try:
+                parsed = dt_datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
+                data["received_at"] = parsed.strftime("%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                pass
+
+        return data
+    
     def all_attachment_urls(self) -> List[str]:
-        urls: List[str] = []
-
-        # explicit list
-        urls.extend(self.attachment_urls or [])
-
-        # common Zapier/Glide keys
-        q = self.query_json or {}
-        for k in ("attachments_url", "attachment_urls", "Attachments URL", "67jso"):
-            v = q.get(k)
-            if isinstance(v, list):
-                urls.extend(v)
-            elif isinstance(v, str) and v.strip():
-                urls.append(v.strip())
-
-        # dedupe + clean
         seen = set()
         out: List[str] = []
-        for u in urls:
+        for u in self.attachment_urls:
             u2 = _clean_url(u or "")
             if u2 and u2 not in seen:
                 seen.add(u2)
                 out.append(u2)
         return out
-
 
 class TriageOutputPayload(BaseModel):
     run_id: str

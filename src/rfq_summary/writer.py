@@ -150,7 +150,13 @@ def write_triage(settings: Settings, inp: QueryPayload, out: TriageOutputPayload
 
     # Log to Sheets (same sheet schema; different field names)
     fields = {
-        "query_json": json.dumps(inp.query_json or {}, ensure_ascii=False),
+        "subject": inp.subject,
+        "from": inp.from_,
+        "from_name": inp.from_name,
+        "body": inp.body,
+        "received_at": inp.received_at,
+        "attachment_urls": json.dumps(inp.attachment_urls or [], ensure_ascii=False),  # replaces query_json
+        "attached_media": json.dumps(inp.attached_media or [], ensure_ascii=False),
         "triage_text": out.triage_text or "",
         "raw_model_output": out.raw_model_output or "",
         "timings": json.dumps(out.timings or {}, ensure_ascii=False),

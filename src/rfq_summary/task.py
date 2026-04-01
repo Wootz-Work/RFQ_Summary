@@ -226,11 +226,22 @@ def _build_user_prompt(prompt_template: str, payload: InputPayload, extracted_te
     return s
 
 def _build_query_triage_prompt(prompt_template: str, q: QueryPayload, extracted_text: str) -> str:
+    query_dict = {
+        "row_id": q.row_id,
+        "subject": q.subject,
+        "from_": q.from_,
+        "from_name": q.from_name,
+        "body": q.body,
+        "received_at": q.received_at,
+        "attachment_urls": q.attachment_urls,
+        "attached_media": q.attached_media,
+    }
     s = prompt_template
-    s = s.replace("{{query_json}}", json.dumps(q.query_json or {}, ensure_ascii=False))
+    s = s.replace("{{query_json}}", json.dumps(query_dict, ensure_ascii=False))
     s = s.replace("{{extracted_attachment_text}}", extracted_text or "")
     s = s.replace("{{attached_media}}", json.dumps(q.attached_media or [], ensure_ascii=False))
     return s
+
 def _compact_product_text(payload: InputPayload) -> str:
     parts: List[str] = []
     products = getattr(payload, "products", None)

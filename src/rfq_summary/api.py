@@ -89,6 +89,7 @@ def _validate(payload: dict) -> InputPayload:
 
 def _validate_query(payload: dict) -> QueryPayload:
     try:
+        # Validate the updated QueryPayload structure
         return QueryPayload.model_validate(payload)
     except ValidationError as e:
         raise HTTPException(status_code=422, detail=e.errors()) from e
@@ -116,7 +117,7 @@ def _queue_size() -> int:
     return _get_queue().qsize()
 
 
-async def _run_job(job: Job) -> None:
+'''async def _run_job(job: Job) -> None:
     settings = load_settings()
 
     t_start = time.perf_counter()
@@ -240,7 +241,136 @@ async def _run_job(job: Job) -> None:
                 pass
         except Exception:
             pass
+'''
 
+async def _run_job(job: Job) -> None:
+    settings = load_settings()
+
+    t_start = time.perf_counter()
+    queue_wait_ms = int((t_start - float(getattr(job, "enqueued_at", t_start))) * 1000)
+    print(f"[RUNNING] run_id={job.run_id} mode={job.mode} row_id={job.row_id} queue_wait_ms={queue_wait_ms}")
+    print(f"[DEBUG] _run_job entered, about to start _do_work")
+
+    try:
+        log_progress_event(settings, job.run_id, job.mode, job.row_id, event="RUNNING", message=f"queue_wait_ms={queue_wait_ms}")
+    except Exception:
+        pass
+
+    try:
+        log_job_event(settings, job.run_id, job.mode, job.row_id, status="RUNNING", message="Job started")
+    except Exception:
+        pass
+
+    try:
+        async def _do_work():
+            if job.mode == "pricing":
+                print(f"[STEP 1/3] run_id={job.run_id} | Validating payload...")
+                obj = _validate(job.payload)
+                print(f"[STEP 1/3] run_id={job.run_id} | Payload valid. row_id={obj.row_id} title={obj.title!r}")
+                _require_row_id_if_writeback(settings, obj)
+
+                print(f"[STEP 2/3] run_id={job.run_id} | Running PRICING task...")
+                t0 = time.perf_counter()
+                out = await asyncio.to_thread(run_pricing, settings, obj, job.run_id)
+                print(f"[STEP 2/3] run_id={job.run_id} | PRICING done in {int((time.perf_counter()-t0)*1000)}ms")
+
+                print(f"[STEP 3/3] run_id={job.run_id} | Writing output (glide_writeback={settings.enable_glide_writeback})...")
+                t0 = time.perf_counter()
+                await asyncio.to_thread(write_all, settings, obj, out)
+                print(f"[STEP 3/3] run_id={job.run_id} | Write done in {int((time.perf_counter()-t0)*1000)}ms")
+
+            elif job.mode == "summary":
+                print(f"[STEP 1/3] run_id={job.run_id} | Validating payload...")
+                obj = _validate(job.payload)
+                print(f"[STEP 1/3] run_id={job.run_id} | Payload valid. row_id={obj.row_id} title={obj.title!r}")
+                _require_row_id_if_writeback(settings, obj)
+
+                print(f"[STEP 2/3] run_id={job.run_id} | Running SUMMARY task...")
+                t0 = time.perf_counter()
+                out = await asyncio.to_thread(run_summary, settings, obj, job.run_id)
+                print(f"[STEP 2/3] run_id={job.run_id} | SUMMARY done in {int((time.perf_counter()-t0)*1000)}ms")
+
+                print(f"[STEP 3/3] run_id={job.run_id} | Writing output (glide_writeback={settings.enable_glide_writeback})...")
+                t0 = time.perf_counter()
+                await asyncio.to_thread(write_all, settings, obj, out)
+                print(f"[STEP 3/3] run_id={job.run_id} | Write done in {int((time.perf_counter()-t0)*1000)}ms")
+
+            elif job.mode == "all":
+                print(f"[STEP 1/3] run_id={job.run_id} | Validating payload...")
+                obj = _validate(job.payload)
+                print(f"[STEP 1/3] run_id={job.run_id} | Payload valid. row_id={obj.row_id} title={obj.title!r}")
+                _require_row_id_if_writeback(settings, obj)
+
+                print(f"[STEP 2/3] run_id={job.run_id} | Running ALL (pricing + summary) task...")
+                t0 = time.perf_counter()
+                out = await asyncio.to_thread(run_all, settings, obj, job.run_id)
+                print(f"[STEP 2/3] run_id={job.run_id} | ALL done in {int((time.perf_counter()-t0)*1000)}ms")
+
+                print(f"[STEP 3/3] run_id={job.run_id} | Writing output (glide_writeback={settings.enable_glide_writeback})...")
+                t0 = time.perf_counter()
+                await asyncio.to_thread(write_all, settings, obj, out)
+                print(f"[STEP 3/3] run_id={job.run_id} | Write done in {int((time.perf_counter()-t0)*1000)}ms")
+
+            elif job.mode == "triage":
+                print(f"[STEP 1/3] run_id={job.run_id} | Validating triage payload...")
+                qobj = _validate_query(job.payload)
+                print(f"[STEP 1/3] run_id={job.run_id} | Payload valid.")
+                print(f"[STEP 1/3] run_id={job.run_id} | subject={qobj.subject!r} from={qobj.from_!r} from_name={qobj.from_name!r}")
+                print(f"[STEP 1/3] run_id={job.run_id} | received_at={qobj.received_at!r} attachment_urls={qobj.attachment_urls}")
+
+                print(f"[STEP 2/3] run_id={job.run_id} | Running TRIAGE task...")
+                t0 = time.perf_counter()
+                out = await asyncio.to_thread(run_query_triage, settings, qobj, job.run_id)
+                print(f"[STEP 2/3] run_id={job.run_id} | TRIAGE done in {int((time.perf_counter()-t0)*1000)}ms")
+                print(f"[STEP 2/3] run_id={job.run_id} | triage_text preview: {(out.triage_text or '')[:200]!r}")
+
+                print(f"[STEP 3/3] run_id={job.run_id} | Writing triage output (triage_writeback={settings.enable_triage_writeback})...")
+                t0 = time.perf_counter()
+                await asyncio.to_thread(write_triage, settings, qobj, out)
+                print(f"[STEP 3/3] run_id={job.run_id} | Write done in {int((time.perf_counter()-t0)*1000)}ms")
+
+            else:
+                raise RuntimeError(f"Unknown job mode: {job.mode}")
+
+        await asyncio.wait_for(_do_work(), timeout=max(30, int(settings.job_timeout_sec)))
+
+        total_ms = int((time.perf_counter() - t_start) * 1000)
+        print(f"\n{'='*60}")
+        print(f"[JOB DONE] run_id={job.run_id} mode={job.mode} row_id={job.row_id} total_ms={total_ms}")
+        print(f"{'='*60}\n")
+
+        try:
+            log_progress_event(settings, job.run_id, job.mode, job.row_id, event="DONE", message=f"total_ms={total_ms}")
+        except Exception:
+            pass
+        try:
+            log_job_event(settings, job.run_id, job.mode, job.row_id, status="DONE", message=f"Job completed total_ms={total_ms}")
+        except Exception:
+            pass
+
+    except asyncio.TimeoutError:
+        total_ms = int((time.perf_counter() - t_start) * 1000)
+        print(f"\n{'='*60}")
+        print(f"[JOB TIMEOUT] run_id={job.run_id} mode={job.mode} row_id={job.row_id} total_ms={total_ms}")
+        print(f"[JOB TIMEOUT] timeout_sec={settings.job_timeout_sec}")
+        print(f"{'='*60}\n")
+        try:
+            log_job_event(settings, job.run_id, job.mode, job.row_id, status="FAILED", message=f"Job timeout after {settings.job_timeout_sec}s")
+            log_progress_event(settings, job.run_id, job.mode, job.row_id, event="FAILED_TIMEOUT", message=f"total_ms={total_ms}")
+        except Exception:
+            pass
+
+    except Exception as e:
+        total_ms = int((time.perf_counter() - t_start) * 1000)
+        print(f"\n{'='*60}")
+        print(f"[JOB FAILED] run_id={job.run_id} mode={job.mode} row_id={job.row_id} total_ms={total_ms}")
+        print(f"[JOB FAILED] error={type(e).__name__}: {e}")
+        print(f"{'='*60}\n")
+        try:
+            log_job_event(settings, job.run_id, job.mode, job.row_id, status="FAILED", message=f"{type(e).__name__}: {e}")
+            log_progress_event(settings, job.run_id, job.mode, job.row_id, event="FAILED", message=f"total_ms={total_ms} err={type(e).__name__}: {e}")
+        except Exception:
+            pass
 
 async def _dispatcher_loop() -> None:
     while True:
@@ -413,13 +543,24 @@ async def rfq_summary(payload: dict, response: Response):
 
 @app.post("/query/triage")
 async def query_triage(payload: dict, response: Response):
-    """
-    Prospect RFQ triage:
-      - Zapier should send row_id (Prospect RFQs Row ID) + query_json + attachment_urls
-      - Service parses attachments (same pipeline) and writes triage markdown into Prospect RFQs.ZpJy4
-    """
-    data = payload if isinstance(payload, dict) else {}
-    qobj = _validate_query(data)
+    print("[DEBUG] Received payload for /query/triage:", payload)
+
+    # Glide wraps in {"body": {...}, "endpoint": "..."}
+    # But "body" is also a field name, so check for "endpoint" key as the signal
+    if "endpoint" in payload and "body" in payload and isinstance(payload["body"], dict):
+        data = payload["body"]
+    else:
+        data = payload
+
+    print("[DEBUG] Unwrapped data:", data)
+
+    try:
+        qobj = QueryPayload.model_validate(data)
+    except Exception as e:
+        print("[DEBUG] Validation error:", e)
+        raise HTTPException(status_code=422, detail=str(e))
+
+    print("[DEBUG] Validated QueryPayload:", qobj)
 
     ack = await _enqueue_or_reject_triage(data, qobj)
     response.status_code = 202
