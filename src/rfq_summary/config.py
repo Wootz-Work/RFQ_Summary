@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
+import os
 
 
 class Settings(BaseSettings):
@@ -115,6 +116,9 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     max_cell_chars: int = Field(default=50000, alias="MAX_CELL_CHARS")
 
+
+    # Google drive settings
+    google_service_account_path: str = os.getenv("GOOGLE_SERVICE_ACCOUNT_PATH", "service_account.json")
 
 def load_settings() -> Settings:
     return Settings()
