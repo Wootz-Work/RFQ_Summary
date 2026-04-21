@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import mimetypes
 import re
 from dataclasses import dataclass
@@ -14,6 +15,8 @@ from .parsers.pdf import analyze_pdf_bytes
 from .parsers.excel import analyze_excel_bytes
 from .parsers.image import analyze_image_bytes
 from .gdrive import fetch_drive_file
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +98,7 @@ class HttpFetcher:
 
     def fetch(self, url: str) -> Tuple[bytes, Optional[str]]:
         max_bytes = int(self.settings.max_attachment_bytes)
+        logger.debug("[HTTP] Fetching URL: %s", url)
 
         headers = {"User-Agent": "rfq-summary-bot/1.0", "Accept": "*/*"}
         timeout = httpx.Timeout(connect=15.0, read=45.0, write=15.0, pool=15.0)
@@ -108,16 +112,19 @@ class HttpFetcher:
                 if h.status_code < 400:
                     content_type = h.headers.get("content-type")
                     cl = h.headers.get("content-length")
+                    logger.debug("[HTTP] HEAD OK — content-type=%s content-length=%s", content_type, cl)
                     if cl and cl.isdigit() and int(cl) > max_bytes:
                         raise ValueError(f"Attachment too large (content-length={cl} > {max_bytes})")
             except Exception:
-                pass
+                logger.debug("[HTTP] HEAD failed or skipped for %s", url)
 
             r = client.get(url)
             r.raise_for_status()
 
             content_type = r.headers.get("content-type") or content_type
             data = r.content
+            logger.debug("[HTTP] GET OK — bytes=%d content-type=%s", len(data), content_type)
+
             if len(data) > max_bytes:
                 raise ValueError(f"Attachment too large (bytes={len(data)} > {max_bytes})")
 
@@ -140,14 +147,19 @@ def _dispatch_finding(settings: Settings, u: str, data: bytes, ctype: Optional[s
     """Route bytes to the correct parser based on kind."""
     kind = _guess_kind(u, ctype)
     fname = _safe_filename_from_url(u) if u.startswith("http") else f"drive_{u}"
+    logger.debug("[DISPATCH] ref=%s kind=%s bytes=%d content-type=%s", u, kind, len(data), ctype)
 
     if kind == "pdf":
+        logger.debug("[DISPATCH] Routing to analyze_pdf_bytes")
         return analyze_pdf_bytes(settings, u, data)
     elif kind == "excel":
+        logger.debug("[DISPATCH] Routing to analyze_excel_bytes")
         return analyze_excel_bytes(settings, u, data)
     elif kind == "image":
+        logger.debug("[DISPATCH] Routing to analyze_image_bytes")
         return analyze_image_bytes(settings, u, data)
     else:
+        logger.debug("[DISPATCH] Unsupported type — returning kind=unknown")
         mt, _ = mimetypes.guess_type(u)
         return AttachmentFinding(
             url=u,
@@ -172,19 +184,28 @@ def analyze_attachments(settings: Settings, urls: List[str]) -> List[AttachmentF
     for entry in urls:
         expanded.extend(_parse_attachment_input(entry))
 
+    logger.debug("[ATTACHMENTS] Total entries after expand: %d", len(expanded))
+
     for url in expanded:
         u = _clean_url(url)
         if not u:
+            logger.debug("[ATTACHMENTS] Skipping empty entry")
             continue
+
+        logger.debug("[ATTACHMENTS] Processing: %s", u)
 
         # ----------------------------------------------------------------
         # Branch 1: Bare Google Drive file ID (from Glide via Power Automate)
         # ----------------------------------------------------------------
         if _is_google_drive_id(u):
+            logger.debug("[ATTACHMENTS] Detected as Google Drive file ID")
             try:
                 data, ctype = fetch_drive_file(u, settings.google_service_account_path)
+                logger.debug("[ATTACHMENTS] Drive fetch OK — bytes=%d ctype=%s", len(data), ctype)
                 finding = _dispatch_finding(settings, u, data, ctype)
+                logger.debug("[ATTACHMENTS] Drive parse OK — kind=%s", finding.kind)
             except Exception as e:
+                logger.error("[ATTACHMENTS] Drive fetch/parse failed for %s: %s: %s", u, type(e).__name__, e)
                 finding = AttachmentFinding(
                     url=u,
                     kind="unknown",
@@ -198,6 +219,7 @@ def analyze_attachments(settings: Settings, urls: List[str]) -> List[AttachmentF
         # Branch 2: MS SharePoint/OneDrive folder link
         # ----------------------------------------------------------------
         if _is_probably_ms_folder_link(u):
+            logger.debug("[ATTACHMENTS] Detected as MS folder link — skipping deep traversal")
             out.append(
                 AttachmentFinding(
                     url=u,
@@ -214,12 +236,15 @@ def analyze_attachments(settings: Settings, urls: List[str]) -> List[AttachmentF
         # ----------------------------------------------------------------
         # Branch 3: Plain HTTP/HTTPS URL (mailparser or other sources)
         # ----------------------------------------------------------------
+        logger.debug("[ATTACHMENTS] Treating as plain HTTP URL")
         try:
             data, ctype = fetcher.fetch(u)
             finding = _dispatch_finding(settings, u, data, ctype)
+            logger.debug("[ATTACHMENTS] HTTP fetch/parse OK — kind=%s", finding.kind)
             out.append(finding)
 
         except Exception as e:
+            logger.error("[ATTACHMENTS] HTTP fetch/parse failed for %s: %s: %s", u, type(e).__name__, e)
             out.append(
                 AttachmentFinding(
                     url=u,
@@ -229,4 +254,5 @@ def analyze_attachments(settings: Settings, urls: List[str]) -> List[AttachmentF
                 )
             )
 
+    logger.debug("[ATTACHMENTS] Done — %d findings returned", len(out))
     return out
