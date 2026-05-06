@@ -39,7 +39,7 @@ def root():
     return {
         "ok": True,
         "service": "rfq-summary",
-        "endpoints": ["/rfq/run", "/rfq/pricing", "/rfq/summary", "/health"],
+        "endpoints": ["/rfq/run", "/rfq/pricing", "/rfq/summary", "/query/triage", "/health"],
     }
 
 
@@ -58,6 +58,26 @@ def _require_row_id_if_writeback(settings: Settings, obj: InputPayload):
             status_code=400,
             detail="Missing rowID/row_id in payload (required when writeback enabled).",
         )
+
+
+def _require_triage_writeback_settings(settings: Settings, obj: QueryPayload):
+    if not settings.enable_triage_writeback:
+        return
+    if not (obj.row_id or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Missing rowID/row_id in payload (required when triage writeback enabled).",
+        )
+    required = {
+        "GLIDE_API_KEY": settings.glide_api_key,
+        "GLIDE_APP_ID": settings.glide_app_id,
+        "GLIDE_ALL_RFQ_TABLE": settings.glide_all_rfq_table,
+        "GLIDE_COL_ALL_RFQ_ZAI_RESPONSE": settings.glide_col_all_rfq_zai_response,
+        "GLIDE_COL_ALL_RFQ_COSTING_ORDER_OF_MAGNITUDE": settings.glide_col_all_rfq_costing_order_of_magnitude,
+    }
+    missing = [name for name, value in required.items() if not (value or "").strip()]
+    if missing:
+        raise HTTPException(status_code=500, detail=f"Missing triage writeback configuration: {', '.join(missing)}")
 
 
 def _unwrap_payload(payload: dict) -> dict:
@@ -323,8 +343,9 @@ async def _run_job(job: Job) -> None:
                 out = await asyncio.to_thread(run_query_triage, settings, qobj, job.run_id)
                 print(f"[STEP 2/3] run_id={job.run_id} | TRIAGE done in {int((time.perf_counter()-t0)*1000)}ms")
                 print(f"[STEP 2/3] run_id={job.run_id} | triage_text preview: {(out.triage_text or '')[:200]!r}")
+                print(f"[STEP 2/3] run_id={job.run_id} | estimate preview: {(out.costing_estimate_text or '')[:80]!r}")
 
-                print(f"[STEP 3/3] run_id={job.run_id} | Writing triage output (triage_writeback={settings.enable_triage_writeback})...")
+                print(f"[STEP 3/3] run_id={job.run_id} | Writing triage outputs to ALL RFQ (triage_writeback={settings.enable_triage_writeback})...")
                 t0 = time.perf_counter()
                 await asyncio.to_thread(write_triage, settings, qobj, out)
                 print(f"[STEP 3/3] run_id={job.run_id} | Write done in {int((time.perf_counter()-t0)*1000)}ms")
@@ -561,6 +582,7 @@ async def query_triage(payload: dict, response: Response):
         raise HTTPException(status_code=422, detail=str(e))
 
     print("[DEBUG] Validated QueryPayload:", qobj)
+    _require_triage_writeback_settings(load_settings(), qobj)
 
     ack = await _enqueue_or_reject_triage(data, qobj)
     response.status_code = 202

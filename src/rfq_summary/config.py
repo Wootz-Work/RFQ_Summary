@@ -27,6 +27,10 @@ class Settings(BaseSettings):
         default="prompts/query_triage.md",
         alias="PROMPT_QUERY_TRIAGE_FILE",
     )
+    prompt_query_costing_file: str = Field(
+        default="prompts/query_costing_estimate.md",
+        alias="PROMPT_QUERY_COSTING_FILE",
+    )
     # ========================
     # Web Search (Perplexity)
     # ========================
@@ -88,6 +92,17 @@ class Settings(BaseSettings):
 
     # Column in Prospect RFQs to write triage output (your Zai response column id)
     glide_col_prospect_triage: str = Field(default="ZpJy4", alias="GLIDE_COL_PROSPECT_TRIAGE")
+
+    # ALL RFQ table writeback for incoming query triage.
+    glide_all_rfq_table: str = Field(
+        default="native-table-24696dcc-caaf-4bf8-a015-1e9ef394aa1b",
+        alias="GLIDE_ALL_RFQ_TABLE",
+    )
+    glide_col_all_rfq_zai_response: str = Field(default="MANCF", alias="GLIDE_COL_ALL_RFQ_ZAI_RESPONSE")
+    glide_col_all_rfq_costing_order_of_magnitude: str = Field(
+        default="AEa95",
+        alias="GLIDE_COL_ALL_RFQ_COSTING_ORDER_OF_MAGNITUDE",
+    )
 
     # Gate triage writeback separately (keeps RFQ writeback safety intact)
     enable_triage_writeback: bool = Field(default=True, alias="ENABLE_TRIAGE_WRITEBACK")

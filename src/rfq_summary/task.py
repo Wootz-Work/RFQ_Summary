@@ -2,6 +2,7 @@ from __future__ import annotations
 import time
 import json
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Tuple, List, Optional, Any
 import re
 from typing import Dict
@@ -169,6 +170,26 @@ def _extract_tag_block(text: str, tag: str) -> str:
         return ""
     m = re.search(rf"<{tag}>\s*(.*?)\s*</{tag}>", t, flags=re.IGNORECASE | re.DOTALL)
     return (m.group(1).strip() if m else "")
+
+
+def _wrap_tagged_output(model_text: str, tag: str) -> str:
+    inner = _extract_tag_block(model_text, tag)
+    if inner:
+        return f"<{tag}>\n{inner.strip()}\n</{tag}>"
+    return f"<{tag}>\n{(model_text or '').strip()}\n</{tag}>"
+
+
+def _generate_text_with_timing(settings: Settings, user_prompt: str) -> Tuple[str, int]:
+    t_llm0 = time.perf_counter()
+    model_text = generate_text(
+        settings,
+        system_prompt="You must follow the user instructions exactly.",
+        user_prompt=user_prompt,
+    )
+    llm_ms = int((time.perf_counter() - t_llm0) * 1000)
+    return model_text, llm_ms
+
+
 def _products_for_prompt(payload: InputPayload) -> List[dict]:
     out: List[dict] = []
     products = getattr(payload, "products", None)
@@ -541,25 +562,21 @@ def run_query_triage(settings: Settings, payload: QueryPayload, run_id: Optional
     extracted_text = _join_attachment_text_any("", attachment_findings)
     attachments_ms = int((time.perf_counter() - t_attach0) * 1000)
 
-    # 2) prompt + LLM
-    prompt_template = load_prompt_file(settings.prompt_query_triage_file)
-    user_prompt = _build_query_triage_prompt(prompt_template, payload, extracted_text)
+    # 2) Build both prompts from the same parsed attachment context.
+    triage_prompt_template = load_prompt_file(settings.prompt_query_triage_file)
+    costing_prompt_template = load_prompt_file(settings.prompt_query_costing_file)
+    triage_user_prompt = _build_query_triage_prompt(triage_prompt_template, payload, extracted_text)
+    costing_user_prompt = _build_query_triage_prompt(costing_prompt_template, payload, extracted_text)
 
-    t_llm0 = time.perf_counter()
-    model_text = generate_text(
-        settings,
-        system_prompt="You must follow the user instructions exactly.",
-        user_prompt=user_prompt,
-    )
-    llm_ms = int((time.perf_counter() - t_llm0) * 1000)
+    # 3) Run both Claude calls in parallel.
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        triage_future = executor.submit(_generate_text_with_timing, settings, triage_user_prompt)
+        costing_future = executor.submit(_generate_text_with_timing, settings, costing_user_prompt)
+        model_text, triage_llm_ms = triage_future.result()
+        costing_model_text, costing_llm_ms = costing_future.result()
 
-    triage_inner = _extract_tag_block(model_text, "triage")
-    triage_text = ""
-    if triage_inner:
-        triage_text = "<triage>\n" + triage_inner.strip() + "\n</triage>"
-    else:
-        # fallback: store raw, but still keep tag wrapper so Glide is consistent
-        triage_text = "<triage>\n" + (model_text or "").strip() + "\n</triage>"
+    triage_text = _wrap_tagged_output(model_text, "triage")
+    costing_estimate_text = _wrap_tagged_output(costing_model_text, "estimate")
 
     # DocAI stats (reuse your existing aggregator)
     docai = _aggregate_docai_stats(attachment_findings)
@@ -569,11 +586,15 @@ def run_query_triage(settings: Settings, payload: QueryPayload, run_id: Optional
         run_id=run_id,
         row_id=payload.row_id,
         triage_text=triage_text,
+        costing_estimate_text=costing_estimate_text,
         raw_model_output=model_text or "",
+        raw_costing_model_output=costing_model_text or "",
         attachment_findings=attachment_findings,
         timings={
             "attachments_ms": attachments_ms,
-            "llm_ms": llm_ms,
+            "triage_llm_ms": triage_llm_ms,
+            "costing_llm_ms": costing_llm_ms,
+            "llm_parallel_max_ms": max(triage_llm_ms, costing_llm_ms),
             "total_ms": total_ms,
         },
         docai=docai,

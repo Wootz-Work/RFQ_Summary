@@ -5,7 +5,7 @@ from typing import Dict
 
 from .config import Settings
 from .schema import InputPayload, OutputPayload, QueryPayload, TriageOutputPayload
-from .glide_client import glide_upsert_zai_response_by_rfq_id, glide_update_prospect_rfq_triage
+from .glide_client import glide_upsert_zai_response_by_rfq_id, glide_update_all_rfq_triage_outputs
 from .gsheet_logger import append_rows, build_chunked_log_rows
 
 
@@ -142,11 +142,16 @@ def write_all(settings: Settings, inp: InputPayload, out: OutputPayload) -> None
 
 def write_triage(settings: Settings, inp: QueryPayload, out: TriageOutputPayload) -> None:
     """
-    Writes triage output into Prospect RFQs table (column ZpJy4).
+    Writes triage outputs into the linked ALL RFQ row.
     Also logs to Sheets (chunked).
     """
     if settings.enable_triage_writeback:
-        glide_update_prospect_rfq_triage(settings, out.row_id, out.triage_text or "")
+        glide_update_all_rfq_triage_outputs(
+            settings,
+            out.row_id,
+            out.triage_text or "",
+            out.costing_estimate_text or "",
+        )
 
     # Log to Sheets (same sheet schema; different field names)
     fields = {
@@ -158,7 +163,9 @@ def write_triage(settings: Settings, inp: QueryPayload, out: TriageOutputPayload
         "attachment_urls": json.dumps(inp.attachment_urls or [], ensure_ascii=False),  # replaces query_json
         "attached_media": json.dumps(inp.attached_media or [], ensure_ascii=False),
         "triage_text": out.triage_text or "",
+        "costing_estimate_text": out.costing_estimate_text or "",
         "raw_model_output": out.raw_model_output or "",
+        "raw_costing_model_output": out.raw_costing_model_output or "",
         "timings": json.dumps(out.timings or {}, ensure_ascii=False),
         "docai": json.dumps(out.docai or {}, ensure_ascii=False),
         "writeback_enabled": str(bool(settings.enable_triage_writeback)),

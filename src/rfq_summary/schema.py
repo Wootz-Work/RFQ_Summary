@@ -288,7 +288,9 @@ class TriageOutputPayload(BaseModel):
     mode: str = "triage"
     row_id: str
     triage_text: str = ""
+    costing_estimate_text: str = ""
     raw_model_output: str = ""
+    raw_costing_model_output: str = ""
 
     attachment_findings: List[AttachmentFinding] = Field(default_factory=list)
 

@@ -74,6 +74,61 @@ def glide_update_prospect_rfq_triage(settings: Settings, row_id: str, triage_tex
     with httpx.Client(timeout=60) as client:
         r = client.post(url, headers=_glide_headers(settings), json=payload)
         r.raise_for_status()
+
+
+def glide_update_all_rfq_triage_outputs(
+    settings: Settings,
+    all_rfq_row_id: str,
+    triage_text: str,
+    costing_order_of_magnitude: str,
+) -> None:
+    """
+    Writes incoming query AI outputs to the ALL RFQ row identified by row_id.
+
+    Writes:
+      ALL RFQ.zaiResponse -> triage_text
+      ALL RFQ.costingOrderOfMagnitude -> costing_order_of_magnitude
+    """
+    if not settings.enable_triage_writeback:
+        return
+
+    if not (all_rfq_row_id or "").strip():
+        raise RuntimeError("ALL RFQ row_id is empty; cannot write triage outputs.")
+
+    if not settings.glide_api_key or not settings.glide_app_id:
+        raise RuntimeError("Missing GLIDE_API_KEY/GLIDE_APP_ID.")
+
+    if not settings.glide_all_rfq_table:
+        raise RuntimeError("Missing GLIDE_ALL_RFQ_TABLE.")
+
+    zai_col = (settings.glide_col_all_rfq_zai_response or "").strip()
+    estimate_col = (settings.glide_col_all_rfq_costing_order_of_magnitude or "").strip()
+    if not zai_col:
+        raise RuntimeError("Missing GLIDE_COL_ALL_RFQ_ZAI_RESPONSE.")
+    if not estimate_col:
+        raise RuntimeError("Missing GLIDE_COL_ALL_RFQ_COSTING_ORDER_OF_MAGNITUDE.")
+
+    url = "https://api.glideapp.io/api/function/mutateTables"
+    payload = {
+        "appID": settings.glide_app_id,
+        "mutations": [
+            {
+                "kind": "set-columns-in-row",
+                "tableName": settings.glide_all_rfq_table,
+                "rowID": all_rfq_row_id.strip(),
+                "columnValues": {
+                    zai_col: triage_text or "",
+                    estimate_col: costing_order_of_magnitude or "",
+                },
+            }
+        ],
+    }
+
+    with httpx.Client(timeout=60) as client:
+        r = client.post(url, headers=_glide_headers(settings), json=payload)
+        r.raise_for_status()
+
+
 def _glide_query_rowid_by_rfq_id(settings: Settings, rfq_id: str) -> Optional[str]:
     """
     Uses Glide Advanced API (queryTables) with SQL to find the ZAI Responses row where:
