@@ -179,6 +179,16 @@ def _wrap_tagged_output(model_text: str, tag: str) -> str:
     return f"<{tag}>\n{(model_text or '').strip()}\n</{tag}>"
 
 
+def _unwrap_tagged_output(model_text: str, tag: str) -> str:
+    t = (model_text or "").strip()
+    if not t:
+        return ""
+    m = re.search(rf"<{tag}>\s*(.*?)\s*</{tag}>", t, flags=re.IGNORECASE | re.DOTALL)
+    if m:
+        return m.group(1).strip()
+    return t
+
+
 def _generate_text_with_timing(settings: Settings, user_prompt: str) -> Tuple[str, int]:
     t_llm0 = time.perf_counter()
     model_text = generate_text(
@@ -576,7 +586,7 @@ def run_query_triage(settings: Settings, payload: QueryPayload, run_id: Optional
         costing_model_text, costing_llm_ms = costing_future.result()
 
     triage_text = _wrap_tagged_output(model_text, "triage")
-    costing_estimate_text = _wrap_tagged_output(costing_model_text, "estimate")
+    costing_estimate_text = _unwrap_tagged_output(costing_model_text, "estimate")
 
     # DocAI stats (reuse your existing aggregator)
     docai = _aggregate_docai_stats(attachment_findings)
