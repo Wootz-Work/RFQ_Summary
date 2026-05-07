@@ -24,13 +24,16 @@ bracket confidently, proceed. If not, stop.
 - Quantity and frequency (one-time, annual, per order)
 - Material, process complexity, finishing, certification requirements
 - Any price anchors already mentioned by the customer
-Then estimate order of magnitude:
+Then estimate ex-works order of magnitude only:
 - Standard/catalogued parts: volume × estimated market price per unit
 - Custom parts: material + process complexity + finishing + overhead
 - Assemblies/BOMs: sum across line items with blended rate
 - Adjust UP for: tight tolerances, exotic materials, heavy cert burden, low volumes
 - Adjust DOWN for: commodity parts, high volumes, standard grades, competitive Indian
 supply
+- Exclude all selling and landed-cost adders: Wootz/customer margin, freight, shipping,
+insurance, duties, tariffs, import/export fees, GST/VAT/sales tax, customs clearance, and
+last-mile logistics.
 Land on the right bracket. Do not guess a specific number.
 ---
 ## Output
@@ -52,3 +55,4 @@ No label. No reasoning. No punctuation. Just the x's.
 2. Failed sufficiency check = empty tag. No ? no placeholder, nothing.
 3. Passed = one word only. Nothing else.
 4. Convert to USD internally. Don't show it.
+5. Estimate ex-works cost only. Do not include margin, freight, duties, taxes, insurance, or logistics.
