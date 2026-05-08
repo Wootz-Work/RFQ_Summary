@@ -333,3 +333,42 @@ class RfqClassificationOutputPayload(BaseModel):
     raw_client_name: str = ""
     raw_model_output: str = ""
     structured: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RfqRegenerateTriageInputPayload(BaseModel):
+    rfq_id: str = ""
+    instruction: str = ""
+    rfq: Dict[str, Any] = Field(default_factory=dict)
+    products: List[Dict[str, Any]] = Field(default_factory=list)
+    google_attachment_ids: List[str] = Field(default_factory=list)
+    requested_time: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_fields(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        if "rfq_id" not in data and "rfqId" in data:
+            data["rfq_id"] = data.get("rfqId")
+
+        val = data.get("google_attachment_ids")
+        if isinstance(val, str):
+            data["google_attachment_ids"] = [u.strip() for u in val.split(",") if u.strip()]
+        elif isinstance(val, list):
+            data["google_attachment_ids"] = [str(u).strip() for u in val if str(u).strip()]
+
+        if isinstance(data.get("products"), dict):
+            data["products"] = [data["products"]]
+        return data
+
+
+class RfqRegenerateTriageOutputPayload(BaseModel):
+    run_id: str
+    mode: str = "regenerate_triage"
+    rfq_id: str
+    instruction: str = ""
+    triage_text: str = ""
+    raw_model_output: str = ""
+    attachment_findings: List[AttachmentFinding] = Field(default_factory=list)
+    timings: Dict[str, Any] = Field(default_factory=dict)
+    structured: Dict[str, Any] = Field(default_factory=dict)

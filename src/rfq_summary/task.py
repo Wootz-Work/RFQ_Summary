@@ -7,7 +7,7 @@ from typing import Tuple, List, Optional, Any
 import re
 from typing import Dict
 from .config import Settings
-from .schema import InputPayload, OutputPayload, WebFinding, QueryPayload, TriageOutputPayload, RfqClassificationInputPayload, RfqClassificationOutputPayload
+from .schema import InputPayload, OutputPayload, WebFinding, QueryPayload, TriageOutputPayload, RfqClassificationInputPayload, RfqClassificationOutputPayload, RfqRegenerateTriageInputPayload, RfqRegenerateTriageOutputPayload
 from .attachments import analyze_attachments
 from .search import PerplexitySearchClient
 from .llm import load_prompt_file, generate_text
@@ -742,5 +742,72 @@ def run_rfq_classification(
         structured={
             "company_matched": bool(company_row),
             "matched_company_pet_name": client_name if company_row else "",
+        },
+    )
+
+
+def run_regenerate_triage(
+    settings: Settings,
+    payload: RfqRegenerateTriageInputPayload,
+    run_id: Optional[str] = None,
+) -> RfqRegenerateTriageOutputPayload:
+    run_id = run_id or uuid.uuid4().hex[:10]
+    t0 = time.perf_counter()
+
+    t_attach0 = time.perf_counter()
+    attachment_findings = analyze_attachments(settings, payload.google_attachment_ids or [])
+    extracted_text = _join_attachment_text_any("", attachment_findings)
+    attachments_ms = int((time.perf_counter() - t_attach0) * 1000)
+
+    rfq = payload.rfq or {}
+    prompt_body = {
+        "rfq": rfq,
+        "products": payload.products or [],
+    }
+    query_payload = QueryPayload(
+        row_id=payload.rfq_id,
+        subject=str(rfq.get("title") or ""),
+        from_="",
+        from_name=str(rfq.get("customer_name") or ""),
+        body=json.dumps(prompt_body, ensure_ascii=False),
+        received_at="",
+        attachment_urls=payload.google_attachment_ids or [],
+        attached_media=[],
+    )
+
+    prompt_template = load_prompt_file(settings.prompt_query_triage_file)
+    prompt_template += (
+        "\n\n---\n"
+        "## STRICT REGENERATION INSTRUCTION\n"
+        f"{(payload.instruction or '').strip()}\n\n"
+        "You must follow the instruction above exactly. Only refuse or ignore it if it asks you to fabricate facts, "
+        "contradict the RFQ data, or violate the required output format. If it conflicts with normal style preferences, "
+        "the strict regeneration instruction wins.\n"
+    )
+    user_prompt = _build_query_triage_prompt(prompt_template, query_payload, extracted_text)
+    t_llm0 = time.perf_counter()
+    model_text = generate_text(
+        settings,
+        system_prompt="You must follow the user instructions exactly.",
+        user_prompt=user_prompt,
+    )
+    triage_llm_ms = int((time.perf_counter() - t_llm0) * 1000)
+    total_ms = int((time.perf_counter() - t0) * 1000)
+
+    return RfqRegenerateTriageOutputPayload(
+        run_id=run_id,
+        rfq_id=payload.rfq_id,
+        instruction=payload.instruction or "",
+        triage_text=_wrap_tagged_output(model_text, "triage"),
+        raw_model_output=model_text or "",
+        attachment_findings=attachment_findings,
+        timings={
+            "attachments_ms": attachments_ms,
+            "triage_llm_ms": triage_llm_ms,
+            "total_ms": total_ms,
+        },
+        structured={
+            "attachments_count": len(attachment_findings or []),
+            "products_count": len(payload.products or []),
         },
     )

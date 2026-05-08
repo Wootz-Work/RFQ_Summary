@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Dict
 
 from .config import Settings
-from .schema import InputPayload, OutputPayload, QueryPayload, TriageOutputPayload, RfqClassificationInputPayload, RfqClassificationOutputPayload
-from .glide_client import glide_upsert_zai_response_by_rfq_id, glide_update_all_rfq_triage_outputs, glide_update_prospect_rfq_classification
+from .schema import InputPayload, OutputPayload, QueryPayload, TriageOutputPayload, RfqClassificationInputPayload, RfqClassificationOutputPayload, RfqRegenerateTriageInputPayload, RfqRegenerateTriageOutputPayload
+from .glide_client import glide_upsert_zai_response_by_rfq_id, glide_update_all_rfq_triage_outputs, glide_update_prospect_rfq_classification, glide_add_zai_regenerate_row
 from .gsheet_logger import append_rows, build_chunked_log_rows
 
 
@@ -226,6 +227,59 @@ def write_rfq_classification(
         run_id=out.run_id,
         mode=out.mode,
         row_id=out.row_id,
+        fields=fields,
+    )
+    append_rows(settings, rows)
+
+
+def write_regenerated_triage(
+    settings: Settings,
+    inp: RfqRegenerateTriageInputPayload,
+    out: RfqRegenerateTriageOutputPayload,
+) -> None:
+    generated_at = datetime.now(timezone.utc).isoformat()
+    requested_at = inp.requested_time or generated_at
+
+    if settings.enable_triage_writeback:
+        required = {
+            "GLIDE_COL_ZAI_REGENERATE_RFQ_ID": settings.glide_col_zai_regenerate_rfq_id,
+            "GLIDE_COL_ZAI_REGENERATE_RESPONSE": settings.glide_col_zai_regenerate_response,
+            "GLIDE_COL_ZAI_REGENERATE_RESPONSE_GENERATED_TIME": settings.glide_col_zai_regenerate_response_generated_time,
+            "GLIDE_COL_ZAI_REGENERATE_REQUESTED_TIME": settings.glide_col_zai_regenerate_requested_time,
+            "GLIDE_COL_ZAI_REGENERATE_INSTRUCTION": settings.glide_col_zai_regenerate_instruction,
+        }
+        missing = [name for name, value in required.items() if not (value or "").strip()]
+        if missing:
+            raise RuntimeError(f"Missing ZAI Regenerate writeback configuration: {', '.join(missing)}")
+
+        glide_add_zai_regenerate_row(
+            settings,
+            {
+                settings.glide_col_zai_regenerate_rfq_id: out.rfq_id,
+                settings.glide_col_zai_regenerate_response: out.triage_text or "",
+                settings.glide_col_zai_regenerate_response_generated_time: generated_at,
+                settings.glide_col_zai_regenerate_requested_time: requested_at,
+                settings.glide_col_zai_regenerate_instruction: out.instruction or "",
+            },
+        )
+
+    fields = {
+        "rfq": json.dumps(inp.rfq or {}, ensure_ascii=False),
+        "products": json.dumps(inp.products or [], ensure_ascii=False),
+        "google_attachment_ids": json.dumps(inp.google_attachment_ids or [], ensure_ascii=False),
+        "instruction": inp.instruction or "",
+        "triage_text": out.triage_text or "",
+        "raw_model_output": out.raw_model_output or "",
+        "timings": json.dumps(out.timings or {}, ensure_ascii=False),
+        "structured": json.dumps(out.structured or {}, ensure_ascii=False),
+        "writeback_enabled": str(bool(settings.enable_triage_writeback)),
+    }
+
+    rows = build_chunked_log_rows(
+        settings=settings,
+        run_id=out.run_id,
+        mode=out.mode,
+        row_id=out.rfq_id,
         fields=fields,
     )
     append_rows(settings, rows)

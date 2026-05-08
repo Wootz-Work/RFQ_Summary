@@ -184,6 +184,44 @@ def glide_update_prospect_rfq_classification(
         r.raise_for_status()
 
 
+def glide_add_zai_regenerate_row(settings: Settings, column_values: Dict[str, Any]) -> Optional[str]:
+    if not settings.enable_triage_writeback:
+        return None
+    if not settings.glide_api_key or not settings.glide_app_id:
+        raise RuntimeError("Missing GLIDE_API_KEY/GLIDE_APP_ID.")
+    if not settings.glide_zai_regenerate_table:
+        raise RuntimeError("Missing GLIDE_ZAI_REGENERATE_TABLE.")
+    if not column_values:
+        raise RuntimeError("No column values provided for ZAI Regenerate row.")
+
+    url = "https://api.glideapp.io/api/function/mutateTables"
+    payload = {
+        "appID": settings.glide_app_id,
+        "mutations": [
+            {
+                "kind": "add-row-to-table",
+                "tableName": settings.glide_zai_regenerate_table,
+                "columnValues": column_values,
+            }
+        ],
+    }
+
+    with httpx.Client(timeout=60) as client:
+        r = client.post(url, headers=_glide_headers(settings), json=payload)
+        r.raise_for_status()
+        data = r.json()
+
+    try:
+        result0 = (data or [])[0] if isinstance(data, list) else data
+    except Exception:
+        result0 = {}
+    for key in ("Row ID", "$rowID", "rowID", "row_id"):
+        value = (result0 or {}).get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 def _glide_query_rowid_by_rfq_id(settings: Settings, rfq_id: str) -> Optional[str]:
     """
     Uses Glide Advanced API (queryTables) with SQL to find the ZAI Responses row where:

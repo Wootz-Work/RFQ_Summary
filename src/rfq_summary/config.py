@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
-import os
 
 
 class Settings(BaseSettings):
@@ -140,6 +139,17 @@ class Settings(BaseSettings):
     glide_col_pricing_estimate: str = Field(default="dwtEW", alias="GLIDE_COL_PRICING_ESTIMATE")  # OUTPUT 1
     glide_col_pricing_estimate_summary: str = Field(default="qcX9Z", alias="GLIDE_COL_PRICING_ESTIMATE_SUMMARY")  # OUTPUT 2
 
+    # ZAI Regenerate table writeback
+    glide_zai_regenerate_table: str = Field(default="", alias="GLIDE_ZAI_REGENERATE_TABLE")
+    glide_col_zai_regenerate_rfq_id: str = Field(default="", alias="GLIDE_COL_ZAI_REGENERATE_RFQ_ID")
+    glide_col_zai_regenerate_response: str = Field(default="", alias="GLIDE_COL_ZAI_REGENERATE_RESPONSE")
+    glide_col_zai_regenerate_response_generated_time: str = Field(
+        default="",
+        alias="GLIDE_COL_ZAI_REGENERATE_RESPONSE_GENERATED_TIME",
+    )
+    glide_col_zai_regenerate_requested_time: str = Field(default="", alias="GLIDE_COL_ZAI_REGENERATE_REQUESTED_TIME")
+    glide_col_zai_regenerate_instruction: str = Field(default="", alias="GLIDE_COL_ZAI_REGENERATE_INSTRUCTION")
+
     # ========================
     # Google Sheet logging (optional)
     # ========================
@@ -152,8 +162,11 @@ class Settings(BaseSettings):
     max_cell_chars: int = Field(default=50000, alias="MAX_CELL_CHARS")
 
 
-    # Google drive settings
-    google_service_account_path: str = os.getenv("GOOGLE_SERVICE_ACCOUNT_PATH", "service_account.json")
+    # Google Drive settings. Prefer the Drive-specific credentials so Sheets/logging
+    # can use GOOGLE_SA_JSON_B64 without also needing Drive access.
+    google_drive_sa_json_b64: str = Field(default="", alias="GOOGLE_DRIVE_SA_JSON_B64")
+    google_drive_service_account_path: str = Field(default="", alias="GOOGLE_DRIVE_SERVICE_ACCOUNT_PATH")
+    google_service_account_path: str = Field(default="service_account.json", alias="GOOGLE_SERVICE_ACCOUNT_PATH")
 
 def load_settings() -> Settings:
     return Settings()
