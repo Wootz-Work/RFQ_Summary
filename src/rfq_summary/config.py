@@ -31,6 +31,10 @@ class Settings(BaseSettings):
         default="prompts/query_costing_estimate.md",
         alias="PROMPT_QUERY_COSTING_FILE",
     )
+    prompt_query_rfq_classification_file: str = Field(
+        default="prompts/query_rfq_classification.md",
+        alias="PROMPT_QUERY_RFQ_CLASSIFICATION_FILE",
+    )
     # ========================
     # Web Search (Perplexity)
     # ========================
@@ -88,10 +92,26 @@ class Settings(BaseSettings):
     glide_zai_responses_table: str = Field(default="", alias="GLIDE_ZAI_RESPONSES_TABLE")
 
     # Prospect RFQs table (incoming email queries)
-    glide_prospect_rfq_table: str = Field(default="", alias="GLIDE_PROSPECT_RFQ_TABLE")
+    glide_prospect_rfq_table: str = Field(
+        default="native-table-498cd72b-6e47-4820-b737-f167d509b1ec",
+        alias="GLIDE_PROSPECT_RFQ_TABLE",
+    )
 
     # Column in Prospect RFQs to write triage output (your Zai response column id)
     glide_col_prospect_triage: str = Field(default="ZpJy4", alias="GLIDE_COL_PROSPECT_TRIAGE")
+    glide_col_prospect_geography: str = Field(default="sMkF2", alias="GLIDE_COL_PROSPECT_GEOGRAPHY")
+    glide_col_prospect_industry: str = Field(default="QOtPb", alias="GLIDE_COL_PROSPECT_INDUSTRY")
+    glide_col_prospect_client_name: str = Field(default="ikKdb", alias="GLIDE_COL_PROSPECT_CLIENT_NAME")
+    glide_col_prospect_standards: str = Field(default="fmNSP", alias="GLIDE_COL_PROSPECT_STANDARDS")
+    glide_col_prospect_title: str = Field(default="Fg2uK", alias="GLIDE_COL_PROSPECT_TITLE")
+    glide_col_prospect_sequence: str = Field(default="qxQ9p", alias="GLIDE_COL_PROSPECT_SEQUENCE")
+
+    glide_all_companies_table: str = Field(
+        default="native-table-g1GlBSdbNmRtTx16ecxD",
+        alias="GLIDE_ALL_COMPANIES_TABLE",
+    )
+    glide_col_all_companies_pet_name: str = Field(default="Name", alias="GLIDE_COL_ALL_COMPANIES_PET_NAME")
+    glide_col_all_companies_original_name: str = Field(default="MdnWu", alias="GLIDE_COL_ALL_COMPANIES_ORIGINAL_NAME")
 
     # ALL RFQ table writeback for incoming query triage.
     glide_all_rfq_table: str = Field(

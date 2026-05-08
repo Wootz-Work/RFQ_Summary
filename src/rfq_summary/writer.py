@@ -4,8 +4,8 @@ import json
 from typing import Dict
 
 from .config import Settings
-from .schema import InputPayload, OutputPayload, QueryPayload, TriageOutputPayload
-from .glide_client import glide_upsert_zai_response_by_rfq_id, glide_update_all_rfq_triage_outputs
+from .schema import InputPayload, OutputPayload, QueryPayload, TriageOutputPayload, RfqClassificationInputPayload, RfqClassificationOutputPayload
+from .glide_client import glide_upsert_zai_response_by_rfq_id, glide_update_all_rfq_triage_outputs, glide_update_prospect_rfq_classification
 from .gsheet_logger import append_rows, build_chunked_log_rows
 
 
@@ -175,6 +175,56 @@ def write_triage(settings: Settings, inp: QueryPayload, out: TriageOutputPayload
         settings=settings,
         run_id=out.run_id,
         mode="triage",
+        row_id=out.row_id,
+        fields=fields,
+    )
+    append_rows(settings, rows)
+
+
+def write_rfq_classification(
+    settings: Settings,
+    inp: RfqClassificationInputPayload,
+    out: RfqClassificationOutputPayload,
+) -> None:
+    if settings.enable_triage_writeback:
+        column_values: Dict[str, str] = {}
+        if out.geography:
+            column_values[settings.glide_col_prospect_geography] = out.geography
+        if out.industry:
+            column_values[settings.glide_col_prospect_industry] = out.industry
+        if out.client_name:
+            column_values[settings.glide_col_prospect_client_name] = out.client_name
+        if out.standards:
+            column_values[settings.glide_col_prospect_standards] = out.standards
+        if out.title:
+            column_values[settings.glide_col_prospect_title] = out.title
+        if out.sequence:
+            column_values[settings.glide_col_prospect_sequence] = out.sequence
+
+        if column_values:
+            glide_update_prospect_rfq_classification(settings, out.row_id, column_values)
+
+    fields = {
+        "mail_body": inp.mail_body or "",
+        "subject": inp.subject or "",
+        "from": inp.from_ or "",
+        "from_name": inp.from_name or "",
+        "geography": out.geography or "",
+        "industry": out.industry or "",
+        "client_name": out.client_name or "",
+        "standards": out.standards or "",
+        "title": out.title or "",
+        "sequence": out.sequence or "",
+        "raw_client_name": out.raw_client_name or "",
+        "raw_model_output": out.raw_model_output or "",
+        "structured": json.dumps(out.structured or {}, ensure_ascii=False),
+        "writeback_enabled": str(bool(settings.enable_triage_writeback)),
+    }
+
+    rows = build_chunked_log_rows(
+        settings=settings,
+        run_id=out.run_id,
+        mode=out.mode,
         row_id=out.row_id,
         fields=fields,
     )

@@ -297,3 +297,39 @@ class TriageOutputPayload(BaseModel):
     timings: Dict[str, Any] = Field(default_factory=dict)
     docai: Dict[str, Any] = Field(default_factory=dict)
     structured: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RfqClassificationInputPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    row_id: str = Field(default="", validation_alias=AliasChoices("rowID", "row_id"))
+    mail_body: str = Field(default="", validation_alias=AliasChoices("mail_body", "body", "Name"))
+    subject: str = Field(default="", validation_alias=AliasChoices("subject", "subject_line", "9lbwR"))
+    from_: str = Field(default="", validation_alias=AliasChoices("from_", "from", "vt1tN"))
+    from_name: str = Field(default="", validation_alias=AliasChoices("from_name", "sflMP"))
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_fields(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        for field in ("rowID", "row_id", "mail_body", "body", "Name", "subject", "subject_line", "9lbwR", "from_", "from", "vt1tN", "from_name", "sflMP"):
+            val = data.get(field)
+            if isinstance(val, list):
+                data[field] = val[0] if val else ""
+        return data
+
+
+class RfqClassificationOutputPayload(BaseModel):
+    run_id: str
+    mode: str = "classify"
+    row_id: str
+    geography: str = ""
+    industry: str = ""
+    client_name: str = ""
+    standards: str = ""
+    title: str = ""
+    sequence: str = ""
+    raw_client_name: str = ""
+    raw_model_output: str = ""
+    structured: Dict[str, Any] = Field(default_factory=dict)

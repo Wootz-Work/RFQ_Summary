@@ -9,12 +9,12 @@ from fastapi import FastAPI, HTTPException, Response
 from pydantic import ValidationError
 
 from .config import load_settings, Settings
-from .schema import InputPayload, QueryPayload
-from .task import run_pricing, run_summary, run_all, run_query_triage
-from .writer import write_all, write_triage
+from .schema import InputPayload, QueryPayload, RfqClassificationInputPayload
+from .task import run_pricing, run_summary, run_all, run_query_triage, run_rfq_classification
+from .writer import write_all, write_triage, write_rfq_classification
 from .gsheet_logger import log_job_event, log_progress_event
 
-Mode = Literal["pricing", "summary", "all", "triage"]
+Mode = Literal["pricing", "summary", "all", "triage", "classify"]
 
 
 @dataclass(frozen=True)
@@ -39,7 +39,7 @@ def root():
     return {
         "ok": True,
         "service": "rfq-summary",
-        "endpoints": ["/rfq/run", "/rfq/pricing", "/rfq/summary", "/query/triage", "/health"],
+        "endpoints": ["/rfq/run", "/rfq/pricing", "/rfq/summary", "/query/triage", "/query/classify-rfq", "/health"],
     }
 
 
@@ -80,6 +80,30 @@ def _require_triage_writeback_settings(settings: Settings, obj: QueryPayload):
         raise HTTPException(status_code=500, detail=f"Missing triage writeback configuration: {', '.join(missing)}")
 
 
+def _require_classification_writeback_settings(settings: Settings, obj: RfqClassificationInputPayload):
+    if not settings.enable_triage_writeback:
+        return
+    if not (obj.row_id or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Missing rowID/row_id in payload (required when classification writeback enabled).",
+        )
+    required = {
+        "GLIDE_API_KEY": settings.glide_api_key,
+        "GLIDE_APP_ID": settings.glide_app_id,
+        "GLIDE_PROSPECT_RFQ_TABLE": settings.glide_prospect_rfq_table,
+        "GLIDE_ALL_COMPANIES_TABLE": settings.glide_all_companies_table,
+        "GLIDE_COL_PROSPECT_GEOGRAPHY": settings.glide_col_prospect_geography,
+        "GLIDE_COL_PROSPECT_INDUSTRY": settings.glide_col_prospect_industry,
+        "GLIDE_COL_PROSPECT_CLIENT_NAME": settings.glide_col_prospect_client_name,
+        "GLIDE_COL_PROSPECT_STANDARDS": settings.glide_col_prospect_standards,
+        "GLIDE_COL_PROSPECT_TITLE": settings.glide_col_prospect_title,
+    }
+    missing = [name for name, value in required.items() if not (value or "").strip()]
+    if missing:
+        raise HTTPException(status_code=500, detail=f"Missing classification writeback configuration: {', '.join(missing)}")
+
+
 def _unwrap_payload(payload: dict) -> dict:
     """
     Glide can send nested bodies like:
@@ -111,6 +135,13 @@ def _validate_query(payload: dict) -> QueryPayload:
     try:
         # Validate the updated QueryPayload structure
         return QueryPayload.model_validate(payload)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=e.errors()) from e
+
+
+def _validate_classification(payload: dict) -> RfqClassificationInputPayload:
+    try:
+        return RfqClassificationInputPayload.model_validate(payload)
     except ValidationError as e:
         raise HTTPException(status_code=422, detail=e.errors()) from e
 
@@ -350,6 +381,22 @@ async def _run_job(job: Job) -> None:
                 await asyncio.to_thread(write_triage, settings, qobj, out)
                 print(f"[STEP 3/3] run_id={job.run_id} | Write done in {int((time.perf_counter()-t0)*1000)}ms")
 
+            elif job.mode == "classify":
+                print(f"[STEP 1/3] run_id={job.run_id} | Validating RFQ classification payload...")
+                cobj = _validate_classification(job.payload)
+                print(f"[STEP 1/3] run_id={job.run_id} | Payload valid. row_id={cobj.row_id!r} subject={cobj.subject!r}")
+
+                print(f"[STEP 2/3] run_id={job.run_id} | Running RFQ classification task...")
+                t0 = time.perf_counter()
+                out = await asyncio.to_thread(run_rfq_classification, settings, cobj, job.run_id)
+                print(f"[STEP 2/3] run_id={job.run_id} | Classification done in {int((time.perf_counter()-t0)*1000)}ms")
+                print(f"[STEP 2/3] run_id={job.run_id} | classification={out.model_dump(exclude={'raw_model_output', 'structured'})}")
+
+                print(f"[STEP 3/3] run_id={job.run_id} | Writing classification outputs to Prospect RFQ (triage_writeback={settings.enable_triage_writeback})...")
+                t0 = time.perf_counter()
+                await asyncio.to_thread(write_rfq_classification, settings, cobj, out)
+                print(f"[STEP 3/3] run_id={job.run_id} | Write done in {int((time.perf_counter()-t0)*1000)}ms")
+
             else:
                 raise RuntimeError(f"Unknown job mode: {job.mode}")
 
@@ -517,6 +564,49 @@ async def _enqueue_or_reject_triage(data: dict, qobj: QueryPayload) -> Dict[str,
         pass
 
     return {"ok": True, "run_id": run_id, "status": "queued", "mode": "triage"}
+
+
+async def _enqueue_or_reject_classification(data: dict, cobj: RfqClassificationInputPayload) -> Dict[str, Any]:
+    settings = load_settings()
+    max_q = max(1, int(settings.max_queue_size))
+
+    run_id = uuid.uuid4().hex[:10]
+    row_id = (cobj.row_id or "").strip()
+    enq = time.perf_counter()
+
+    if _queue_size() >= max_q:
+        try:
+            log_job_event(
+                settings,
+                run_id=run_id,
+                mode="classify",
+                row_id=row_id,
+                status="REJECTED_QUEUE_FULL",
+                message=f"Queue full: qsize={_queue_size()} max={max_q}",
+            )
+        except Exception:
+            pass
+
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "ok": False,
+                "run_id": run_id,
+                "status": "rejected",
+                "reason": "QUEUE_FULL",
+            },
+        )
+
+    job = Job(run_id=run_id, mode="classify", payload=data, row_id=row_id, enqueued_at=enq)
+    await _get_queue().put(job)
+
+    print(f"[QUEUED] run_id={run_id} mode=classify row_id={row_id} qsize={_queue_size()}/{max_q}")
+    try:
+        log_progress_event(settings, run_id, "classify", row_id, event="QUEUED", message=f"qsize={_queue_size()}/{max_q}")
+    except Exception:
+        pass
+
+    return {"ok": True, "run_id": run_id, "status": "queued", "mode": "classify"}
 # -----------------------
 # Endpoints
 # -----------------------
@@ -585,5 +675,24 @@ async def query_triage(payload: dict, response: Response):
     _require_triage_writeback_settings(load_settings(), qobj)
 
     ack = await _enqueue_or_reject_triage(data, qobj)
+    response.status_code = 202
+    return ack
+
+
+@app.post("/query/classify-rfq")
+async def query_classify_rfq(payload: dict, response: Response):
+    print("[DEBUG] Received payload for /query/classify-rfq:", payload)
+
+    if "endpoint" in payload and "body" in payload and isinstance(payload["body"], dict):
+        data = payload["body"]
+    else:
+        data = payload
+
+    cobj = _validate_classification(data)
+    if not (cobj.mail_body or "").strip():
+        raise HTTPException(status_code=400, detail="Missing mail_body/body in payload.")
+    _require_classification_writeback_settings(load_settings(), cobj)
+
+    ack = await _enqueue_or_reject_classification(data, cobj)
     response.status_code = 202
     return ack

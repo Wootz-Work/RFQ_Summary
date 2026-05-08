@@ -129,6 +129,61 @@ def glide_update_all_rfq_triage_outputs(
         r.raise_for_status()
 
 
+def glide_query_all_companies(settings: Settings) -> list[dict]:
+    if not settings.glide_api_key or not settings.glide_app_id:
+        raise RuntimeError("Missing GLIDE_API_KEY/GLIDE_APP_ID.")
+    if not settings.glide_all_companies_table:
+        raise RuntimeError("Missing GLIDE_ALL_COMPANIES_TABLE.")
+
+    payload = {
+        "appID": settings.glide_app_id,
+        "queries": [{"tableName": settings.glide_all_companies_table}],
+    }
+
+    url = "https://api.glideapp.io/api/function/queryTables"
+    with httpx.Client(timeout=60) as client:
+        r = client.post(url, headers=_glide_headers(settings), json=payload)
+        r.raise_for_status()
+        data = r.json()
+
+    try:
+        return (data or [])[0].get("rows") or []
+    except Exception:
+        return []
+
+
+def glide_update_prospect_rfq_classification(
+    settings: Settings,
+    row_id: str,
+    column_values: Dict[str, Any],
+) -> None:
+    if not settings.enable_triage_writeback:
+        return
+    if not settings.glide_api_key or not settings.glide_app_id:
+        raise RuntimeError("Missing GLIDE_API_KEY/GLIDE_APP_ID.")
+    if not settings.glide_prospect_rfq_table:
+        raise RuntimeError("Missing GLIDE_PROSPECT_RFQ_TABLE.")
+    if not (row_id or "").strip():
+        raise RuntimeError("Prospect RFQ row_id is empty; cannot write classification.")
+
+    url = "https://api.glideapp.io/api/function/mutateTables"
+    payload = {
+        "appID": settings.glide_app_id,
+        "mutations": [
+            {
+                "kind": "set-columns-in-row",
+                "tableName": settings.glide_prospect_rfq_table,
+                "rowID": row_id.strip(),
+                "columnValues": column_values,
+            }
+        ],
+    }
+
+    with httpx.Client(timeout=60) as client:
+        r = client.post(url, headers=_glide_headers(settings), json=payload)
+        r.raise_for_status()
+
+
 def _glide_query_rowid_by_rfq_id(settings: Settings, rfq_id: str) -> Optional[str]:
     """
     Uses Glide Advanced API (queryTables) with SQL to find the ZAI Responses row where:

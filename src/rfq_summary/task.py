@@ -7,10 +7,35 @@ from typing import Tuple, List, Optional, Any
 import re
 from typing import Dict
 from .config import Settings
-from .schema import InputPayload, OutputPayload, WebFinding, QueryPayload, TriageOutputPayload
+from .schema import InputPayload, OutputPayload, WebFinding, QueryPayload, TriageOutputPayload, RfqClassificationInputPayload, RfqClassificationOutputPayload
 from .attachments import analyze_attachments
 from .search import PerplexitySearchClient
 from .llm import load_prompt_file, generate_text
+from .glide_client import glide_query_all_companies
+
+
+ALLOWED_RFQ_GEOGRAPHIES = {
+    "UK",
+    "US",
+    "Canada",
+    "ANZ",
+    "Europe",
+    "SEA",
+    "Middle East",
+    "Germany",
+    "Australia",
+    "New Zealand",
+    "South Africa",
+    "Africa",
+}
+
+LEGAL_SUFFIX_RE = re.compile(
+    r"\b("
+    r"limited|ltd|llc|inc|gmbh|pvt\.?\s*ltd|private\s+limited|co\.?|company|"
+    r"corporation|corp|plc|llp"
+    r")\b\.?",
+    flags=re.IGNORECASE,
+)
 
 
 def _join_attachment_text(payload: InputPayload, attachment_findings) -> str:
@@ -198,6 +223,70 @@ def _generate_text_with_timing(settings: Settings, user_prompt: str) -> Tuple[st
     )
     llm_ms = int((time.perf_counter() - t_llm0) * 1000)
     return model_text, llm_ms
+
+
+def _parse_json_object(model_text: str) -> Dict[str, Any]:
+    t = (model_text or "").strip()
+    if not t:
+        return {}
+    try:
+        data = json.loads(t)
+        return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        pass
+
+    m = re.search(r"\{.*\}", t, flags=re.DOTALL)
+    if not m:
+        return {}
+    try:
+        data = json.loads(m.group(0))
+        return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def _clean_client_name(name: str) -> str:
+    cleaned = LEGAL_SUFFIX_RE.sub("", name or "")
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = cleaned.strip(" -_,.;:")
+    return cleaned.strip()
+
+
+def _normalize_company_name(name: str) -> str:
+    cleaned = _clean_client_name(name)
+    cleaned = re.sub(r"[^a-z0-9]+", " ", cleaned.lower())
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _match_company_pet_name(settings: Settings, client_name: str) -> tuple[str, Dict[str, Any]]:
+    target = _normalize_company_name(client_name)
+    if not target:
+        return "", {}
+
+    pet_col = settings.glide_col_all_companies_pet_name
+    original_col = settings.glide_col_all_companies_original_name
+    for row in glide_query_all_companies(settings):
+        if not isinstance(row, dict):
+            continue
+        pet_name = str(row.get(pet_col) or "").strip()
+        original_name = str(row.get(original_col) or "").strip()
+        candidates = [pet_name, original_name]
+        if any(_normalize_company_name(candidate) == target for candidate in candidates if candidate):
+            return pet_name or _clean_client_name(original_name), row
+
+    return "", {}
+
+
+def _normalize_geography(value: str) -> str:
+    for geography in ALLOWED_RFQ_GEOGRAPHIES:
+        if (value or "").strip().lower() == geography.lower():
+            return geography
+    return ""
+
+
+def _compose_rfq_title(client_name: str, title: str) -> str:
+    title = re.sub(r"\s+", " ", title or "").strip(" -")
+    return title
 
 
 def _products_for_prompt(payload: InputPayload) -> List[dict]:
@@ -609,4 +698,49 @@ def run_query_triage(settings: Settings, payload: QueryPayload, run_id: Optional
         },
         docai=docai,
         structured={"attachments_count": len(attachment_findings or [])},
+    )
+
+
+def run_rfq_classification(
+    settings: Settings,
+    payload: RfqClassificationInputPayload,
+    run_id: Optional[str] = None,
+) -> RfqClassificationOutputPayload:
+    run_id = run_id or uuid.uuid4().hex[:10]
+    prompt_template = load_prompt_file(settings.prompt_query_rfq_classification_file)
+    mail_dict = {
+        "row_id": payload.row_id,
+        "subject": payload.subject,
+        "from_": payload.from_,
+        "from_name": payload.from_name,
+        "mail_body": payload.mail_body,
+    }
+    user_prompt = prompt_template.replace("{{mail_json}}", json.dumps(mail_dict, ensure_ascii=False))
+    raw_model_output = generate_text(
+        settings,
+        system_prompt="You must return valid JSON only.",
+        user_prompt=user_prompt,
+    )
+    parsed = _parse_json_object(raw_model_output)
+
+    raw_client_name = _clean_client_name(str(parsed.get("client_name") or ""))
+    pet_name, company_row = _match_company_pet_name(settings, raw_client_name)
+    client_name = pet_name or raw_client_name
+    title = _compose_rfq_title(client_name, str(parsed.get("title") or ""))
+
+    return RfqClassificationOutputPayload(
+        run_id=run_id,
+        row_id=payload.row_id,
+        geography=_normalize_geography(str(parsed.get("geography") or "")),
+        industry=str(parsed.get("industry") or "").strip(),
+        client_name=client_name,
+        standards=str(parsed.get("standards") or "").strip(),
+        title=title,
+        sequence="",
+        raw_client_name=raw_client_name,
+        raw_model_output=raw_model_output or "",
+        structured={
+            "company_matched": bool(company_row),
+            "matched_company_pet_name": client_name if company_row else "",
+        },
     )
