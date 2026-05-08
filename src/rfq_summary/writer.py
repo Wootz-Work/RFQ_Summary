@@ -247,6 +247,7 @@ def write_regenerated_triage(
             "GLIDE_COL_ZAI_REGENERATE_RESPONSE_GENERATED_TIME": settings.glide_col_zai_regenerate_response_generated_time,
             "GLIDE_COL_ZAI_REGENERATE_REQUESTED_TIME": settings.glide_col_zai_regenerate_requested_time,
             "GLIDE_COL_ZAI_REGENERATE_INSTRUCTION": settings.glide_col_zai_regenerate_instruction,
+            "GLIDE_COL_ZAI_REGENERATE_REQUESTED_BY": settings.glide_col_zai_regenerate_requested_by,
         }
         missing = [name for name, value in required.items() if not (value or "").strip()]
         if missing:
@@ -260,6 +261,7 @@ def write_regenerated_triage(
                 settings.glide_col_zai_regenerate_response_generated_time: generated_at,
                 settings.glide_col_zai_regenerate_requested_time: requested_at,
                 settings.glide_col_zai_regenerate_instruction: out.instruction or "",
+                settings.glide_col_zai_regenerate_requested_by: inp.requested_by or "",
             },
         )
 
@@ -268,6 +270,7 @@ def write_regenerated_triage(
         "products": json.dumps(inp.products or [], ensure_ascii=False),
         "google_attachment_ids": json.dumps(inp.google_attachment_ids or [], ensure_ascii=False),
         "instruction": inp.instruction or "",
+        "requested_by": inp.requested_by or "",
         "triage_text": out.triage_text or "",
         "raw_model_output": out.raw_model_output or "",
         "timings": json.dumps(out.timings or {}, ensure_ascii=False),

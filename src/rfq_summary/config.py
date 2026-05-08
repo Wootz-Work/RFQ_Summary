@@ -149,6 +149,7 @@ class Settings(BaseSettings):
     )
     glide_col_zai_regenerate_requested_time: str = Field(default="", alias="GLIDE_COL_ZAI_REGENERATE_REQUESTED_TIME")
     glide_col_zai_regenerate_instruction: str = Field(default="", alias="GLIDE_COL_ZAI_REGENERATE_INSTRUCTION")
+    glide_col_zai_regenerate_requested_by: str = Field(default="", alias="GLIDE_COL_ZAI_REGENERATE_REQUESTED_BY")
 
     # ========================
     # Google Sheet logging (optional)

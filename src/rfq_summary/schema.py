@@ -342,6 +342,7 @@ class RfqRegenerateTriageInputPayload(BaseModel):
     products: List[Dict[str, Any]] = Field(default_factory=list)
     google_attachment_ids: List[str] = Field(default_factory=list)
     requested_time: str = ""
+    requested_by: str = ""
 
     @model_validator(mode="before")
     @classmethod
