@@ -252,29 +252,44 @@ def _clean_client_name(name: str) -> str:
     return cleaned.strip()
 
 
-def _normalize_company_name(name: str) -> str:
-    cleaned = _clean_client_name(name)
-    cleaned = re.sub(r"[^a-z0-9]+", " ", cleaned.lower())
-    return re.sub(r"\s+", " ", cleaned).strip()
-
-
-def _match_company_pet_name(settings: Settings, client_name: str) -> tuple[str, Dict[str, Any]]:
-    target = _normalize_company_name(client_name)
-    if not target:
-        return "", {}
-
+def _company_options_for_classification(settings: Settings) -> List[Dict[str, str]]:
     pet_col = settings.glide_col_all_companies_pet_name
     original_col = settings.glide_col_all_companies_original_name
+    options: List[Dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
     for row in glide_query_all_companies(settings):
         if not isinstance(row, dict):
             continue
-        pet_name = str(row.get(pet_col) or "").strip()
-        original_name = str(row.get(original_col) or "").strip()
-        candidates = [pet_name, original_name]
-        if any(_normalize_company_name(candidate) == target for candidate in candidates if candidate):
-            return pet_name or _clean_client_name(original_name), row
+        pet_name = _clean_client_name(str(row.get(pet_col) or ""))
+        original_name = _clean_client_name(str(row.get(original_col) or ""))
+        if not pet_name and not original_name:
+            continue
+        key = (pet_name.lower(), original_name.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        options.append(
+            {
+                "pet_name": pet_name,
+                "original_name": original_name,
+            }
+        )
 
-    return "", {}
+    return options
+
+
+def _validated_pet_name_from_model(value: str, company_options: List[Dict[str, str]]) -> str:
+    value_clean = _clean_client_name(value)
+    if not value_clean:
+        return ""
+
+    for option in company_options:
+        pet_name = str(option.get("pet_name") or "").strip()
+        if pet_name and pet_name.lower() == value_clean.lower():
+            return pet_name
+
+    return ""
 
 
 def _normalize_geography(value: str) -> str:
@@ -715,7 +730,12 @@ def run_rfq_classification(
         "from_name": payload.from_name,
         "mail_body": payload.mail_body,
     }
-    user_prompt = prompt_template.replace("{{mail_json}}", json.dumps(mail_dict, ensure_ascii=False))
+    company_options = _company_options_for_classification(settings)
+    user_prompt = (
+        prompt_template
+        .replace("{{mail_json}}", json.dumps(mail_dict, ensure_ascii=False))
+        .replace("{{companies_json}}", json.dumps(company_options, ensure_ascii=False))
+    )
     raw_model_output = generate_text(
         settings,
         system_prompt="You must return valid JSON only.",
@@ -724,8 +744,7 @@ def run_rfq_classification(
     parsed = _parse_json_object(raw_model_output)
 
     raw_client_name = _clean_client_name(str(parsed.get("client_name") or ""))
-    pet_name, company_row = _match_company_pet_name(settings, raw_client_name)
-    client_name = pet_name or raw_client_name
+    client_name = _validated_pet_name_from_model(raw_client_name, company_options)
     title = _compose_rfq_title(client_name, str(parsed.get("title") or ""))
 
     return RfqClassificationOutputPayload(
@@ -740,8 +759,9 @@ def run_rfq_classification(
         raw_client_name=raw_client_name,
         raw_model_output=raw_model_output or "",
         structured={
-            "company_matched": bool(company_row),
-            "matched_company_pet_name": client_name if company_row else "",
+            "company_matched": bool(client_name),
+            "matched_company_pet_name": client_name,
+            "companies_count": len(company_options),
         },
     )
 
