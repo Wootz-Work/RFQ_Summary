@@ -236,7 +236,10 @@ class QueryPayload(BaseModel):
     from_name: str = Field(default="")
     body: str = Field(default="")
     received_at: str = Field(default="")
-    attachment_urls: List[str] = Field(default_factory=list)
+    attachment_urls: List[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("attachment_urls", "attached_urls")
+    )
     attached_media: List[str] = Field(default_factory=list)
 
     @model_validator(mode="before")
