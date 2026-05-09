@@ -112,6 +112,18 @@ class Settings(BaseSettings):
     glide_col_all_companies_pet_name: str = Field(default="Name", alias="GLIDE_COL_ALL_COMPANIES_PET_NAME")
     glide_col_all_companies_original_name: str = Field(default="MdnWu", alias="GLIDE_COL_ALL_COMPANIES_ORIGINAL_NAME")
 
+    # Classification lookup tables (read-only).
+    glide_geographies_table: str = Field(
+        default="native-table-UECxuJF3r1DO7iTxB696",
+        alias="GLIDE_GEOGRAPHIES_TABLE",
+    )
+    glide_col_geographies_name: str = Field(default="Name", alias="GLIDE_COL_GEOGRAPHIES_NAME")
+    glide_industries_table: str = Field(default="Industries", alias="GLIDE_INDUSTRIES_TABLE")
+    glide_col_industries_industry: str = Field(
+        default="a9077b06f39d66134718424c9687e0a9",
+        alias="GLIDE_COL_INDUSTRIES_INDUSTRY",
+    )
+
     # ALL RFQ table writeback for incoming query triage.
     glide_all_rfq_table: str = Field(
         default="native-table-24696dcc-caaf-4bf8-a015-1e9ef394aa1b",

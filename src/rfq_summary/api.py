@@ -93,6 +93,10 @@ def _require_classification_writeback_settings(settings: Settings, obj: RfqClass
         "GLIDE_APP_ID": settings.glide_app_id,
         "GLIDE_PROSPECT_RFQ_TABLE": settings.glide_prospect_rfq_table,
         "GLIDE_ALL_COMPANIES_TABLE": settings.glide_all_companies_table,
+        "GLIDE_GEOGRAPHIES_TABLE": settings.glide_geographies_table,
+        "GLIDE_COL_GEOGRAPHIES_NAME": settings.glide_col_geographies_name,
+        "GLIDE_INDUSTRIES_TABLE": settings.glide_industries_table,
+        "GLIDE_COL_INDUSTRIES_INDUSTRY": settings.glide_col_industries_industry,
         "GLIDE_COL_PROSPECT_GEOGRAPHY": settings.glide_col_prospect_geography,
         "GLIDE_COL_PROSPECT_INDUSTRY": settings.glide_col_prospect_industry,
         "GLIDE_COL_PROSPECT_CLIENT_NAME": settings.glide_col_prospect_client_name,
@@ -797,8 +801,6 @@ async def query_regenerate_triage(payload: dict, response: Response):
     robj = _validate_regenerate_triage(data)
     if not (robj.rfq_id or "").strip():
         raise HTTPException(status_code=400, detail="Missing rfq_id in payload.")
-    if not (robj.instruction or "").strip():
-        raise HTTPException(status_code=400, detail="Missing instruction in payload.")
     _require_regenerate_writeback_settings(load_settings(), robj)
 
     ack = await _enqueue_or_reject_regenerate_triage(data, robj)

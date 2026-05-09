@@ -152,6 +152,45 @@ def glide_query_all_companies(settings: Settings) -> list[dict]:
         return []
 
 
+def _glide_query_table(settings: Settings, table_name: str, missing_name: str) -> list[dict]:
+    if not settings.glide_api_key or not settings.glide_app_id:
+        raise RuntimeError("Missing GLIDE_API_KEY/GLIDE_APP_ID.")
+    if not (table_name or "").strip():
+        raise RuntimeError(f"Missing {missing_name}.")
+
+    payload = {
+        "appID": settings.glide_app_id,
+        "queries": [{"tableName": table_name.strip()}],
+    }
+
+    url = "https://api.glideapp.io/api/function/queryTables"
+    with httpx.Client(timeout=60) as client:
+        r = client.post(url, headers=_glide_headers(settings), json=payload)
+        r.raise_for_status()
+        data = r.json()
+
+    try:
+        return (data or [])[0].get("rows") or []
+    except Exception:
+        return []
+
+
+def glide_query_geographies(settings: Settings) -> list[dict]:
+    return _glide_query_table(
+        settings,
+        settings.glide_geographies_table,
+        "GLIDE_GEOGRAPHIES_TABLE",
+    )
+
+
+def glide_query_industries(settings: Settings) -> list[dict]:
+    return _glide_query_table(
+        settings,
+        settings.glide_industries_table,
+        "GLIDE_INDUSTRIES_TABLE",
+    )
+
+
 def glide_update_prospect_rfq_classification(
     settings: Settings,
     row_id: str,

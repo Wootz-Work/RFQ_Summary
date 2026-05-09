@@ -11,23 +11,8 @@ from .schema import InputPayload, OutputPayload, WebFinding, QueryPayload, Triag
 from .attachments import analyze_attachments
 from .search import PerplexitySearchClient
 from .llm import load_prompt_file, generate_text
-from .glide_client import glide_query_all_companies
+from .glide_client import glide_query_all_companies, glide_query_geographies, glide_query_industries
 
-
-ALLOWED_RFQ_GEOGRAPHIES = {
-    "UK",
-    "US",
-    "Canada",
-    "ANZ",
-    "Europe",
-    "SEA",
-    "Middle East",
-    "Germany",
-    "Australia",
-    "New Zealand",
-    "South Africa",
-    "Africa",
-}
 
 LEGAL_SUFFIX_RE = re.compile(
     r"\b("
@@ -292,10 +277,47 @@ def _validated_pet_name_from_model(value: str, company_options: List[Dict[str, s
     return ""
 
 
-def _normalize_geography(value: str) -> str:
-    for geography in ALLOWED_RFQ_GEOGRAPHIES:
-        if (value or "").strip().lower() == geography.lower():
-            return geography
+def _clean_lookup_value(value: str) -> str:
+    return re.sub(r"\s+", " ", value or "").strip()
+
+
+def _dedupe_lookup_values(values: List[str]) -> List[str]:
+    options: List[str] = []
+    seen: set[str] = set()
+    for value in values:
+        cleaned = _clean_lookup_value(value)
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        options.append(cleaned)
+    return options
+
+
+def _geography_options_for_classification(settings: Settings) -> List[str]:
+    col = settings.glide_col_geographies_name
+    return _dedupe_lookup_values(
+        [str(row.get(col) or "") for row in glide_query_geographies(settings) if isinstance(row, dict)]
+    )
+
+
+def _industry_options_for_classification(settings: Settings) -> List[str]:
+    col = settings.glide_col_industries_industry
+    return _dedupe_lookup_values(
+        [str(row.get(col) or "") for row in glide_query_industries(settings) if isinstance(row, dict)]
+    )
+
+
+def _validated_lookup_value_from_model(value: str, options: List[str]) -> str:
+    value_clean = _clean_lookup_value(value)
+    if not value_clean:
+        return ""
+
+    for option in options:
+        if value_clean.lower() == option.lower():
+            return option
     return ""
 
 
@@ -731,10 +753,14 @@ def run_rfq_classification(
         "mail_body": payload.mail_body,
     }
     company_options = _company_options_for_classification(settings)
+    geography_options = _geography_options_for_classification(settings)
+    industry_options = _industry_options_for_classification(settings)
     user_prompt = (
         prompt_template
         .replace("{{mail_json}}", json.dumps(mail_dict, ensure_ascii=False))
         .replace("{{companies_json}}", json.dumps(company_options, ensure_ascii=False))
+        .replace("{{geographies_json}}", json.dumps(geography_options, ensure_ascii=False))
+        .replace("{{industries_json}}", json.dumps(industry_options, ensure_ascii=False))
     )
     raw_model_output = generate_text(
         settings,
@@ -750,8 +776,8 @@ def run_rfq_classification(
     return RfqClassificationOutputPayload(
         run_id=run_id,
         row_id=payload.row_id,
-        geography=_normalize_geography(str(parsed.get("geography") or "")),
-        industry=str(parsed.get("industry") or "").strip(),
+        geography=_validated_lookup_value_from_model(str(parsed.get("geography") or ""), geography_options),
+        industry=_validated_lookup_value_from_model(str(parsed.get("industry") or ""), industry_options),
         client_name=client_name,
         standards=str(parsed.get("standards") or "").strip(),
         title=title,
@@ -762,6 +788,8 @@ def run_rfq_classification(
             "company_matched": bool(client_name),
             "matched_company_pet_name": client_name,
             "companies_count": len(company_options),
+            "geographies_count": len(geography_options),
+            "industries_count": len(industry_options),
         },
     )
 
@@ -796,14 +824,16 @@ def run_regenerate_triage(
     )
 
     prompt_template = load_prompt_file(settings.prompt_query_triage_file)
-    prompt_template += (
-        "\n\n---\n"
-        "## STRICT REGENERATION INSTRUCTION\n"
-        f"{(payload.instruction or '').strip()}\n\n"
-        "You must follow the instruction above exactly. Only refuse or ignore it if it asks you to fabricate facts, "
-        "contradict the RFQ data, or violate the required output format. If it conflicts with normal style preferences, "
-        "the strict regeneration instruction wins.\n"
-    )
+    instruction = (payload.instruction or "").strip()
+    if instruction:
+        prompt_template += (
+            "\n\n---\n"
+            "## STRICT REGENERATION INSTRUCTION\n"
+            f"{instruction}\n\n"
+            "You must follow the instruction above exactly. Only refuse or ignore it if it asks you to fabricate facts, "
+            "contradict the RFQ data, or violate the required output format. If it conflicts with normal style preferences, "
+            "the strict regeneration instruction wins.\n"
+        )
     user_prompt = _build_query_triage_prompt(prompt_template, query_payload, extracted_text)
     t_llm0 = time.perf_counter()
     model_text = generate_text(

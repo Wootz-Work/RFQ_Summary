@@ -4,18 +4,17 @@ You classify one incoming RFQ email for a manufacturing sourcing workflow.
 ## Input
 - **Mail / RFQ Data**: `{{mail_json}}`
 - **Known Companies**: `{{companies_json}}`
+- **Allowed Geographies**: `{{geographies_json}}`
+- **Allowed Industries**: `{{industries_json}}`
 
 ## Task
 Infer these fields from the email body and any available subject/sender metadata.
 
-- `geography`: Customer geography, not Wootz.Work geography. Must be one of:
-  `UK`, `US`, `Canada`, `ANZ`, `Europe`, `SEA`, `Middle East`, `Germany`,
-  `Australia`, `New Zealand`, `South Africa`, `Africa`.
-- `industry`: RFQ-specific industry/category. Examples include `Fittings & Hardware`,
-  `Manufacturing`, `Food Processing`, `Automotive`, `Medical Devices`,
-  `Furniture Manufacturing`, `Oil & Gas`, `Welding and Fabrication`. These are not
-  fixed options. If the RFQ clearly belongs to another industry/category, write the
-  most specific concise category you can infer.
+- `geography`: Customer geography, not Wootz.Work geography. Choose only one exact
+  value from **Allowed Geographies**. Leave empty if no allowed geography is a
+  confident match.
+- `industry`: RFQ-specific industry/category. Choose only one exact value from
+  **Allowed Industries**. Leave empty if no allowed industry is a confident match.
 - `client_name`: Pet name from **Known Companies**. Choose only a `pet_name` from
   the provided list.
 - `standards`: Standards explicitly mentioned, e.g. `DIN 933`, `ISO 4017`,
@@ -36,6 +35,12 @@ Infer these fields from the email body and any available subject/sender metadata
 - Output only the matching `pet_name`, exactly as provided in **Known Companies**.
 - If no known company is a confident match, leave `client_name` empty. Do not
   invent or return a cleaned raw company name.
+
+## Lookup Rules
+- Output `geography` exactly as provided in **Allowed Geographies**.
+- Output `industry` exactly as provided in **Allowed Industries**.
+- Do not invent new geography or industry labels.
+- If the best match is uncertain, leave that field empty.
 
 ## Output
 Return a single JSON object only. No Markdown, no explanation.
