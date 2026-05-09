@@ -199,6 +199,7 @@ def analyze_attachments(settings: Settings, urls: List[str]) -> List[AttachmentF
         # ----------------------------------------------------------------
         if _is_google_drive_id(u):
             logger.debug("[ATTACHMENTS] Detected as Google Drive file ID")
+            print(f"[ATTACHMENTS] Detected Google Drive file ID: '{u}'")
             try:
                 data, ctype = fetch_drive_file(
                     u,
@@ -206,10 +207,13 @@ def analyze_attachments(settings: Settings, urls: List[str]) -> List[AttachmentF
                     settings.google_drive_sa_json_b64,
                 )
                 logger.debug("[ATTACHMENTS] Drive fetch OK — bytes=%d ctype=%s", len(data), ctype)
+                print(f"[ATTACHMENTS] Drive file '{u}' fetched successfully (bytes={len(data)} content-type={ctype})")
                 finding = _dispatch_finding(settings, u, data, ctype)
                 logger.debug("[ATTACHMENTS] Drive parse OK — kind=%s", finding.kind)
+                print(f"[ATTACHMENTS] Drive file '{u}' analyzed as kind={finding.kind}")
             except Exception as e:
                 logger.error("[ATTACHMENTS] Drive fetch/parse failed for %s: %s: %s", u, type(e).__name__, e)
+                print(f"[ATTACHMENTS] Failed to fetch/parse Drive file '{u}': {type(e).__name__}: {e}")
                 finding = AttachmentFinding(
                     url=u,
                     kind="unknown",
@@ -249,6 +253,7 @@ def analyze_attachments(settings: Settings, urls: List[str]) -> List[AttachmentF
 
         except Exception as e:
             logger.error("[ATTACHMENTS] HTTP fetch/parse failed for %s: %s: %s", u, type(e).__name__, e)
+            print(f"[ATTACHMENTS] Failed to analyze HTTP attachment '{u}': {type(e).__name__}: {e}")
             out.append(
                 AttachmentFinding(
                     url=u,
