@@ -34,6 +34,10 @@ class Settings(BaseSettings):
         default="prompts/query_rfq_classification.md",
         alias="PROMPT_QUERY_RFQ_CLASSIFICATION_FILE",
     )
+    prompt_query_regenerate_file: str = Field(
+        default="prompts/query_regenerate_answer.md",
+        alias="PROMPT_QUERY_REGENERATE_FILE",
+    )
     # ========================
     # Web Search (Perplexity)
     # ========================
@@ -162,6 +166,8 @@ class Settings(BaseSettings):
     glide_col_zai_regenerate_requested_time: str = Field(default="", alias="GLIDE_COL_ZAI_REGENERATE_REQUESTED_TIME")
     glide_col_zai_regenerate_instruction: str = Field(default="", alias="GLIDE_COL_ZAI_REGENERATE_INSTRUCTION")
     glide_col_zai_regenerate_requested_by: str = Field(default="", alias="GLIDE_COL_ZAI_REGENERATE_REQUESTED_BY")
+    glide_col_zai_regenerate_query: str = Field(default="plNaX", alias="GLIDE_COL_ZAI_REGENERATE_QUERY")
+    glide_col_zai_regenerate_type: str = Field(default="s1843", alias="GLIDE_COL_ZAI_REGENERATE_TYPE")
 
     # ========================
     # Google Sheet logging (optional)

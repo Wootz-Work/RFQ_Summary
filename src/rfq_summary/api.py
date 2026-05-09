@@ -9,12 +9,12 @@ from fastapi import FastAPI, HTTPException, Response
 from pydantic import ValidationError
 
 from .config import load_settings, Settings
-from .schema import InputPayload, QueryPayload, RfqClassificationInputPayload, RfqRegenerateTriageInputPayload
-from .task import run_pricing, run_summary, run_all, run_query_triage, run_rfq_classification, run_regenerate_triage
-from .writer import write_all, write_triage, write_rfq_classification, write_regenerated_triage
+from .schema import InputPayload, QueryPayload, RfqClassificationInputPayload, RfqRegenerateTriageInputPayload, RfqQueryInputPayload
+from .task import run_pricing, run_summary, run_all, run_query_triage, run_rfq_classification, run_regenerate_triage, run_regenerate_query
+from .writer import write_all, write_triage, write_rfq_classification, write_regenerated_triage, write_regenerated_query
 from .gsheet_logger import log_job_event, log_progress_event
 
-Mode = Literal["pricing", "summary", "all", "triage", "classify", "regenerate_triage"]
+Mode = Literal["pricing", "summary", "all", "triage", "classify", "regenerate_triage", "query_regenerate"]
 
 
 @dataclass(frozen=True)
@@ -39,7 +39,7 @@ def root():
     return {
         "ok": True,
         "service": "rfq-summary",
-        "endpoints": ["/rfq/run", "/rfq/pricing", "/rfq/summary", "/query/triage", "/query/classify-rfq", "/query/regenerate-triage", "/health"],
+        "endpoints": ["/rfq/run", "/rfq/pricing", "/rfq/summary", "/query/triage", "/query/classify-rfq", "/query/regenerate-triage", "/query/regenerate-query", "/health"],
     }
 
 
@@ -123,10 +123,33 @@ def _require_regenerate_writeback_settings(settings: Settings, obj: RfqRegenerat
         "GLIDE_COL_ZAI_REGENERATE_REQUESTED_TIME": settings.glide_col_zai_regenerate_requested_time,
         "GLIDE_COL_ZAI_REGENERATE_INSTRUCTION": settings.glide_col_zai_regenerate_instruction,
         "GLIDE_COL_ZAI_REGENERATE_REQUESTED_BY": settings.glide_col_zai_regenerate_requested_by,
+        "GLIDE_COL_ZAI_REGENERATE_TYPE": settings.glide_col_zai_regenerate_type,
     }
     missing = [name for name, value in required.items() if not (value or "").strip()]
     if missing:
         raise HTTPException(status_code=500, detail=f"Missing regenerate writeback configuration: {', '.join(missing)}")
+
+
+def _require_regenerate_query_writeback_settings(settings: Settings, obj: RfqQueryInputPayload):
+    if not settings.enable_triage_writeback:
+        return
+    if not (obj.rfq_id or "").strip():
+        raise HTTPException(status_code=400, detail="Missing rfq_id in payload.")
+    required = {
+        "GLIDE_API_KEY": settings.glide_api_key,
+        "GLIDE_APP_ID": settings.glide_app_id,
+        "GLIDE_ZAI_REGENERATE_TABLE": settings.glide_zai_regenerate_table,
+        "GLIDE_COL_ZAI_REGENERATE_RFQ_ID": settings.glide_col_zai_regenerate_rfq_id,
+        "GLIDE_COL_ZAI_REGENERATE_RESPONSE": settings.glide_col_zai_regenerate_response,
+        "GLIDE_COL_ZAI_REGENERATE_RESPONSE_GENERATED_TIME": settings.glide_col_zai_regenerate_response_generated_time,
+        "GLIDE_COL_ZAI_REGENERATE_REQUESTED_TIME": settings.glide_col_zai_regenerate_requested_time,
+        "GLIDE_COL_ZAI_REGENERATE_QUERY": settings.glide_col_zai_regenerate_query,
+        "GLIDE_COL_ZAI_REGENERATE_REQUESTED_BY": settings.glide_col_zai_regenerate_requested_by,
+        "GLIDE_COL_ZAI_REGENERATE_TYPE": settings.glide_col_zai_regenerate_type,
+    }
+    missing = [name for name, value in required.items() if not (value or "").strip()]
+    if missing:
+        raise HTTPException(status_code=500, detail=f"Missing regenerate query writeback configuration: {', '.join(missing)}")
 
 
 def _unwrap_payload(payload: dict) -> dict:
@@ -174,6 +197,13 @@ def _validate_classification(payload: dict) -> RfqClassificationInputPayload:
 def _validate_regenerate_triage(payload: dict) -> RfqRegenerateTriageInputPayload:
     try:
         return RfqRegenerateTriageInputPayload.model_validate(payload)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=e.errors()) from e
+
+
+def _validate_regenerate_query(payload: dict) -> RfqQueryInputPayload:
+    try:
+        return RfqQueryInputPayload.model_validate(payload)
     except ValidationError as e:
         raise HTTPException(status_code=422, detail=e.errors()) from e
 
@@ -445,6 +475,22 @@ async def _run_job(job: Job) -> None:
                 await asyncio.to_thread(write_regenerated_triage, settings, robj, out)
                 print(f"[STEP 3/3] run_id={job.run_id} | Write done in {int((time.perf_counter()-t0)*1000)}ms")
 
+            elif job.mode == "query_regenerate":
+                print(f"[STEP 1/3] run_id={job.run_id} | Validating regenerate query payload...")
+                qrobj = _validate_regenerate_query(job.payload)
+                print(f"[STEP 1/3] run_id={job.run_id} | Payload valid. rfq_id={qrobj.rfq_id!r}")
+
+                print(f"[STEP 2/3] run_id={job.run_id} | Running regenerate query task...")
+                t0 = time.perf_counter()
+                out = await asyncio.to_thread(run_regenerate_query, settings, qrobj, job.run_id)
+                print(f"[STEP 2/3] run_id={job.run_id} | Regenerate query done in {int((time.perf_counter()-t0)*1000)}ms")
+                print(f"[STEP 2/3] run_id={job.run_id} | response preview: {(out.response_text or '')[:200]!r}")
+
+                print(f"[STEP 3/3] run_id={job.run_id} | Adding ZAI Regenerate query row (triage_writeback={settings.enable_triage_writeback})...")
+                t0 = time.perf_counter()
+                await asyncio.to_thread(write_regenerated_query, settings, qrobj, out)
+                print(f"[STEP 3/3] run_id={job.run_id} | Write done in {int((time.perf_counter()-t0)*1000)}ms")
+
             else:
                 raise RuntimeError(f"Unknown job mode: {job.mode}")
 
@@ -698,6 +744,49 @@ async def _enqueue_or_reject_regenerate_triage(data: dict, robj: RfqRegenerateTr
         pass
 
     return {"ok": True, "run_id": run_id, "status": "queued", "mode": "regenerate_triage"}
+
+
+async def _enqueue_or_reject_regenerate_query(data: dict, qrobj: RfqQueryInputPayload) -> Dict[str, Any]:
+    settings = load_settings()
+    max_q = max(1, int(settings.max_queue_size))
+
+    run_id = uuid.uuid4().hex[:10]
+    row_id = (qrobj.rfq_id or "").strip()
+    enq = time.perf_counter()
+
+    if _queue_size() >= max_q:
+        try:
+            log_job_event(
+                settings,
+                run_id=run_id,
+                mode="query_regenerate",
+                row_id=row_id,
+                status="REJECTED_QUEUE_FULL",
+                message=f"Queue full: qsize={_queue_size()} max={max_q}",
+            )
+        except Exception:
+            pass
+
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "ok": False,
+                "run_id": run_id,
+                "status": "rejected",
+                "reason": "QUEUE_FULL",
+            },
+        )
+
+    job = Job(run_id=run_id, mode="query_regenerate", payload=data, row_id=row_id, enqueued_at=enq)
+    await _get_queue().put(job)
+
+    print(f"[QUEUED] run_id={run_id} mode=query_regenerate rfq_id={row_id} qsize={_queue_size()}/{max_q}")
+    try:
+        log_progress_event(settings, run_id, "query_regenerate", row_id, event="QUEUED", message=f"qsize={_queue_size()}/{max_q}")
+    except Exception:
+        pass
+
+    return {"ok": True, "run_id": run_id, "status": "queued", "mode": "query_regenerate"}
 # -----------------------
 # Endpoints
 # -----------------------
@@ -804,5 +893,26 @@ async def query_regenerate_triage(payload: dict, response: Response):
     _require_regenerate_writeback_settings(load_settings(), robj)
 
     ack = await _enqueue_or_reject_regenerate_triage(data, robj)
+    response.status_code = 202
+    return ack
+
+
+@app.post("/query/regenerate-query")
+async def query_regenerate_query(payload: dict, response: Response):
+    print("[DEBUG] Received payload for /query/regenerate-query:", payload)
+
+    if "endpoint" in payload and "body" in payload and isinstance(payload["body"], dict):
+        data = payload["body"]
+    else:
+        data = payload
+
+    qrobj = _validate_regenerate_query(data)
+    if not (qrobj.rfq_id or "").strip():
+        raise HTTPException(status_code=400, detail="Missing rfq_id in payload.")
+    if not (qrobj.query or "").strip():
+        raise HTTPException(status_code=400, detail="Missing query in payload.")
+    _require_regenerate_query_writeback_settings(load_settings(), qrobj)
+
+    ack = await _enqueue_or_reject_regenerate_query(data, qrobj)
     response.status_code = 202
     return ack

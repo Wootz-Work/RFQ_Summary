@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Dict
 
 from .config import Settings
-from .schema import InputPayload, OutputPayload, QueryPayload, TriageOutputPayload, RfqClassificationInputPayload, RfqClassificationOutputPayload, RfqRegenerateTriageInputPayload, RfqRegenerateTriageOutputPayload
+from .schema import InputPayload, OutputPayload, QueryPayload, TriageOutputPayload, RfqClassificationInputPayload, RfqClassificationOutputPayload, RfqRegenerateTriageInputPayload, RfqRegenerateTriageOutputPayload, RfqQueryInputPayload, RfqQueryOutputPayload
 from .glide_client import glide_upsert_zai_response_by_rfq_id, glide_update_all_rfq_triage_outputs, glide_update_prospect_rfq_classification, glide_add_zai_regenerate_row
 from .gsheet_logger import append_rows, build_chunked_log_rows
 
@@ -248,6 +248,7 @@ def write_regenerated_triage(
             "GLIDE_COL_ZAI_REGENERATE_REQUESTED_TIME": settings.glide_col_zai_regenerate_requested_time,
             "GLIDE_COL_ZAI_REGENERATE_INSTRUCTION": settings.glide_col_zai_regenerate_instruction,
             "GLIDE_COL_ZAI_REGENERATE_REQUESTED_BY": settings.glide_col_zai_regenerate_requested_by,
+            "GLIDE_COL_ZAI_REGENERATE_TYPE": settings.glide_col_zai_regenerate_type,
         }
         missing = [name for name, value in required.items() if not (value or "").strip()]
         if missing:
@@ -262,6 +263,7 @@ def write_regenerated_triage(
                 settings.glide_col_zai_regenerate_requested_time: requested_at,
                 settings.glide_col_zai_regenerate_instruction: out.instruction or "",
                 settings.glide_col_zai_regenerate_requested_by: inp.requested_by or "",
+                settings.glide_col_zai_regenerate_type: "instruction",
             },
         )
 
@@ -272,6 +274,64 @@ def write_regenerated_triage(
         "instruction": inp.instruction or "",
         "requested_by": inp.requested_by or "",
         "triage_text": out.triage_text or "",
+        "raw_model_output": out.raw_model_output or "",
+        "timings": json.dumps(out.timings or {}, ensure_ascii=False),
+        "structured": json.dumps(out.structured or {}, ensure_ascii=False),
+        "writeback_enabled": str(bool(settings.enable_triage_writeback)),
+    }
+
+    rows = build_chunked_log_rows(
+        settings=settings,
+        run_id=out.run_id,
+        mode=out.mode,
+        row_id=out.rfq_id,
+        fields=fields,
+    )
+    append_rows(settings, rows)
+
+
+def write_regenerated_query(
+    settings: Settings,
+    inp: RfqQueryInputPayload,
+    out: RfqQueryOutputPayload,
+) -> None:
+    generated_at = datetime.now(timezone.utc).isoformat()
+    requested_at = inp.requested_time or generated_at
+
+    if settings.enable_triage_writeback:
+        required = {
+            "GLIDE_COL_ZAI_REGENERATE_RFQ_ID": settings.glide_col_zai_regenerate_rfq_id,
+            "GLIDE_COL_ZAI_REGENERATE_RESPONSE": settings.glide_col_zai_regenerate_response,
+            "GLIDE_COL_ZAI_REGENERATE_RESPONSE_GENERATED_TIME": settings.glide_col_zai_regenerate_response_generated_time,
+            "GLIDE_COL_ZAI_REGENERATE_REQUESTED_TIME": settings.glide_col_zai_regenerate_requested_time,
+            "GLIDE_COL_ZAI_REGENERATE_QUERY": settings.glide_col_zai_regenerate_query,
+            "GLIDE_COL_ZAI_REGENERATE_TYPE": settings.glide_col_zai_regenerate_type,
+            "GLIDE_COL_ZAI_REGENERATE_REQUESTED_BY": settings.glide_col_zai_regenerate_requested_by,
+        }
+        missing = [name for name, value in required.items() if not (value or "").strip()]
+        if missing:
+            raise RuntimeError(f"Missing ZAI Regenerate query writeback configuration: {', '.join(missing)}")
+
+        glide_add_zai_regenerate_row(
+            settings,
+            {
+                settings.glide_col_zai_regenerate_rfq_id: out.rfq_id,
+                settings.glide_col_zai_regenerate_response: out.response_text or "",
+                settings.glide_col_zai_regenerate_response_generated_time: generated_at,
+                settings.glide_col_zai_regenerate_requested_time: requested_at,
+                settings.glide_col_zai_regenerate_query: out.query or "",
+                settings.glide_col_zai_regenerate_requested_by: inp.requested_by or "",
+                settings.glide_col_zai_regenerate_type: "query",
+            },
+        )
+
+    fields = {
+        "rfq": json.dumps(inp.rfq or {}, ensure_ascii=False),
+        "products": json.dumps(inp.products or [], ensure_ascii=False),
+        "google_attachment_ids": json.dumps(inp.google_attachment_ids or [], ensure_ascii=False),
+        "query": inp.query or "",
+        "requested_by": inp.requested_by or "",
+        "response_text": out.response_text or "",
         "raw_model_output": out.raw_model_output or "",
         "timings": json.dumps(out.timings or {}, ensure_ascii=False),
         "structured": json.dumps(out.structured or {}, ensure_ascii=False),

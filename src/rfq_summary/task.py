@@ -7,7 +7,7 @@ from typing import Tuple, List, Optional, Any
 import re
 from typing import Dict
 from .config import Settings
-from .schema import InputPayload, OutputPayload, WebFinding, QueryPayload, TriageOutputPayload, RfqClassificationInputPayload, RfqClassificationOutputPayload, RfqRegenerateTriageInputPayload, RfqRegenerateTriageOutputPayload
+from .schema import InputPayload, OutputPayload, WebFinding, QueryPayload, TriageOutputPayload, RfqClassificationInputPayload, RfqClassificationOutputPayload, RfqRegenerateTriageInputPayload, RfqRegenerateTriageOutputPayload, RfqQueryInputPayload, RfqQueryOutputPayload
 from .attachments import analyze_attachments
 from .search import PerplexitySearchClient
 from .llm import load_prompt_file, generate_text
@@ -854,6 +854,59 @@ def run_regenerate_triage(
         timings={
             "attachments_ms": attachments_ms,
             "triage_llm_ms": triage_llm_ms,
+            "total_ms": total_ms,
+        },
+        structured={
+            "attachments_count": len(attachment_findings or []),
+            "products_count": len(payload.products or []),
+        },
+    )
+
+
+def run_regenerate_query(
+    settings: Settings,
+    payload: RfqQueryInputPayload,
+    run_id: Optional[str] = None,
+) -> RfqQueryOutputPayload:
+    run_id = run_id or uuid.uuid4().hex[:10]
+    t0 = time.perf_counter()
+
+    t_attach0 = time.perf_counter()
+    attachment_findings = analyze_attachments(settings, payload.google_attachment_ids or [])
+    extracted_text = _join_attachment_text_any("", attachment_findings)
+    attachments_ms = int((time.perf_counter() - t_attach0) * 1000)
+
+    context = {
+        "rfq": payload.rfq or {},
+        "products": payload.products or [],
+    }
+    prompt_template = load_prompt_file(settings.prompt_query_regenerate_file)
+    user_prompt = (
+        prompt_template
+        .replace("{{user_query}}", (payload.query or "").strip())
+        .replace("{{rfq_json}}", json.dumps(context, ensure_ascii=False))
+        .replace("{{extracted_attachment_text}}", extracted_text or "")
+    )
+
+    t_llm0 = time.perf_counter()
+    model_text = generate_text(
+        settings,
+        system_prompt="You answer RFQ follow-up queries using only the provided context.",
+        user_prompt=user_prompt,
+    )
+    query_llm_ms = int((time.perf_counter() - t_llm0) * 1000)
+    total_ms = int((time.perf_counter() - t0) * 1000)
+
+    return RfqQueryOutputPayload(
+        run_id=run_id,
+        rfq_id=payload.rfq_id,
+        query=payload.query or "",
+        response_text=model_text or "",
+        raw_model_output=model_text or "",
+        attachment_findings=attachment_findings,
+        timings={
+            "attachments_ms": attachments_ms,
+            "query_llm_ms": query_llm_ms,
             "total_ms": total_ms,
         },
         structured={

@@ -373,3 +373,19 @@ class RfqRegenerateTriageOutputPayload(BaseModel):
     attachment_findings: List[AttachmentFinding] = Field(default_factory=list)
     timings: Dict[str, Any] = Field(default_factory=dict)
     structured: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RfqQueryInputPayload(RfqRegenerateTriageInputPayload):
+    query: str = ""
+
+
+class RfqQueryOutputPayload(BaseModel):
+    run_id: str
+    mode: str = "query_regenerate"
+    rfq_id: str
+    query: str = ""
+    response_text: str = ""
+    raw_model_output: str = ""
+    attachment_findings: List[AttachmentFinding] = Field(default_factory=list)
+    timings: Dict[str, Any] = Field(default_factory=dict)
+    structured: Dict[str, Any] = Field(default_factory=dict)
