@@ -358,6 +358,8 @@ class RfqRegenerateTriageInputPayload(BaseModel):
             data["rfq_id"] = data.get("rfqId")
         if "version" not in data and "Version" in data:
             data["version"] = data.get("Version")
+        if data.get("version") is not None:
+            data["version"] = str(data.get("version"))
         if "previous_instructions" not in data and "previousInstructions" in data:
             data["previous_instructions"] = data.get("previousInstructions")
 
