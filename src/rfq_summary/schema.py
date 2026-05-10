@@ -341,11 +341,13 @@ class RfqClassificationOutputPayload(BaseModel):
 class RfqRegenerateTriageInputPayload(BaseModel):
     rfq_id: str = ""
     instruction: str = ""
+    previous_instructions: Any = Field(default_factory=list)
     rfq: Dict[str, Any] = Field(default_factory=dict)
     products: List[Dict[str, Any]] = Field(default_factory=list)
     google_attachment_ids: List[str] = Field(default_factory=list)
     requested_time: str = ""
     requested_by: str = ""
+    version: str = ""
 
     @model_validator(mode="before")
     @classmethod
@@ -354,6 +356,17 @@ class RfqRegenerateTriageInputPayload(BaseModel):
             return data
         if "rfq_id" not in data and "rfqId" in data:
             data["rfq_id"] = data.get("rfqId")
+        if "version" not in data and "Version" in data:
+            data["version"] = data.get("Version")
+        if "previous_instructions" not in data and "previousInstructions" in data:
+            data["previous_instructions"] = data.get("previousInstructions")
+
+        prev = data.get("previous_instructions")
+        if isinstance(prev, str) and prev.strip():
+            try:
+                data["previous_instructions"] = json.loads(prev)
+            except json.JSONDecodeError:
+                data["previous_instructions"] = prev
 
         val = data.get("google_attachment_ids")
         if isinstance(val, str):

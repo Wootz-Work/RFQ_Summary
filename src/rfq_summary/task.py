@@ -823,17 +823,15 @@ def run_regenerate_triage(
         attached_media=[],
     )
 
-    prompt_template = load_prompt_file(settings.prompt_query_triage_file)
-    instruction = (payload.instruction or "").strip()
-    if instruction:
-        prompt_template += (
-            "\n\n---\n"
-            "## STRICT REGENERATION INSTRUCTION\n"
-            f"{instruction}\n\n"
-            "You must follow the instruction above exactly. Only refuse or ignore it if it asks you to fabricate facts, "
-            "contradict the RFQ data, or violate the required output format. If it conflicts with normal style preferences, "
-            "the strict regeneration instruction wins.\n"
-        )
+    base_triage_prompt = load_prompt_file(settings.prompt_query_triage_file)
+    regenerate_prompt_template = load_prompt_file(settings.prompt_query_regenerate_triage_file)
+    previous_instructions_json = json.dumps(payload.previous_instructions or [], ensure_ascii=False)
+    prompt_template = (
+        regenerate_prompt_template
+        .replace("{{base_triage_prompt}}", base_triage_prompt)
+        .replace("{{previous_instructions}}", previous_instructions_json)
+        .replace("{{current_instruction}}", (payload.instruction or "").strip())
+    )
     user_prompt = _build_query_triage_prompt(prompt_template, query_payload, extracted_text)
     t_llm0 = time.perf_counter()
     model_text = generate_text(
@@ -880,10 +878,12 @@ def run_regenerate_query(
         "rfq": payload.rfq or {},
         "products": payload.products or [],
     }
+    previous_instructions_json = json.dumps(payload.previous_instructions or [], ensure_ascii=False)
     prompt_template = load_prompt_file(settings.prompt_query_regenerate_file)
     user_prompt = (
         prompt_template
         .replace("{{user_query}}", (payload.query or "").strip())
+        .replace("{{previous_instructions}}", previous_instructions_json)
         .replace("{{rfq_json}}", json.dumps(context, ensure_ascii=False))
         .replace("{{extracted_attachment_text}}", extracted_text or "")
     )
@@ -891,7 +891,7 @@ def run_regenerate_query(
     t_llm0 = time.perf_counter()
     model_text = generate_text(
         settings,
-        system_prompt="You answer RFQ follow-up queries using only the provided context.",
+        system_prompt="You must follow the user instructions exactly.",
         user_prompt=user_prompt,
     )
     query_llm_ms = int((time.perf_counter() - t_llm0) * 1000)

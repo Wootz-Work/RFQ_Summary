@@ -38,6 +38,10 @@ class Settings(BaseSettings):
         default="prompts/query_regenerate_answer.md",
         alias="PROMPT_QUERY_REGENERATE_FILE",
     )
+    prompt_query_regenerate_triage_file: str = Field(
+        default="prompts/query_regenerate_triage.md",
+        alias="PROMPT_QUERY_REGENERATE_TRIAGE_FILE",
+    )
     # ========================
     # Web Search (Perplexity)
     # ========================
@@ -168,6 +172,7 @@ class Settings(BaseSettings):
     glide_col_zai_regenerate_requested_by: str = Field(default="", alias="GLIDE_COL_ZAI_REGENERATE_REQUESTED_BY")
     glide_col_zai_regenerate_query: str = Field(default="plNaX", alias="GLIDE_COL_ZAI_REGENERATE_QUERY")
     glide_col_zai_regenerate_type: str = Field(default="s1843", alias="GLIDE_COL_ZAI_REGENERATE_TYPE")
+    glide_col_zai_regenerate_version: str = Field(default="KaglL", alias="GLIDE_COL_ZAI_REGENERATE_VERSION")
 
     # ========================
     # Google Sheet logging (optional)

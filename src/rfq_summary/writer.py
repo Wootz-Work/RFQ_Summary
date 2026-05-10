@@ -249,6 +249,7 @@ def write_regenerated_triage(
             "GLIDE_COL_ZAI_REGENERATE_INSTRUCTION": settings.glide_col_zai_regenerate_instruction,
             "GLIDE_COL_ZAI_REGENERATE_REQUESTED_BY": settings.glide_col_zai_regenerate_requested_by,
             "GLIDE_COL_ZAI_REGENERATE_TYPE": settings.glide_col_zai_regenerate_type,
+            "GLIDE_COL_ZAI_REGENERATE_VERSION": settings.glide_col_zai_regenerate_version,
         }
         missing = [name for name, value in required.items() if not (value or "").strip()]
         if missing:
@@ -264,6 +265,7 @@ def write_regenerated_triage(
                 settings.glide_col_zai_regenerate_instruction: out.instruction or "",
                 settings.glide_col_zai_regenerate_requested_by: inp.requested_by or "",
                 settings.glide_col_zai_regenerate_type: "instruction",
+                settings.glide_col_zai_regenerate_version: inp.version or "",
             },
         )
 
@@ -272,7 +274,9 @@ def write_regenerated_triage(
         "products": json.dumps(inp.products or [], ensure_ascii=False),
         "google_attachment_ids": json.dumps(inp.google_attachment_ids or [], ensure_ascii=False),
         "instruction": inp.instruction or "",
+        "previous_instructions": json.dumps(inp.previous_instructions or [], ensure_ascii=False),
         "requested_by": inp.requested_by or "",
+        "version": inp.version or "",
         "triage_text": out.triage_text or "",
         "raw_model_output": out.raw_model_output or "",
         "timings": json.dumps(out.timings or {}, ensure_ascii=False),
@@ -304,9 +308,11 @@ def write_regenerated_query(
             "GLIDE_COL_ZAI_REGENERATE_RESPONSE": settings.glide_col_zai_regenerate_response,
             "GLIDE_COL_ZAI_REGENERATE_RESPONSE_GENERATED_TIME": settings.glide_col_zai_regenerate_response_generated_time,
             "GLIDE_COL_ZAI_REGENERATE_REQUESTED_TIME": settings.glide_col_zai_regenerate_requested_time,
+            "GLIDE_COL_ZAI_REGENERATE_INSTRUCTION": settings.glide_col_zai_regenerate_instruction,
             "GLIDE_COL_ZAI_REGENERATE_QUERY": settings.glide_col_zai_regenerate_query,
             "GLIDE_COL_ZAI_REGENERATE_TYPE": settings.glide_col_zai_regenerate_type,
             "GLIDE_COL_ZAI_REGENERATE_REQUESTED_BY": settings.glide_col_zai_regenerate_requested_by,
+            "GLIDE_COL_ZAI_REGENERATE_VERSION": settings.glide_col_zai_regenerate_version,
         }
         missing = [name for name, value in required.items() if not (value or "").strip()]
         if missing:
@@ -319,9 +325,11 @@ def write_regenerated_query(
                 settings.glide_col_zai_regenerate_response: out.response_text or "",
                 settings.glide_col_zai_regenerate_response_generated_time: generated_at,
                 settings.glide_col_zai_regenerate_requested_time: requested_at,
+                settings.glide_col_zai_regenerate_instruction: "",
                 settings.glide_col_zai_regenerate_query: out.query or "",
                 settings.glide_col_zai_regenerate_requested_by: inp.requested_by or "",
                 settings.glide_col_zai_regenerate_type: "query",
+                settings.glide_col_zai_regenerate_version: inp.version or "",
             },
         )
 
@@ -330,7 +338,9 @@ def write_regenerated_query(
         "products": json.dumps(inp.products or [], ensure_ascii=False),
         "google_attachment_ids": json.dumps(inp.google_attachment_ids or [], ensure_ascii=False),
         "query": inp.query or "",
+        "previous_instructions": json.dumps(inp.previous_instructions or [], ensure_ascii=False),
         "requested_by": inp.requested_by or "",
+        "version": inp.version or "",
         "response_text": out.response_text or "",
         "raw_model_output": out.raw_model_output or "",
         "timings": json.dumps(out.timings or {}, ensure_ascii=False),
