@@ -81,6 +81,7 @@ def glide_update_all_rfq_triage_outputs(
     all_rfq_row_id: str,
     triage_text: str,
     costing_order_of_magnitude: str,
+    costing_magnitude_reason: str = "",
 ) -> None:
     """
     Writes incoming query AI outputs to the ALL RFQ row identified by row_id.
@@ -88,6 +89,7 @@ def glide_update_all_rfq_triage_outputs(
     Writes:
       ALL RFQ.zaiResponse -> triage_text
       ALL RFQ.costingOrderOfMagnitude -> costing_order_of_magnitude
+      ALL RFQ.costingMagnitudeReason -> costing_magnitude_reason
     """
     if not settings.enable_triage_writeback:
         return
@@ -103,10 +105,13 @@ def glide_update_all_rfq_triage_outputs(
 
     zai_col = (settings.glide_col_all_rfq_zai_response or "").strip()
     estimate_col = (settings.glide_col_all_rfq_costing_order_of_magnitude or "").strip()
+    reason_col = (settings.glide_col_all_rfq_costing_magnitude_reason or "").strip()
     if not zai_col:
         raise RuntimeError("Missing GLIDE_COL_ALL_RFQ_ZAI_RESPONSE.")
     if not estimate_col:
         raise RuntimeError("Missing GLIDE_COL_ALL_RFQ_COSTING_ORDER_OF_MAGNITUDE.")
+    if not reason_col:
+        raise RuntimeError("Missing GLIDE_COL_ALL_RFQ_COSTING_MAGNITUDE_REASON.")
 
     url = "https://api.glideapp.io/api/function/mutateTables"
     payload = {
@@ -119,6 +124,7 @@ def glide_update_all_rfq_triage_outputs(
                 "columnValues": {
                     zai_col: triage_text or "",
                     estimate_col: costing_order_of_magnitude or "",
+                    reason_col: costing_magnitude_reason or "",
                 },
             }
         ],

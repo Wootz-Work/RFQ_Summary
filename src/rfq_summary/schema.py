@@ -319,6 +319,7 @@ class TriageOutputPayload(BaseModel):
     row_id: str
     triage_text: str = ""
     costing_estimate_text: str = ""
+    costing_estimate_reason_text: str = ""
     raw_model_output: str = ""
     raw_costing_model_output: str = ""
 

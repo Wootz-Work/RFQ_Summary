@@ -37,10 +37,13 @@ last-mile logistics.
 Land on the right bracket. Do not guess a specific number.
 ---
 ## Output
-Return everything inside a single `<estimate>` tag.
+Return a single `<estimate>` tag followed by a single `<reason>` tag.
 If data sufficiency check failed — return:
 <estimate>
 </estimate>
+<reason>
+Short reason why the estimate could not be made.
+</reason>
 If sufficient — return one word only, x's representing order of magnitude in USD:
 - $10s → xx
 - $100s → xxx
@@ -48,11 +51,12 @@ If sufficient — return one word only, x's representing order of magnitude in U
 - $10,000s → xx,xxx
 - $100,000s → xxx,xxx
 - $1,000,000s → x,xxx,xxx
-No label. No reasoning. No punctuation. Just the x's.
+Inside `<estimate>`, no label, no reasoning, no punctuation. Just the x's.
+Inside `<reason>`, write one short sentence explaining the main basis for the bracket, or why it is empty. Keep it under 200 characters.
 ---
 ## Hard Rules
-1. Single `<estimate>` tag. Everything inside. Nothing outside.
-2. Failed sufficiency check = empty tag. No ? no placeholder, nothing.
-3. Passed = one word only. Nothing else.
+1. Output exactly one `<estimate>` tag and one `<reason>` tag. Nothing else.
+2. Failed sufficiency check = empty `<estimate>` tag plus a short reason.
+3. Passed = `<estimate>` contains one word only.
 4. Convert to USD internally. Don't show it.
 5. Estimate ex-works cost only. Do not include margin, freight, duties, taxes, insurance, or logistics.

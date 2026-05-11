@@ -713,6 +713,12 @@ def run_query_triage(settings: Settings, payload: QueryPayload, run_id: Optional
 
     triage_text = _wrap_tagged_output(model_text, "triage")
     costing_estimate_text = _unwrap_tagged_output(costing_model_text, "estimate")
+    costing_estimate_reason_text = _unwrap_tagged_output(costing_model_text, "reason")
+    if not costing_estimate_reason_text:
+        if costing_estimate_text:
+            costing_estimate_reason_text = "Bracket selected from available quantity, part, material, and process signals."
+        else:
+            costing_estimate_reason_text = "Insufficient product description or quantity to estimate confidently."
 
     # DocAI stats (reuse your existing aggregator)
     docai = _aggregate_docai_stats(attachment_findings)
@@ -723,6 +729,7 @@ def run_query_triage(settings: Settings, payload: QueryPayload, run_id: Optional
         row_id=payload.row_id,
         triage_text=triage_text,
         costing_estimate_text=costing_estimate_text,
+        costing_estimate_reason_text=costing_estimate_reason_text,
         raw_model_output=model_text or "",
         raw_costing_model_output=costing_model_text or "",
         attachment_findings=attachment_findings,

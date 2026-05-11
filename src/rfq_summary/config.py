@@ -142,6 +142,10 @@ class Settings(BaseSettings):
         default="AEa95",
         alias="GLIDE_COL_ALL_RFQ_COSTING_ORDER_OF_MAGNITUDE",
     )
+    glide_col_all_rfq_costing_magnitude_reason: str = Field(
+        default="1UY5w",
+        alias="GLIDE_COL_ALL_RFQ_COSTING_MAGNITUDE_REASON",
+    )
 
     # Gate triage writeback separately (keeps RFQ writeback safety intact)
     enable_triage_writeback: bool = Field(default=True, alias="ENABLE_TRIAGE_WRITEBACK")
