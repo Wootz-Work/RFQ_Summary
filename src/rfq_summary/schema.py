@@ -236,6 +236,14 @@ class QueryPayload(BaseModel):
     from_name: str = Field(default="")
     body: str = Field(default="")
     received_at: str = Field(default="")
+    requested_by: str = Field(
+        default="",
+        validation_alias=AliasChoices("requested_by", "requestedBy", "Created By", "Created_By", "created_by"),
+    )
+    requested_time: str = Field(
+        default="",
+        validation_alias=AliasChoices("requested_time", "requestedTime", "Created at", "Created_At", "created_at"),
+    )
     attachment_urls: List[str] = Field(
         default_factory=list,
         validation_alias=AliasChoices("attachment_urls", "attached_urls")
@@ -248,8 +256,19 @@ class QueryPayload(BaseModel):
         if not isinstance(data, dict):
             return data
 
+        if "requested_by" not in data:
+            for key in ("requestedBy", "Created By", "Created_By", "created_by"):
+                if key in data:
+                    data["requested_by"] = data.get(key)
+                    break
+        if "requested_time" not in data:
+            for key in ("requestedTime", "Created at", "Created_At", "created_at"):
+                if key in data:
+                    data["requested_time"] = data.get(key)
+                    break
+
         # Unwrap single-element lists for string fields
-        for field in ("subject", "from_name", "body", "received_at", "from_"):
+        for field in ("subject", "from_name", "body", "received_at", "from_", "requested_by", "requested_time"):
             val = data.get(field)
             if isinstance(val, list):
                 data[field] = val[0] if val else ""
@@ -271,6 +290,14 @@ class QueryPayload(BaseModel):
             try:
                 parsed = dt_datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
                 data["received_at"] = parsed.strftime("%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                pass
+
+        raw_requested_ts = data.get("requested_time", "")
+        if isinstance(raw_requested_ts, str) and raw_requested_ts.strip():
+            try:
+                parsed = dt_datetime.fromisoformat(raw_requested_ts.replace("Z", "+00:00"))
+                data["requested_time"] = parsed.isoformat()
             except ValueError:
                 pass
 

@@ -66,18 +66,23 @@ def _require_triage_writeback_settings(settings: Settings, obj: QueryPayload):
     if not (obj.row_id or "").strip():
         raise HTTPException(
             status_code=400,
-            detail="Missing rowID/row_id in payload (required when triage writeback enabled).",
+            detail="Missing rowID/row_id in payload (required when triage regenerate writeback enabled).",
         )
     required = {
         "GLIDE_API_KEY": settings.glide_api_key,
         "GLIDE_APP_ID": settings.glide_app_id,
-        "GLIDE_ALL_RFQ_TABLE": settings.glide_all_rfq_table,
-        "GLIDE_COL_ALL_RFQ_ZAI_RESPONSE": settings.glide_col_all_rfq_zai_response,
-        "GLIDE_COL_ALL_RFQ_COSTING_ORDER_OF_MAGNITUDE": settings.glide_col_all_rfq_costing_order_of_magnitude,
+        "GLIDE_ZAI_REGENERATE_TABLE": settings.glide_zai_regenerate_table,
+        "GLIDE_COL_ZAI_REGENERATE_RFQ_ID": settings.glide_col_zai_regenerate_rfq_id,
+        "GLIDE_COL_ZAI_REGENERATE_RESPONSE": settings.glide_col_zai_regenerate_response,
+        "GLIDE_COL_ZAI_REGENERATE_RESPONSE_GENERATED_TIME": settings.glide_col_zai_regenerate_response_generated_time,
+        "GLIDE_COL_ZAI_REGENERATE_REQUESTED_TIME": settings.glide_col_zai_regenerate_requested_time,
+        "GLIDE_COL_ZAI_REGENERATE_REQUESTED_BY": settings.glide_col_zai_regenerate_requested_by,
+        "GLIDE_COL_ZAI_REGENERATE_TYPE": settings.glide_col_zai_regenerate_type,
+        "GLIDE_COL_ZAI_REGENERATE_VERSION": settings.glide_col_zai_regenerate_version,
     }
     missing = [name for name, value in required.items() if not (value or "").strip()]
     if missing:
-        raise HTTPException(status_code=500, detail=f"Missing triage writeback configuration: {', '.join(missing)}")
+        raise HTTPException(status_code=500, detail=f"Missing triage regenerate writeback configuration: {', '.join(missing)}")
 
 
 def _require_classification_writeback_settings(settings: Settings, obj: RfqClassificationInputPayload):
@@ -441,7 +446,7 @@ async def _run_job(job: Job) -> None:
                 print(f"[STEP 2/3] run_id={job.run_id} | triage_text preview: {(out.triage_text or '')[:200]!r}")
                 print(f"[STEP 2/3] run_id={job.run_id} | estimate preview: {(out.costing_estimate_text or '')[:80]!r}")
 
-                print(f"[STEP 3/3] run_id={job.run_id} | Writing triage outputs to ALL RFQ (triage_writeback={settings.enable_triage_writeback})...")
+                print(f"[STEP 3/3] run_id={job.run_id} | Adding triage output to ZAI Regenerate (triage_writeback={settings.enable_triage_writeback})...")
                 t0 = time.perf_counter()
                 await asyncio.to_thread(write_triage, settings, qobj, out)
                 print(f"[STEP 3/3] run_id={job.run_id} | Write done in {int((time.perf_counter()-t0)*1000)}ms")

@@ -6,7 +6,7 @@ from typing import Dict
 
 from .config import Settings
 from .schema import InputPayload, OutputPayload, QueryPayload, TriageOutputPayload, RfqClassificationInputPayload, RfqClassificationOutputPayload, RfqRegenerateTriageInputPayload, RfqRegenerateTriageOutputPayload, RfqQueryInputPayload, RfqQueryOutputPayload
-from .glide_client import glide_upsert_zai_response_by_rfq_id, glide_update_all_rfq_triage_outputs, glide_update_prospect_rfq_classification, glide_add_zai_regenerate_row
+from .glide_client import glide_upsert_zai_response_by_rfq_id, glide_update_prospect_rfq_classification, glide_add_zai_regenerate_row
 from .gsheet_logger import append_rows, build_chunked_log_rows
 
 
@@ -143,15 +143,38 @@ def write_all(settings: Settings, inp: InputPayload, out: OutputPayload) -> None
 
 def write_triage(settings: Settings, inp: QueryPayload, out: TriageOutputPayload) -> None:
     """
-    Writes triage outputs into the linked ALL RFQ row.
+    Writes the initial triage output into the ZAI Regenerate table.
     Also logs to Sheets (chunked).
     """
+    generated_at = datetime.now(timezone.utc).isoformat()
+    requested_at = inp.requested_time or generated_at
+    requested_by = inp.requested_by or "system@wootz.work"
+
     if settings.enable_triage_writeback:
-        glide_update_all_rfq_triage_outputs(
+        required = {
+            "GLIDE_COL_ZAI_REGENERATE_RFQ_ID": settings.glide_col_zai_regenerate_rfq_id,
+            "GLIDE_COL_ZAI_REGENERATE_RESPONSE": settings.glide_col_zai_regenerate_response,
+            "GLIDE_COL_ZAI_REGENERATE_RESPONSE_GENERATED_TIME": settings.glide_col_zai_regenerate_response_generated_time,
+            "GLIDE_COL_ZAI_REGENERATE_REQUESTED_TIME": settings.glide_col_zai_regenerate_requested_time,
+            "GLIDE_COL_ZAI_REGENERATE_REQUESTED_BY": settings.glide_col_zai_regenerate_requested_by,
+            "GLIDE_COL_ZAI_REGENERATE_TYPE": settings.glide_col_zai_regenerate_type,
+            "GLIDE_COL_ZAI_REGENERATE_VERSION": settings.glide_col_zai_regenerate_version,
+        }
+        missing = [name for name, value in required.items() if not (value or "").strip()]
+        if missing:
+            raise RuntimeError(f"Missing ZAI Regenerate triage writeback configuration: {', '.join(missing)}")
+
+        glide_add_zai_regenerate_row(
             settings,
-            out.row_id,
-            out.triage_text or "",
-            out.costing_estimate_text or "",
+            {
+                settings.glide_col_zai_regenerate_rfq_id: out.row_id,
+                settings.glide_col_zai_regenerate_response: out.triage_text or "",
+                settings.glide_col_zai_regenerate_response_generated_time: generated_at,
+                settings.glide_col_zai_regenerate_requested_time: requested_at,
+                settings.glide_col_zai_regenerate_requested_by: requested_by,
+                settings.glide_col_zai_regenerate_type: "instruction",
+                settings.glide_col_zai_regenerate_version: "0",
+            },
         )
 
     # Log to Sheets (same sheet schema; different field names)
@@ -161,6 +184,8 @@ def write_triage(settings: Settings, inp: QueryPayload, out: TriageOutputPayload
         "from_name": inp.from_name,
         "body": inp.body,
         "received_at": inp.received_at,
+        "requested_time": inp.requested_time or "",
+        "requested_by": inp.requested_by or "",
         "attachment_urls": json.dumps(inp.attachment_urls or [], ensure_ascii=False),  # replaces query_json
         "attached_media": json.dumps(inp.attached_media or [], ensure_ascii=False),
         "triage_text": out.triage_text or "",
