@@ -79,6 +79,9 @@ def _require_triage_writeback_settings(settings: Settings, obj: QueryPayload):
         "GLIDE_COL_ZAI_REGENERATE_REQUESTED_BY": settings.glide_col_zai_regenerate_requested_by,
         "GLIDE_COL_ZAI_REGENERATE_TYPE": settings.glide_col_zai_regenerate_type,
         "GLIDE_COL_ZAI_REGENERATE_VERSION": settings.glide_col_zai_regenerate_version,
+        "GLIDE_ALL_RFQ_TABLE": settings.glide_all_rfq_table,
+        "GLIDE_COL_ALL_RFQ_ZAI_RESPONSE": settings.glide_col_all_rfq_zai_response,
+        "GLIDE_COL_ALL_RFQ_COSTING_ORDER_OF_MAGNITUDE": settings.glide_col_all_rfq_costing_order_of_magnitude,
     }
     missing = [name for name, value in required.items() if not (value or "").strip()]
     if missing:

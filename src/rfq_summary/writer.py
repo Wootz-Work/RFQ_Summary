@@ -6,7 +6,7 @@ from typing import Dict
 
 from .config import Settings
 from .schema import InputPayload, OutputPayload, QueryPayload, TriageOutputPayload, RfqClassificationInputPayload, RfqClassificationOutputPayload, RfqRegenerateTriageInputPayload, RfqRegenerateTriageOutputPayload, RfqQueryInputPayload, RfqQueryOutputPayload
-from .glide_client import glide_upsert_zai_response_by_rfq_id, glide_update_prospect_rfq_classification, glide_add_zai_regenerate_row
+from .glide_client import glide_upsert_zai_response_by_rfq_id, glide_update_all_rfq_triage_outputs, glide_update_prospect_rfq_classification, glide_add_zai_regenerate_row
 from .gsheet_logger import append_rows, build_chunked_log_rows
 
 
@@ -175,6 +175,12 @@ def write_triage(settings: Settings, inp: QueryPayload, out: TriageOutputPayload
                 settings.glide_col_zai_regenerate_type: "instruction",
                 settings.glide_col_zai_regenerate_version: "0",
             },
+        )
+        glide_update_all_rfq_triage_outputs(
+            settings,
+            out.row_id,
+            "",
+            out.costing_estimate_text or "",
         )
 
     # Log to Sheets (same sheet schema; different field names)
