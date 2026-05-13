@@ -3,8 +3,24 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, model_validator, AliasChoices, ConfigDict
+from pydantic import BaseModel, Field, model_validator, AliasChoices, ConfigDict, BeforeValidator
+from typing import Annotated
 from datetime import datetime as dt_datetime
+
+
+def _coerce_str_or_list(v: Any) -> List[str]:
+    if isinstance(v, str):
+        return [u.strip() for u in v.split(",") if u.strip()]
+    if isinstance(v, list):
+        out: List[str] = []
+        for item in v:
+            if isinstance(item, str):
+                out.extend(u.strip() for u in item.split(",") if u.strip())
+        return out
+    return v
+
+
+_StrOrList = Annotated[List[str], BeforeValidator(_coerce_str_or_list)]
 
 def _clean_url(u: str) -> str:
     """
@@ -244,11 +260,11 @@ class QueryPayload(BaseModel):
         default="",
         validation_alias=AliasChoices("requested_time", "requestedTime", "Created at", "Created_At", "created_at"),
     )
-    attachment_urls: List[str] = Field(
+    attachment_urls: _StrOrList = Field(
         default_factory=list,
         validation_alias=AliasChoices("attachment_urls", "attached_urls")
     )
-    attached_media: List[str] = Field(default_factory=list)
+    attached_media: _StrOrList = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -266,23 +282,14 @@ class QueryPayload(BaseModel):
                 if key in data:
                     data["requested_time"] = data.get(key)
                     break
+        if "attachment_urls" not in data and "attached_urls" in data:
+            data["attachment_urls"] = data.get("attached_urls")
 
         # Unwrap single-element lists for string fields
         for field in ("subject", "from_name", "body", "received_at", "from_", "requested_by", "requested_time"):
             val = data.get(field)
             if isinstance(val, list):
                 data[field] = val[0] if val else ""
-
-        # Split comma-joined attachment URLs
-        val = data.get("attachment_urls")
-        if isinstance(val, list):
-            expanded = []
-            for item in val:
-                if isinstance(item, str):
-                    expanded.extend([u.strip() for u in item.split(",") if u.strip()])
-            data["attachment_urls"] = expanded
-        elif isinstance(val, str) and val.strip():
-            data["attachment_urls"] = [u.strip() for u in val.split(",") if u.strip()]
 
         # Normalize received_at to "YYYY-MM-DD HH:MM:SS"
         raw_ts = data.get("received_at", "")

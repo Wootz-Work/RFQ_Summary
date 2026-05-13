@@ -103,11 +103,8 @@ def glide_update_all_rfq_triage_outputs(
     if not settings.glide_all_rfq_table:
         raise RuntimeError("Missing GLIDE_ALL_RFQ_TABLE.")
 
-    zai_col = (settings.glide_col_all_rfq_zai_response or "").strip()
     estimate_col = (settings.glide_col_all_rfq_costing_order_of_magnitude or "").strip()
     reason_col = (settings.glide_col_all_rfq_costing_magnitude_reason or "").strip()
-    if not zai_col:
-        raise RuntimeError("Missing GLIDE_COL_ALL_RFQ_ZAI_RESPONSE.")
     if not estimate_col:
         raise RuntimeError("Missing GLIDE_COL_ALL_RFQ_COSTING_ORDER_OF_MAGNITUDE.")
     if not reason_col:
@@ -122,7 +119,6 @@ def glide_update_all_rfq_triage_outputs(
                 "tableName": settings.glide_all_rfq_table,
                 "rowID": all_rfq_row_id.strip(),
                 "columnValues": {
-                    zai_col: triage_text or "",
                     estimate_col: costing_order_of_magnitude or "",
                     reason_col: costing_magnitude_reason or "",
                 },
