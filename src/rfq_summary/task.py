@@ -839,14 +839,26 @@ def run_regenerate_triage(
         .replace("{{previous_instructions}}", previous_instructions_json)
         .replace("{{current_instruction}}", (payload.instruction or "").strip())
     )
-    user_prompt = _build_query_triage_prompt(prompt_template, query_payload, extracted_text)
-    t_llm0 = time.perf_counter()
-    model_text = generate_text(
-        settings,
-        system_prompt="You must follow the user instructions exactly.",
-        user_prompt=user_prompt,
+    triage_user_prompt = _build_query_triage_prompt(prompt_template, query_payload, extracted_text)
+
+    base_costing_prompt = load_prompt_file(settings.prompt_query_costing_file)
+    regenerate_costing_prompt_template = load_prompt_file(settings.prompt_query_regenerate_costing_file)
+    costing_prompt_template = (
+        regenerate_costing_prompt_template
+        .replace("{{base_costing_prompt}}", base_costing_prompt)
+        .replace("{{previous_instructions}}", previous_instructions_json)
+        .replace("{{current_instruction}}", (payload.instruction or "").strip())
     )
-    triage_llm_ms = int((time.perf_counter() - t_llm0) * 1000)
+    costing_user_prompt = _build_query_triage_prompt(costing_prompt_template, query_payload, extracted_text)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        triage_future = executor.submit(_generate_text_with_timing, settings, triage_user_prompt)
+        costing_future = executor.submit(_generate_text_with_timing, settings, costing_user_prompt)
+        model_text, triage_llm_ms = triage_future.result()
+        costing_model_text, costing_llm_ms = costing_future.result()
+
+    costing_estimate_text = _unwrap_tagged_output(costing_model_text, "estimate")
+    costing_estimate_reason_text = _unwrap_tagged_output(costing_model_text, "reason")
     total_ms = int((time.perf_counter() - t0) * 1000)
 
     return RfqRegenerateTriageOutputPayload(
@@ -854,11 +866,16 @@ def run_regenerate_triage(
         rfq_id=payload.rfq_id,
         instruction=payload.instruction or "",
         triage_text=_wrap_tagged_output(model_text, "triage"),
+        costing_estimate_text=costing_estimate_text,
+        costing_estimate_reason_text=costing_estimate_reason_text,
         raw_model_output=model_text or "",
+        raw_costing_model_output=costing_model_text or "",
         attachment_findings=attachment_findings,
         timings={
             "attachments_ms": attachments_ms,
             "triage_llm_ms": triage_llm_ms,
+            "costing_llm_ms": costing_llm_ms,
+            "llm_parallel_max_ms": max(triage_llm_ms, costing_llm_ms),
             "total_ms": total_ms,
         },
         structured={

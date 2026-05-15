@@ -301,6 +301,13 @@ def write_regenerated_triage(
                 settings.glide_col_zai_regenerate_version: inp.version or "",
             },
         )
+        glide_update_all_rfq_triage_outputs(
+            settings,
+            out.rfq_id,
+            "",
+            out.costing_estimate_text or "",
+            out.costing_estimate_reason_text or "",
+        )
 
     fields = {
         "rfq": json.dumps(inp.rfq or {}, ensure_ascii=False),
@@ -311,7 +318,10 @@ def write_regenerated_triage(
         "requested_by": inp.requested_by or "",
         "version": inp.version or "",
         "triage_text": out.triage_text or "",
+        "costing_estimate_text": out.costing_estimate_text or "",
+        "costing_estimate_reason_text": out.costing_estimate_reason_text or "",
         "raw_model_output": out.raw_model_output or "",
+        "raw_costing_model_output": out.raw_costing_model_output or "",
         "timings": json.dumps(out.timings or {}, ensure_ascii=False),
         "structured": json.dumps(out.structured or {}, ensure_ascii=False),
         "writeback_enabled": str(bool(settings.enable_triage_writeback)),

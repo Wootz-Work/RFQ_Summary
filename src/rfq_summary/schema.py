@@ -422,7 +422,10 @@ class RfqRegenerateTriageOutputPayload(BaseModel):
     rfq_id: str
     instruction: str = ""
     triage_text: str = ""
+    costing_estimate_text: str = ""
+    costing_estimate_reason_text: str = ""
     raw_model_output: str = ""
+    raw_costing_model_output: str = ""
     attachment_findings: List[AttachmentFinding] = Field(default_factory=list)
     timings: Dict[str, Any] = Field(default_factory=dict)
     structured: Dict[str, Any] = Field(default_factory=dict)

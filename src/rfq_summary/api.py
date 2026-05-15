@@ -134,6 +134,9 @@ def _require_regenerate_writeback_settings(settings: Settings, obj: RfqRegenerat
         "GLIDE_COL_ZAI_REGENERATE_REQUESTED_BY": settings.glide_col_zai_regenerate_requested_by,
         "GLIDE_COL_ZAI_REGENERATE_TYPE": settings.glide_col_zai_regenerate_type,
         "GLIDE_COL_ZAI_REGENERATE_VERSION": settings.glide_col_zai_regenerate_version,
+        "GLIDE_ALL_RFQ_TABLE": settings.glide_all_rfq_table,
+        "GLIDE_COL_ALL_RFQ_COSTING_ORDER_OF_MAGNITUDE": settings.glide_col_all_rfq_costing_order_of_magnitude,
+        "GLIDE_COL_ALL_RFQ_COSTING_MAGNITUDE_REASON": settings.glide_col_all_rfq_costing_magnitude_reason,
     }
     missing = [name for name, value in required.items() if not (value or "").strip()]
     if missing:

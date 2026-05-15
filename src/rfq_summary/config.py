@@ -42,6 +42,10 @@ class Settings(BaseSettings):
         default="prompts/query_regenerate_triage.md",
         alias="PROMPT_QUERY_REGENERATE_TRIAGE_FILE",
     )
+    prompt_query_regenerate_costing_file: str = Field(
+        default="prompts/query_regenerate_costing_estimate.md",
+        alias="PROMPT_QUERY_REGENERATE_COSTING_FILE",
+    )
     # ========================
     # Web Search (Perplexity)
     # ========================
