@@ -5,6 +5,7 @@ from typing import Any, Dict, List
 import re
 
 from openpyxl import load_workbook  # type: ignore
+from openpyxl.utils import get_column_letter  # type: ignore
 
 from ..config import Settings
 from ..schema import AttachmentFinding
@@ -92,12 +93,16 @@ def _find_formula_links(ws) -> List[Dict[str, str]]:
     max_c = min(ws.max_column or 0, 50)
 
     pat = re.compile(r"([A-Za-z0-9_ ]+)!([A-Z]{1,3}\d+)")
-    for r in range(1, max_r + 1):
-        for c in range(1, max_c + 1):
-            v = ws.cell(r, c).value
+    # NOTE: random ws.cell(r, c) access on a read_only worksheet is extremely slow
+    # (each call can rescan the sheet's XML stream from the start). iter_rows() is
+    # openpyxl's intended sequential-access path for read_only worksheets.
+    rows = ws.iter_rows(min_row=1, max_row=max_r, min_col=1, max_col=max_c, values_only=True)
+    for r, row in enumerate(rows, start=1):
+        for c, v in enumerate(row, start=1):
             if isinstance(v, str) and v.startswith("="):
+                coord = f"{get_column_letter(c)}{r}"
                 for m in pat.finditer(v):
-                    links.append({"from_cell": ws.cell(r, c).coordinate, "to": f"{m.group(1)}!{m.group(2)}"})
+                    links.append({"from_cell": coord, "to": f"{m.group(1)}!{m.group(2)}"})
                     if len(links) >= 120:
                         return links
     return links
