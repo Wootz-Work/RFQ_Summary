@@ -728,7 +728,11 @@ def resolve_product_extraction(out: TriageOutputPayload, timeout_sec: Optional[f
     try:
         products_model_text, products_llm_ms = pending.future.result(timeout=timeout_sec)
     except FuturesTimeoutError:
-        print(f"[WARN] run_id={pending.run_id} | product extraction timed out after {timeout_sec}s; skipping products")
+        print(
+            f"[WARN] run_id={pending.run_id} | product extraction timed out after {timeout_sec}s; "
+            f"skipping products (raise PRODUCT_EXTRACTION_TIMEOUT_SEC, and JOB_TIMEOUT_SEC if it is the binding limit). "
+            f"The ZAI response was already written."
+        )
         pending.future.cancel()
     except Exception as e:
         print(f"[WARN] run_id={pending.run_id} | product extraction LLM failed: {type(e).__name__}: {e}")

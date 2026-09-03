@@ -27,7 +27,7 @@ reconciliation and any rows that could not be parsed.
 The three calls start together, but the job only waits for triage and costing before
 writing the ZAI response — product extraction keeps running in the background and is
 collected afterwards, so it adds no latency to the ZAI response while still overlapping
-rather than running serially. `PRODUCT_EXTRACTION_TIMEOUT_SEC` (default 180) caps that
+rather than running serially. `PRODUCT_EXTRACTION_TIMEOUT_SEC` (default 300) caps that
 wait; giving up costs the product rows only.
 
 `ENABLE_PRODUCT_EXTRACTION=false` makes the whole feature a no-op — no third LLM call,

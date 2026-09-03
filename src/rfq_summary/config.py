@@ -182,7 +182,10 @@ class Settings(BaseSettings):
     glide_product_rows_per_request: int = Field(default=20, alias="GLIDE_PRODUCT_ROWS_PER_REQUEST")
     # How long to wait for product extraction AFTER the triage output is written.
     # Giving up here costs the product rows only; the ZAI response is already saved.
-    product_extraction_timeout_sec: int = Field(default=180, alias="PRODUCT_EXTRACTION_TIMEOUT_SEC")
+    # Note JOB_TIMEOUT_SEC is the real ceiling: the job is killed at that point
+    # regardless, so a value above (JOB_TIMEOUT_SEC - attachments - triage) never
+    # gets used. Raise JOB_TIMEOUT_SEC too if long packages are being cut off.
+    product_extraction_timeout_sec: int = Field(default=300, alias="PRODUCT_EXTRACTION_TIMEOUT_SEC")
 
     # Gate triage writeback separately (keeps RFQ writeback safety intact)
     enable_triage_writeback: bool = Field(default=True, alias="ENABLE_TRIAGE_WRITEBACK")
