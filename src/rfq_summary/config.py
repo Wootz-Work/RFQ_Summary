@@ -162,15 +162,22 @@ class Settings(BaseSettings):
     enable_product_extraction: bool = Field(default=True, alias="ENABLE_PRODUCT_EXTRACTION")
     enable_product_writeback: bool = Field(default=True, alias="ENABLE_PRODUCT_WRITEBACK")
     product_extraction_max_tokens: int = Field(default=8000, alias="PRODUCT_EXTRACTION_MAX_TOKENS")
-    glide_all_product_table: str = Field(default="", alias="GLIDE_ALL_PRODUCT_TABLE")
+    glide_all_product_table: str = Field(
+        default="native-table-4c42a6c4-6b7c-476f-88a8-65c0e8d3c774",
+        alias="GLIDE_ALL_PRODUCT_TABLE",
+    )
     glide_col_product_name: str = Field(default="Name", alias="GLIDE_COL_PRODUCT_NAME")
-    glide_col_product_qty: str = Field(default="", alias="GLIDE_COL_PRODUCT_QTY")
-    glide_col_product_details: str = Field(default="", alias="GLIDE_COL_PRODUCT_DETAILS")
-    glide_col_product_rfq_id: str = Field(default="", alias="GLIDE_COL_PRODUCT_RFQ_ID")
-    glide_col_product_target_price: str = Field(default="", alias="GLIDE_COL_PRODUCT_TARGET_PRICE")
-    glide_col_product_dwg_link: str = Field(default="", alias="GLIDE_COL_PRODUCT_DWG_LINK")
-    glide_col_product_rep_url: str = Field(default="", alias="GLIDE_COL_PRODUCT_REP_URL")
-    glide_col_product_addl_files: str = Field(default="", alias="GLIDE_COL_PRODUCT_ADDL_FILES")
+    glide_col_product_qty: str = Field(default="KAbSp", alias="GLIDE_COL_PRODUCT_QTY")
+    glide_col_product_details: str = Field(default="K03pz", alias="GLIDE_COL_PRODUCT_DETAILS")
+    glide_col_product_rfq_id: str = Field(default="3E2xY", alias="GLIDE_COL_PRODUCT_RFQ_ID")
+    glide_col_product_target_price: str = Field(default="hgVgd", alias="GLIDE_COL_PRODUCT_TARGET_PRICE")
+    glide_col_product_dwg_link: str = Field(default="f4QCb", alias="GLIDE_COL_PRODUCT_DWG_LINK")
+    glide_col_product_rep_url: str = Field(default="LXcW2", alias="GLIDE_COL_PRODUCT_REP_URL")
+    glide_col_product_addl_files: str = Field(default="JR0Lx", alias="GLIDE_COL_PRODUCT_ADDL_FILES")
+    # Line number in the customer's own ordering. Set to "" to leave the column alone.
+    glide_col_product_sr_no: str = Field(default="XbErc", alias="GLIDE_COL_PRODUCT_SR_NO")
+    # Boolean flag set to true on every row this service adds.
+    glide_col_product_accepted: str = Field(default="117zS", alias="GLIDE_COL_PRODUCT_ACCEPTED")
     # Max product rows written per Glide mutateTables request.
     glide_product_rows_per_request: int = Field(default=20, alias="GLIDE_PRODUCT_ROWS_PER_REQUEST")
     # How long to wait for product extraction AFTER the triage output is written.

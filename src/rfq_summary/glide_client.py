@@ -303,9 +303,11 @@ def glide_add_product_rows(
     dwg_link_col = (settings.glide_col_product_dwg_link or "").strip()
     rep_url_col = (settings.glide_col_product_rep_url or "").strip()
     addl_files_col = (settings.glide_col_product_addl_files or "").strip()
+    sr_no_col = (settings.glide_col_product_sr_no or "").strip()
+    accepted_col = (settings.glide_col_product_accepted or "").strip()
 
     mutations: list[Dict[str, Any]] = []
-    for product in products:
+    for position, product in enumerate(products, start=1):
         column_values: Dict[str, Any] = {name_col: product.name or ""}
 
         if rfq_id_col and (rfq_row_id or "").strip():
@@ -320,8 +322,21 @@ def glide_add_product_rows(
             column_values[dwg_link_col] = product.dwg_link
         if rep_url_col and product.rep_url:
             column_values[rep_url_col] = product.rep_url
-        if addl_files_col and product.addl_files_text():
-            column_values[addl_files_col] = product.addl_files_text()
+        if addl_files_col:
+            # The Glide column is a single uri, so only the first file fits; joining
+            # them would produce a string that is not a working link.
+            files = [u for u in (product.addl_files or []) if (u or "").strip()]
+            if files:
+                column_values[addl_files_col] = files[0]
+                if len(files) > 1:
+                    print(
+                        f"[WARN] product {product.name!r}: {len(files) - 1} additional file link(s) "
+                        f"dropped — 'Addl. files' holds one uri"
+                    )
+        if sr_no_col:
+            column_values[sr_no_col] = product.index if product.index is not None else position
+        if accepted_col:
+            column_values[accepted_col] = True
 
         mutations.append(
             {

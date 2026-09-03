@@ -33,7 +33,11 @@ wait; giving up costs the product rows only.
 `ENABLE_PRODUCT_EXTRACTION=false` makes the whole feature a no-op — no third LLM call,
 no added cost — so `/query/triage` behaves exactly as it did before this existed.
 
-Configure the target table with `GLIDE_ALL_PRODUCT_TABLE` and the `GLIDE_COL_PRODUCT_*`
-column ids (see `.env.example`). Only configured columns are written, and product
+The ALL Product table id and its column ids are defaults in `config.py`, so no
+environment configuration is required; `GLIDE_ALL_PRODUCT_TABLE` and the
+`GLIDE_COL_PRODUCT_*` overrides exist for pointing at a scratch table or leaving a
+column alone. Every row this service adds sets `acceptedProduct` to `true` and `srNo`
+to the line's position in the customer's ordering. `Addl. files` is a single-uri
+column, so only the first supporting file is written and extras are logged. Product
 writeback is best-effort: it can be turned off with `ENABLE_PRODUCT_WRITEBACK=false`, and
 a failure there is logged without failing the triage response.
