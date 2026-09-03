@@ -6,7 +6,7 @@ Tests the product-extraction pipeline without hitting Claude or Glide:
   1. NDJSON from the prompt parses into typed product rows
   2. lenient parsing survives fences, pretty-printed objects and junk lines
   3. rows with no name never reach the product table
-  4. product rows map onto the configured "ALL Product" columns
+  4. the Glide payload carries the right column ids, types and defaults
 
 Run:
     python test_product_extraction.py
@@ -19,6 +19,7 @@ sys.path.insert(0, "src")
 
 from rfq_summary.config import Settings
 from rfq_summary.product_extraction import parse_product_extraction
+from rfq_summary.glide_client import glide_add_product_rows
 from rfq_summary.schema import ExtractedProduct
 
 QUOTE_BASIS = (
@@ -197,42 +198,90 @@ def test_garbage_is_not_fatal() -> bool:
     return ok
 
 
-def test_column_mapping() -> bool:
-    """Mirror of glide_add_product_rows' mapping, using the configured column ids."""
-    settings = Settings(
-        GLIDE_ALL_PRODUCT_TABLE="native-table-products",
-        GLIDE_COL_PRODUCT_NAME="Name",
-        GLIDE_COL_PRODUCT_QTY="qtyCol",
-        GLIDE_COL_PRODUCT_DETAILS="detailsCol",
-        GLIDE_COL_PRODUCT_RFQ_ID="rfqIdCol",
-        GLIDE_COL_PRODUCT_TARGET_PRICE="targetCol",
-        GLIDE_COL_PRODUCT_DWG_LINK="dwgCol",
-    )
-    product = ExtractedProduct.model_validate(
-        {
-            "name": "Flat washers",
-            "details": DETAILS,
-            "quantity": {"value": "8000", "basis": "pcs, annual usage"},
-            "target_price": "$2.68 - FOB India",
-            "dwg_link": "https://example.com/dwg.pdf",
-            "rep_url": "https://example.com/catalogue",
-        }
-    )
+def test_glide_payload() -> bool:
+    """Exercise glide_add_product_rows itself against a stubbed HTTP client."""
+    import httpx
 
-    column_values = {settings.glide_col_product_name: product.name}
-    column_values[settings.glide_col_product_rfq_id] = "RFQ_ROW_1"
-    column_values[settings.glide_col_product_qty] = product.quantity.as_qty_text()
-    column_values[settings.glide_col_product_details] = product.details
-    column_values[settings.glide_col_product_target_price] = product.target_price
-    column_values[settings.glide_col_product_dwg_link] = product.dwg_link
+    sent = []
 
-    ok = _check("name/qty/details mapped", column_values["Name"] == "Flat washers")
-    ok &= _check("qty text mapped", column_values["qtyCol"] == "8000 (pcs, annual usage)")
-    ok &= _check("rfq id linked", column_values["rfqIdCol"] == "RFQ_ROW_1")
-    ok &= _check("target price mapped", column_values["targetCol"] == "$2.68 - FOB India")
-    # Rep URL column is unset in this config, so it is simply not written.
-    ok &= _check("unconfigured column skipped", settings.glide_col_product_rep_url == "")
-    return ok
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return [{}]
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, url, headers=None, json=None):
+            sent.append(json)
+            return _Resp()
+
+    real_client = httpx.Client
+    httpx.Client = _Client
+    try:
+        # No product env vars: everything comes from the baked-in defaults.
+        settings = Settings(GLIDE_API_KEY="k", GLIDE_APP_ID="app")
+        products = [
+            ExtractedProduct.model_validate(
+                {
+                    "index": 1,
+                    "name": "M8 Lobe Pin - SS A2",
+                    "details": DETAILS,
+                    "quantity": {"value": "4000", "basis": "pcs or MOQ"},
+                    "target_price": "$2.68 - FOB India",
+                    "dwg_link": "https://example.com/dwg.pdf",
+                    "addl_files": ["https://example.com/a.xlsx", "https://example.com/b.pdf"],
+                }
+            ),
+            ExtractedProduct.model_validate(
+                {"index": 2, "name": "Spring Washer - SS316", "details": DETAILS, "quantity": {"value": "16", "basis": "pcs"}}
+            ),
+        ]
+        written = glide_add_product_rows(settings, "ALL_RFQ_ROW", products)
+
+        ok = _check("both rows written in one request", written == 2 and len(sent) == 1)
+        mutations = sent[0]["mutations"]
+        ok &= _check(
+            "targets the ALL Product table",
+            mutations[0]["tableName"] == "native-table-4c42a6c4-6b7c-476f-88a8-65c0e8d3c774",
+        )
+        first, second = mutations[0]["columnValues"], mutations[1]["columnValues"]
+        ok &= _check("name -> Name", first["Name"] == "M8 Lobe Pin - SS A2")
+        ok &= _check("qty -> KAbSp", first["KAbSp"] == "4000 (pcs or MOQ)", first["KAbSp"])
+        ok &= _check("details -> K03pz", first["K03pz"] == DETAILS)
+        ok &= _check("rfq id -> 3E2xY", first["3E2xY"] == "ALL_RFQ_ROW")
+        ok &= _check("target price -> hgVgd", first["hgVgd"] == "$2.68 - FOB India")
+        ok &= _check("dwg link -> f4QCb", first["f4QCb"] == "https://example.com/dwg.pdf")
+        # acceptedProduct must be a JSON boolean, not the string "true".
+        ok &= _check("accepted -> 117zS is JSON true", first["117zS"] is True)
+        ok &= _check("srNo -> XbErc is a number", isinstance(first["XbErc"], int) and first["XbErc"] == 1)
+        ok &= _check("srNo follows customer order", second["XbErc"] == 2)
+        ok &= _check(
+            "addl files -> JR0Lx keeps one working uri",
+            first["JR0Lx"] == "https://example.com/a.xlsx",
+            first["JR0Lx"],
+        )
+        ok &= _check("absent target price omitted", "hgVgd" not in second)
+        ok &= _check("absent dwg link omitted", "f4QCb" not in second)
+
+        # An explicitly emptied column id is left alone.
+        sent.clear()
+        bare = Settings(GLIDE_API_KEY="k", GLIDE_APP_ID="app", GLIDE_COL_PRODUCT_SR_NO="", GLIDE_COL_PRODUCT_ACCEPTED="")
+        glide_add_product_rows(bare, "ALL_RFQ_ROW", products[:1])
+        cleared = sent[0]["mutations"][0]["columnValues"]
+        ok &= _check("emptied column ids are skipped", "XbErc" not in cleared and "117zS" not in cleared)
+        return ok
+    finally:
+        httpx.Client = real_client
 
 
 if __name__ == "__main__":
@@ -241,7 +290,7 @@ if __name__ == "__main__":
             test_parse(),
             test_mismatch_is_reported(),
             test_garbage_is_not_fatal(),
-            test_column_mapping(),
+            test_glide_payload(),
         ]
     )
     print("\nALL PASSED" if passed else "\nFAILURES ABOVE")
