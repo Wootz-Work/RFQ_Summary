@@ -273,6 +273,15 @@ def test_glide_payload() -> bool:
         ok &= _check("absent target price omitted", "hgVgd" not in second)
         ok &= _check("absent dwg link omitted", "f4QCb" not in second)
 
+        # An RFQ row id is mandatory: unlinked rows are orphans in a live table.
+        sent.clear()
+        try:
+            glide_add_product_rows(settings, "   ", products[:1])
+            ok &= _check("missing rfq id refused", False, "no error raised")
+        except RuntimeError as e:
+            ok &= _check("missing rfq id refused", "refusing to add unlinked" in str(e), str(e))
+        ok &= _check("nothing sent when rfq id missing", not sent)
+
         # An explicitly emptied column id is left alone.
         sent.clear()
         bare = Settings(GLIDE_API_KEY="k", GLIDE_APP_ID="app", GLIDE_COL_PRODUCT_SR_NO="", GLIDE_COL_PRODUCT_ACCEPTED="")

@@ -296,6 +296,11 @@ def glide_add_product_rows(
     if not name_col:
         raise RuntimeError("Missing GLIDE_COL_PRODUCT_NAME.")
 
+    # Rows with no RFQ to link back to are orphans in a live table: nobody can tell
+    # which enquiry they came from, and cleaning them up is manual. Refuse instead.
+    if (settings.glide_col_product_rfq_id or "").strip() and not (rfq_row_id or "").strip():
+        raise RuntimeError("rfq_row_id is empty; refusing to add unlinked product rows.")
+
     qty_col = (settings.glide_col_product_qty or "").strip()
     details_col = (settings.glide_col_product_details or "").strip()
     rfq_id_col = (settings.glide_col_product_rfq_id or "").strip()
