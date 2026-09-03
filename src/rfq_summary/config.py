@@ -46,6 +46,10 @@ class Settings(BaseSettings):
         default="prompts/query_regenerate_costing_estimate.md",
         alias="PROMPT_QUERY_REGENERATE_COSTING_FILE",
     )
+    prompt_product_extraction_file: str = Field(
+        default="prompts/rfq_product_extraction.md",
+        alias="PROMPT_PRODUCT_EXTRACTION_FILE",
+    )
     # ========================
     # Web Search (Perplexity)
     # ========================
@@ -150,6 +154,38 @@ class Settings(BaseSettings):
         default="1UY5w",
         alias="GLIDE_COL_ALL_RFQ_COSTING_MAGNITUDE_REASON",
     )
+
+    # ALL Product table writeback (product line items extracted from the incoming query).
+    # ENABLE_PRODUCT_EXTRACTION=false makes the whole feature a no-op: no third LLM
+    # call, no extra cost, /query/triage behaves exactly as it did before it existed.
+    # ENABLE_PRODUCT_WRITEBACK=false still runs the extraction but writes nothing.
+    enable_product_extraction: bool = Field(default=True, alias="ENABLE_PRODUCT_EXTRACTION")
+    enable_product_writeback: bool = Field(default=True, alias="ENABLE_PRODUCT_WRITEBACK")
+    product_extraction_max_tokens: int = Field(default=8000, alias="PRODUCT_EXTRACTION_MAX_TOKENS")
+    glide_all_product_table: str = Field(
+        default="native-table-4c42a6c4-6b7c-476f-88a8-65c0e8d3c774",
+        alias="GLIDE_ALL_PRODUCT_TABLE",
+    )
+    glide_col_product_name: str = Field(default="Name", alias="GLIDE_COL_PRODUCT_NAME")
+    glide_col_product_qty: str = Field(default="KAbSp", alias="GLIDE_COL_PRODUCT_QTY")
+    glide_col_product_details: str = Field(default="K03pz", alias="GLIDE_COL_PRODUCT_DETAILS")
+    glide_col_product_rfq_id: str = Field(default="3E2xY", alias="GLIDE_COL_PRODUCT_RFQ_ID")
+    glide_col_product_target_price: str = Field(default="hgVgd", alias="GLIDE_COL_PRODUCT_TARGET_PRICE")
+    glide_col_product_dwg_link: str = Field(default="f4QCb", alias="GLIDE_COL_PRODUCT_DWG_LINK")
+    glide_col_product_rep_url: str = Field(default="LXcW2", alias="GLIDE_COL_PRODUCT_REP_URL")
+    glide_col_product_addl_files: str = Field(default="JR0Lx", alias="GLIDE_COL_PRODUCT_ADDL_FILES")
+    # Line number in the customer's own ordering. Set to "" to leave the column alone.
+    glide_col_product_sr_no: str = Field(default="XbErc", alias="GLIDE_COL_PRODUCT_SR_NO")
+    # Boolean flag set to true on every row this service adds.
+    glide_col_product_accepted: str = Field(default="117zS", alias="GLIDE_COL_PRODUCT_ACCEPTED")
+    # Max product rows written per Glide mutateTables request.
+    glide_product_rows_per_request: int = Field(default=20, alias="GLIDE_PRODUCT_ROWS_PER_REQUEST")
+    # How long to wait for product extraction AFTER the triage output is written.
+    # Giving up here costs the product rows only; the ZAI response is already saved.
+    # Note JOB_TIMEOUT_SEC is the real ceiling: the job is killed at that point
+    # regardless, so a value above (JOB_TIMEOUT_SEC - attachments - triage) never
+    # gets used. Raise JOB_TIMEOUT_SEC too if long packages are being cut off.
+    product_extraction_timeout_sec: int = Field(default=300, alias="PRODUCT_EXTRACTION_TIMEOUT_SEC")
 
     # Gate triage writeback separately (keeps RFQ writeback safety intact)
     enable_triage_writeback: bool = Field(default=True, alias="ENABLE_TRIAGE_WRITEBACK")

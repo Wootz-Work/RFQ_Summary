@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import httpx
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 from .config import Settings
+
+if TYPE_CHECKING:
+    from .schema import ExtractedProduct
 
 
 def glide_set_columns(settings: Settings, row_id: str, column_values: dict) -> None:
@@ -261,6 +264,104 @@ def glide_add_zai_regenerate_row(settings: Settings, column_values: Dict[str, An
         if isinstance(value, str) and value.strip():
             return value.strip()
     return None
+
+
+def glide_add_product_rows(
+    settings: Settings,
+    rfq_row_id: str,
+    products: list["ExtractedProduct"],
+) -> int:
+    """
+    Adds extracted product line items to the ALL Product table, one row per line item,
+    linked back to the ALL RFQ row via the rfq id column.
+
+    Only columns configured in the environment are written, so a partially
+    configured table still gets Name/Qty/Details rather than failing.
+
+    Returns the number of rows written.
+    """
+    if not settings.enable_product_writeback:
+        return 0
+    if not products:
+        return 0
+
+    if not settings.glide_api_key or not settings.glide_app_id:
+        raise RuntimeError("Missing GLIDE_API_KEY/GLIDE_APP_ID.")
+
+    table = (settings.glide_all_product_table or "").strip()
+    if not table:
+        raise RuntimeError("Missing GLIDE_ALL_PRODUCT_TABLE.")
+
+    name_col = (settings.glide_col_product_name or "").strip()
+    if not name_col:
+        raise RuntimeError("Missing GLIDE_COL_PRODUCT_NAME.")
+
+    qty_col = (settings.glide_col_product_qty or "").strip()
+    details_col = (settings.glide_col_product_details or "").strip()
+    rfq_id_col = (settings.glide_col_product_rfq_id or "").strip()
+    target_price_col = (settings.glide_col_product_target_price or "").strip()
+    dwg_link_col = (settings.glide_col_product_dwg_link or "").strip()
+    rep_url_col = (settings.glide_col_product_rep_url or "").strip()
+    addl_files_col = (settings.glide_col_product_addl_files or "").strip()
+    sr_no_col = (settings.glide_col_product_sr_no or "").strip()
+    accepted_col = (settings.glide_col_product_accepted or "").strip()
+
+    mutations: list[Dict[str, Any]] = []
+    for position, product in enumerate(products, start=1):
+        column_values: Dict[str, Any] = {name_col: product.name or ""}
+
+        if rfq_id_col and (rfq_row_id or "").strip():
+            column_values[rfq_id_col] = rfq_row_id.strip()
+        if qty_col:
+            column_values[qty_col] = product.quantity.as_qty_text()
+        if details_col:
+            column_values[details_col] = product.details or ""
+        if target_price_col and product.target_price:
+            column_values[target_price_col] = product.target_price
+        if dwg_link_col and product.dwg_link:
+            column_values[dwg_link_col] = product.dwg_link
+        if rep_url_col and product.rep_url:
+            column_values[rep_url_col] = product.rep_url
+        if addl_files_col:
+            # The Glide column is a single uri, so only the first file fits; joining
+            # them would produce a string that is not a working link.
+            files = [u for u in (product.addl_files or []) if (u or "").strip()]
+            if files:
+                column_values[addl_files_col] = files[0]
+                if len(files) > 1:
+                    print(
+                        f"[WARN] product {product.name!r}: {len(files) - 1} additional file link(s) "
+                        f"dropped — 'Addl. files' holds one uri"
+                    )
+        if sr_no_col:
+            column_values[sr_no_col] = product.index if product.index is not None else position
+        if accepted_col:
+            column_values[accepted_col] = True
+
+        mutations.append(
+            {
+                "kind": "add-row-to-table",
+                "tableName": table,
+                "columnValues": column_values,
+            }
+        )
+
+    url = "https://api.glideapp.io/api/function/mutateTables"
+    batch_size = max(1, int(settings.glide_product_rows_per_request))
+    written = 0
+
+    with httpx.Client(timeout=120) as client:
+        for start in range(0, len(mutations), batch_size):
+            batch = mutations[start : start + batch_size]
+            r = client.post(
+                url,
+                headers=_glide_headers(settings),
+                json={"appID": settings.glide_app_id, "mutations": batch},
+            )
+            r.raise_for_status()
+            written += len(batch)
+
+    return written
 
 
 def _glide_query_rowid_by_rfq_id(settings: Settings, rfq_id: str) -> Optional[str]:

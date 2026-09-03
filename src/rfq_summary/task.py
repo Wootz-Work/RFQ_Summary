@@ -2,7 +2,8 @@ from __future__ import annotations
 import time
 import json
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from dataclasses import dataclass
 from typing import Tuple, List, Optional, Any
 import re
 from typing import Dict
@@ -11,6 +12,7 @@ from .schema import InputPayload, OutputPayload, WebFinding, QueryPayload, Triag
 from .attachments import analyze_attachments
 from .search import PerplexitySearchClient
 from .llm import load_prompt_file, generate_text
+from .product_extraction import parse_product_extraction
 from .glide_client import glide_query_all_companies, glide_query_geographies, glide_query_industries
 
 
@@ -199,12 +201,17 @@ def _unwrap_tagged_output(model_text: str, tag: str) -> str:
     return t
 
 
-def _generate_text_with_timing(settings: Settings, user_prompt: str) -> Tuple[str, int]:
+def _generate_text_with_timing(
+    settings: Settings,
+    user_prompt: str,
+    max_tokens: Optional[int] = None,
+) -> Tuple[str, int]:
     t_llm0 = time.perf_counter()
     model_text = generate_text(
         settings,
         system_prompt="You must follow the user instructions exactly.",
         user_prompt=user_prompt,
+        max_tokens=max_tokens,
     )
     llm_ms = int((time.perf_counter() - t_llm0) * 1000)
     return model_text, llm_ms
@@ -688,6 +695,74 @@ def run_all(settings: Settings, payload: InputPayload, run_id: Optional[str] = N
         structured={"products_count": (len(products) if products else (1 if first else 0))},
     )
 
+@dataclass
+class PendingProductExtraction:
+    """
+    A product-extraction call still in flight while the triage output is written.
+
+    Product line items are a bonus on top of the ZAI response, so nothing here is
+    allowed to slow that response down or fail the job.
+    """
+
+    run_id: str
+    future: "Future[Tuple[str, int]]"
+    executor: ThreadPoolExecutor
+    started_at: float
+
+
+def resolve_product_extraction(out: TriageOutputPayload, timeout_sec: Optional[float] = None) -> None:
+    """
+    Wait for the background product-extraction call and fold its result into `out`.
+
+    Called after the triage writeback, so the wait costs the ZAI response nothing.
+    Any failure — timeout, LLM error, unparseable output — leaves `out` with no
+    products and is logged rather than raised.
+    """
+    pending = out.pending_products
+    if pending is None:
+        return
+    out.pending_products = None
+
+    products_model_text = ""
+    products_llm_ms = 0
+    try:
+        products_model_text, products_llm_ms = pending.future.result(timeout=timeout_sec)
+    except FuturesTimeoutError:
+        print(
+            f"[WARN] run_id={pending.run_id} | product extraction timed out after {timeout_sec}s; "
+            f"skipping products (raise PRODUCT_EXTRACTION_TIMEOUT_SEC, and JOB_TIMEOUT_SEC if it is the binding limit). "
+            f"The ZAI response was already written."
+        )
+        pending.future.cancel()
+    except Exception as e:
+        print(f"[WARN] run_id={pending.run_id} | product extraction LLM failed: {type(e).__name__}: {e}")
+    finally:
+        pending.executor.shutdown(wait=False)
+
+    extraction = parse_product_extraction(products_model_text)
+    if extraction.parse_errors:
+        print(f"[WARN] run_id={pending.run_id} | product extraction parse errors: {extraction.parse_errors}")
+    print(
+        f"[INFO] run_id={pending.run_id} | product lines extracted={len(extraction.products)} "
+        f"skipped={len(extraction.skipped_products)} llm_ms={products_llm_ms}"
+    )
+
+    out.product_extraction = extraction
+    out.raw_products_model_output = products_model_text or ""
+    out.timings = {
+        **(out.timings or {}),
+        "products_llm_ms": products_llm_ms,
+        # Wall clock the products step added on top of the triage response.
+        "products_extra_ms": max(0, int((time.perf_counter() - pending.started_at) * 1000) - int((out.timings or {}).get("total_ms") or 0)),
+    }
+    out.structured = {
+        **(out.structured or {}),
+        "products_extracted": len(extraction.products),
+        "products_skipped": len(extraction.skipped_products),
+        "products_parse_errors": len(extraction.parse_errors),
+    }
+
+
 def run_query_triage(settings: Settings, payload: QueryPayload, run_id: Optional[str] = None) -> TriageOutputPayload:
     run_id = run_id or uuid.uuid4().hex[:10]
     t0 = time.perf_counter()
@@ -698,18 +773,62 @@ def run_query_triage(settings: Settings, payload: QueryPayload, run_id: Optional
     extracted_text = _join_attachment_text_any("", attachment_findings)
     attachments_ms = int((time.perf_counter() - t_attach0) * 1000)
 
-    # 2) Build both prompts from the same parsed attachment context.
+    # 2) Build the prompts from the same parsed attachment context.
     triage_prompt_template = load_prompt_file(settings.prompt_query_triage_file)
     costing_prompt_template = load_prompt_file(settings.prompt_query_costing_file)
     triage_user_prompt = _build_query_triage_prompt(triage_prompt_template, payload, extracted_text)
     costing_user_prompt = _build_query_triage_prompt(costing_prompt_template, payload, extracted_text)
 
-    # 3) Run both Claude calls in parallel.
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    # The product prompt is optional: a missing file or a bad path must not cost
+    # anyone their ZAI response, so it is loaded defensively and skipped on failure.
+    products_user_prompt = ""
+    if settings.enable_product_extraction:
+        try:
+            products_prompt_template = load_prompt_file(settings.prompt_product_extraction_file)
+            products_user_prompt = _build_query_triage_prompt(products_prompt_template, payload, extracted_text)
+        except Exception as e:
+            print(
+                f"[WARN] run_id={run_id} | could not load product prompt "
+                f"{settings.prompt_product_extraction_file!r}: {type(e).__name__}: {e}; skipping product extraction"
+            )
+    else:
+        print(f"[INFO] run_id={run_id} | product extraction disabled (ENABLE_PRODUCT_EXTRACTION=false)")
+
+    # 3) Run the Claude calls in parallel, but only WAIT for triage and costing
+    #    here. Product extraction keeps running in the background so it never
+    #    delays the ZAI response reaching Glide; the caller resolves it with
+    #    resolve_product_extraction() after the triage writeback.
+    executor = ThreadPoolExecutor(
+        max_workers=3 if products_user_prompt else 2,
+        thread_name_prefix=f"triage-{run_id}",
+    )
+    products_future = None
+    try:
         triage_future = executor.submit(_generate_text_with_timing, settings, triage_user_prompt)
         costing_future = executor.submit(_generate_text_with_timing, settings, costing_user_prompt)
+        if products_user_prompt:
+            products_future = executor.submit(
+                _generate_text_with_timing,
+                settings,
+                products_user_prompt,
+                settings.product_extraction_max_tokens,
+            )
         model_text, triage_llm_ms = triage_future.result()
         costing_model_text, costing_llm_ms = costing_future.result()
+    except Exception:
+        executor.shutdown(wait=False)
+        raise
+
+    if products_future is None:
+        executor.shutdown(wait=False)
+        pending_products = None
+    else:
+        pending_products = PendingProductExtraction(
+            run_id=run_id,
+            future=products_future,
+            executor=executor,
+            started_at=t0,
+        )
 
     triage_text = _wrap_tagged_output(model_text, "triage")
     costing_estimate_text = _unwrap_tagged_output(costing_model_text, "estimate")
@@ -733,6 +852,7 @@ def run_query_triage(settings: Settings, payload: QueryPayload, run_id: Optional
         raw_model_output=model_text or "",
         raw_costing_model_output=costing_model_text or "",
         attachment_findings=attachment_findings,
+        pending_products=pending_products,
         timings={
             "attachments_ms": attachments_ms,
             "triage_llm_ms": triage_llm_ms,
