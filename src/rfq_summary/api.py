@@ -10,8 +10,8 @@ from pydantic import ValidationError
 
 from .config import load_settings, Settings
 from .schema import InputPayload, QueryPayload, RfqClassificationInputPayload, RfqRegenerateTriageInputPayload, RfqQueryInputPayload
-from .task import run_pricing, run_summary, run_all, run_query_triage, run_rfq_classification, run_regenerate_triage, run_regenerate_query
-from .writer import write_all, write_triage, write_rfq_classification, write_regenerated_triage, write_regenerated_query
+from .task import run_pricing, run_summary, run_all, run_query_triage, run_rfq_classification, run_regenerate_triage, run_regenerate_query, resolve_product_extraction
+from .writer import write_all, write_triage, write_products, write_rfq_classification, write_regenerated_triage, write_regenerated_query
 from .gsheet_logger import log_job_event, log_progress_event
 
 Mode = Literal["pricing", "summary", "all", "triage", "classify", "regenerate_triage", "query_regenerate"]
@@ -440,27 +440,34 @@ async def _run_job(job: Job) -> None:
                 print(f"[STEP 3/3] run_id={job.run_id} | Write done in {int((time.perf_counter()-t0)*1000)}ms")
 
             elif job.mode == "triage":
-                print(f"[STEP 1/3] run_id={job.run_id} | Validating triage payload...")
+                print(f"[STEP 1/4] run_id={job.run_id} | Validating triage payload...")
                 qobj = _validate_query(job.payload)
-                print(f"[STEP 1/3] run_id={job.run_id} | Payload valid.")
-                print(f"[STEP 1/3] run_id={job.run_id} | subject={qobj.subject!r} from={qobj.from_!r} from_name={qobj.from_name!r}")
-                print(f"[STEP 1/3] run_id={job.run_id} | received_at={qobj.received_at!r} attachment_urls={qobj.attachment_urls}")
+                print(f"[STEP 1/4] run_id={job.run_id} | Payload valid.")
+                print(f"[STEP 1/4] run_id={job.run_id} | subject={qobj.subject!r} from={qobj.from_!r} from_name={qobj.from_name!r}")
+                print(f"[STEP 1/4] run_id={job.run_id} | received_at={qobj.received_at!r} attachment_urls={qobj.attachment_urls}")
 
-                print(f"[STEP 2/3] run_id={job.run_id} | Running TRIAGE task...")
+                print(f"[STEP 2/4] run_id={job.run_id} | Running TRIAGE task...")
                 t0 = time.perf_counter()
                 out = await asyncio.to_thread(run_query_triage, settings, qobj, job.run_id)
-                print(f"[STEP 2/3] run_id={job.run_id} | TRIAGE done in {int((time.perf_counter()-t0)*1000)}ms")
-                print(f"[STEP 2/3] run_id={job.run_id} | triage_text preview: {(out.triage_text or '')[:200]!r}")
-                print(f"[STEP 2/3] run_id={job.run_id} | estimate preview: {(out.costing_estimate_text or '')[:80]!r}")
-                extraction = out.product_extraction
-                print(f"[STEP 2/3] run_id={job.run_id} | product lines extracted: {len(extraction.products) if extraction else 0}")
-                if extraction and extraction.reconciliation_note():
-                    print(f"[STEP 2/3] run_id={job.run_id} | product reconciliation: {extraction.reconciliation_note()}")
+                print(f"[STEP 2/4] run_id={job.run_id} | TRIAGE done in {int((time.perf_counter()-t0)*1000)}ms")
+                print(f"[STEP 2/4] run_id={job.run_id} | triage_text preview: {(out.triage_text or '')[:200]!r}")
+                print(f"[STEP 2/4] run_id={job.run_id} | estimate preview: {(out.costing_estimate_text or '')[:80]!r}")
 
-                print(f"[STEP 3/3] run_id={job.run_id} | Adding triage output to ZAI Regenerate (triage_writeback={settings.enable_triage_writeback}) and product rows to ALL Product (product_writeback={settings.enable_product_writeback})...")
+                print(f"[STEP 3/4] run_id={job.run_id} | Adding triage output to ZAI Regenerate (triage_writeback={settings.enable_triage_writeback})...")
                 t0 = time.perf_counter()
                 await asyncio.to_thread(write_triage, settings, qobj, out)
-                print(f"[STEP 3/3] run_id={job.run_id} | Write done in {int((time.perf_counter()-t0)*1000)}ms")
+                print(f"[STEP 3/4] run_id={job.run_id} | Write done in {int((time.perf_counter()-t0)*1000)}ms")
+
+                # ZAI response is in Glide now. Product extraction has been running in
+                # the background since step 2; only from here does anyone wait on it.
+                print(f"[STEP 4/4] run_id={job.run_id} | Resolving product extraction (product_writeback={settings.enable_product_writeback})...")
+                t0 = time.perf_counter()
+                await asyncio.to_thread(resolve_product_extraction, out, float(settings.product_extraction_timeout_sec))
+                extraction = out.product_extraction
+                if extraction and extraction.reconciliation_note():
+                    print(f"[STEP 4/4] run_id={job.run_id} | product reconciliation: {extraction.reconciliation_note()}")
+                written = await asyncio.to_thread(write_products, settings, qobj, out)
+                print(f"[STEP 4/4] run_id={job.run_id} | {written} product row(s) written in {int((time.perf_counter()-t0)*1000)}ms")
 
             elif job.mode == "classify":
                 print(f"[STEP 1/3] run_id={job.run_id} | Validating RFQ classification payload...")

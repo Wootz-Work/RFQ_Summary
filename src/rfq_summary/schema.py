@@ -563,6 +563,9 @@ class TriageOutputPayload(BaseModel):
     raw_products_model_output: str = ""
 
     product_extraction: Optional[ProductExtractionResult] = None
+    # In-flight product-extraction handle, resolved after the triage output has
+    # been written. Never serialised.
+    pending_products: Any = Field(default=None, exclude=True, repr=False)
 
     attachment_findings: List[AttachmentFinding] = Field(default_factory=list)
 

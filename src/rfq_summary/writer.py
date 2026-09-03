@@ -173,6 +173,27 @@ def _write_extracted_products(settings: Settings, rfq_row_id: str, out: TriageOu
         return 0
 
 
+def write_products(settings: Settings, inp: QueryPayload, out: TriageOutputPayload) -> int:
+    """
+    Second phase of the triage job: add the extracted product line items to the
+    ALL Product table and log them.
+
+    Runs after write_triage, so the ZAI response is already in Glide by the time
+    anything here happens.
+    """
+    products_written = _write_extracted_products(settings, out.row_id, out)
+
+    rows = build_chunked_log_rows(
+        settings=settings,
+        run_id=out.run_id,
+        mode="triage_products",
+        row_id=out.row_id,
+        fields=_product_log_fields(out, products_written),
+    )
+    append_rows(settings, rows)
+    return products_written
+
+
 def _product_log_fields(out: TriageOutputPayload, products_written: int) -> Dict[str, str]:
     extraction = out.product_extraction
     if extraction is None:
@@ -244,9 +265,6 @@ def write_triage(settings: Settings, inp: QueryPayload, out: TriageOutputPayload
             out.costing_estimate_reason_text or "",
         )
 
-    # Product line items extracted from the same email + attachments.
-    products_written = _write_extracted_products(settings, out.row_id, out)
-
     # Log to Sheets (same sheet schema; different field names)
     fields = {
         "subject": inp.subject,
@@ -266,7 +284,6 @@ def write_triage(settings: Settings, inp: QueryPayload, out: TriageOutputPayload
         "timings": json.dumps(out.timings or {}, ensure_ascii=False),
         "docai": json.dumps(out.docai or {}, ensure_ascii=False),
         "writeback_enabled": str(bool(settings.enable_triage_writeback)),
-        **_product_log_fields(out, products_written),
     }
 
     rows = build_chunked_log_rows(

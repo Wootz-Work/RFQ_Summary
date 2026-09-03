@@ -24,6 +24,12 @@ Provenance, assumptions and queries stay out of the table — they are reviewer-
 and are logged to the Google Sheet alongside the raw model output, the count
 reconciliation and any rows that could not be parsed.
 
+The three calls start together, but the job only waits for triage and costing before
+writing the ZAI response — product extraction keeps running in the background and is
+collected afterwards, so it adds no latency to the ZAI response while still overlapping
+rather than running serially. `PRODUCT_EXTRACTION_TIMEOUT_SEC` (default 180) caps that
+wait; giving up costs the product rows only.
+
 Configure the target table with `GLIDE_ALL_PRODUCT_TABLE` and the `GLIDE_COL_PRODUCT_*`
 column ids (see `.env.example`). Only configured columns are written, and product
 writeback is best-effort: it can be turned off with `ENABLE_PRODUCT_WRITEBACK=false`, and

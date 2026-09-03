@@ -168,6 +168,9 @@ class Settings(BaseSettings):
     glide_col_product_addl_files: str = Field(default="", alias="GLIDE_COL_PRODUCT_ADDL_FILES")
     # Max product rows written per Glide mutateTables request.
     glide_product_rows_per_request: int = Field(default=20, alias="GLIDE_PRODUCT_ROWS_PER_REQUEST")
+    # How long to wait for product extraction AFTER the triage output is written.
+    # Giving up here costs the product rows only; the ZAI response is already saved.
+    product_extraction_timeout_sec: int = Field(default=180, alias="PRODUCT_EXTRACTION_TIMEOUT_SEC")
 
     # Gate triage writeback separately (keeps RFQ writeback safety intact)
     enable_triage_writeback: bool = Field(default=True, alias="ENABLE_TRIAGE_WRITEBACK")
