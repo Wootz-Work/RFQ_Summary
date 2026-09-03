@@ -201,12 +201,17 @@ def _unwrap_tagged_output(model_text: str, tag: str) -> str:
     return t
 
 
-def _generate_text_with_timing(settings: Settings, user_prompt: str) -> Tuple[str, int]:
+def _generate_text_with_timing(
+    settings: Settings,
+    user_prompt: str,
+    max_tokens: Optional[int] = None,
+) -> Tuple[str, int]:
     t_llm0 = time.perf_counter()
     model_text = generate_text(
         settings,
         system_prompt="You must follow the user instructions exactly.",
         user_prompt=user_prompt,
+        max_tokens=max_tokens,
     )
     llm_ms = int((time.perf_counter() - t_llm0) * 1000)
     return model_text, llm_ms
@@ -764,35 +769,62 @@ def run_query_triage(settings: Settings, payload: QueryPayload, run_id: Optional
     extracted_text = _join_attachment_text_any("", attachment_findings)
     attachments_ms = int((time.perf_counter() - t_attach0) * 1000)
 
-    # 2) Build all prompts from the same parsed attachment context.
+    # 2) Build the prompts from the same parsed attachment context.
     triage_prompt_template = load_prompt_file(settings.prompt_query_triage_file)
     costing_prompt_template = load_prompt_file(settings.prompt_query_costing_file)
-    products_prompt_template = load_prompt_file(settings.prompt_product_extraction_file)
     triage_user_prompt = _build_query_triage_prompt(triage_prompt_template, payload, extracted_text)
     costing_user_prompt = _build_query_triage_prompt(costing_prompt_template, payload, extracted_text)
-    products_user_prompt = _build_query_triage_prompt(products_prompt_template, payload, extracted_text)
 
-    # 3) Run all three Claude calls in parallel, but only WAIT for triage and
-    #    costing here. Product extraction keeps running in the background so it
-    #    never delays the ZAI response reaching Glide; the caller resolves it
-    #    with resolve_product_extraction() after the triage writeback.
-    executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix=f"triage-{run_id}")
+    # The product prompt is optional: a missing file or a bad path must not cost
+    # anyone their ZAI response, so it is loaded defensively and skipped on failure.
+    products_user_prompt = ""
+    if settings.enable_product_extraction:
+        try:
+            products_prompt_template = load_prompt_file(settings.prompt_product_extraction_file)
+            products_user_prompt = _build_query_triage_prompt(products_prompt_template, payload, extracted_text)
+        except Exception as e:
+            print(
+                f"[WARN] run_id={run_id} | could not load product prompt "
+                f"{settings.prompt_product_extraction_file!r}: {type(e).__name__}: {e}; skipping product extraction"
+            )
+    else:
+        print(f"[INFO] run_id={run_id} | product extraction disabled (ENABLE_PRODUCT_EXTRACTION=false)")
+
+    # 3) Run the Claude calls in parallel, but only WAIT for triage and costing
+    #    here. Product extraction keeps running in the background so it never
+    #    delays the ZAI response reaching Glide; the caller resolves it with
+    #    resolve_product_extraction() after the triage writeback.
+    executor = ThreadPoolExecutor(
+        max_workers=3 if products_user_prompt else 2,
+        thread_name_prefix=f"triage-{run_id}",
+    )
+    products_future = None
     try:
         triage_future = executor.submit(_generate_text_with_timing, settings, triage_user_prompt)
         costing_future = executor.submit(_generate_text_with_timing, settings, costing_user_prompt)
-        products_future = executor.submit(_generate_text_with_timing, settings, products_user_prompt)
+        if products_user_prompt:
+            products_future = executor.submit(
+                _generate_text_with_timing,
+                settings,
+                products_user_prompt,
+                settings.product_extraction_max_tokens,
+            )
         model_text, triage_llm_ms = triage_future.result()
         costing_model_text, costing_llm_ms = costing_future.result()
     except Exception:
         executor.shutdown(wait=False)
         raise
 
-    pending_products = PendingProductExtraction(
-        run_id=run_id,
-        future=products_future,
-        executor=executor,
-        started_at=t0,
-    )
+    if products_future is None:
+        executor.shutdown(wait=False)
+        pending_products = None
+    else:
+        pending_products = PendingProductExtraction(
+            run_id=run_id,
+            future=products_future,
+            executor=executor,
+            started_at=t0,
+        )
 
     triage_text = _wrap_tagged_output(model_text, "triage")
     costing_estimate_text = _unwrap_tagged_output(costing_model_text, "estimate")

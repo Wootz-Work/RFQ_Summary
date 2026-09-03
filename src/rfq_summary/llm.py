@@ -24,7 +24,12 @@ def _models(settings: Settings) -> List[str]:
     return out
 
 
-def generate_text(settings: Settings, system_prompt: str, user_prompt: str) -> str:
+def generate_text(
+    settings: Settings,
+    system_prompt: str,
+    user_prompt: str,
+    max_tokens: int | None = None,
+) -> str:
     if not (settings.anthropic_api_key or "").strip():
         raise RuntimeError("Missing ANTHROPIC_API_KEY")
 
@@ -35,7 +40,7 @@ def generate_text(settings: Settings, system_prompt: str, user_prompt: str) -> s
                 model=model,
                 anthropic_api_key=settings.anthropic_api_key,
                 temperature=0.2,
-                max_tokens=max(1000, int(settings.anthropic_max_tokens)),
+                max_tokens=8000 if max_tokens is None else max(1000, int(max_tokens)),
             )
             resp = llm.invoke(
                 [

@@ -156,7 +156,12 @@ class Settings(BaseSettings):
     )
 
     # ALL Product table writeback (product line items extracted from the incoming query).
+    # ENABLE_PRODUCT_EXTRACTION=false makes the whole feature a no-op: no third LLM
+    # call, no extra cost, /query/triage behaves exactly as it did before it existed.
+    # ENABLE_PRODUCT_WRITEBACK=false still runs the extraction but writes nothing.
+    enable_product_extraction: bool = Field(default=True, alias="ENABLE_PRODUCT_EXTRACTION")
     enable_product_writeback: bool = Field(default=True, alias="ENABLE_PRODUCT_WRITEBACK")
+    product_extraction_max_tokens: int = Field(default=8000, alias="PRODUCT_EXTRACTION_MAX_TOKENS")
     glide_all_product_table: str = Field(default="", alias="GLIDE_ALL_PRODUCT_TABLE")
     glide_col_product_name: str = Field(default="Name", alias="GLIDE_COL_PRODUCT_NAME")
     glide_col_product_qty: str = Field(default="", alias="GLIDE_COL_PRODUCT_QTY")

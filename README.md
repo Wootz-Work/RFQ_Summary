@@ -30,6 +30,9 @@ collected afterwards, so it adds no latency to the ZAI response while still over
 rather than running serially. `PRODUCT_EXTRACTION_TIMEOUT_SEC` (default 180) caps that
 wait; giving up costs the product rows only.
 
+`ENABLE_PRODUCT_EXTRACTION=false` makes the whole feature a no-op — no third LLM call,
+no added cost — so `/query/triage` behaves exactly as it did before this existed.
+
 Configure the target table with `GLIDE_ALL_PRODUCT_TABLE` and the `GLIDE_COL_PRODUCT_*`
 column ids (see `.env.example`). Only configured columns are written, and product
 writeback is best-effort: it can be turned off with `ENABLE_PRODUCT_WRITEBACK=false`, and
