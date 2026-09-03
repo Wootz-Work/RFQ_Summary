@@ -46,6 +46,10 @@ class Settings(BaseSettings):
         default="prompts/query_regenerate_costing_estimate.md",
         alias="PROMPT_QUERY_REGENERATE_COSTING_FILE",
     )
+    prompt_product_extraction_file: str = Field(
+        default="prompts/rfq_product_extraction.md",
+        alias="PROMPT_PRODUCT_EXTRACTION_FILE",
+    )
     # ========================
     # Web Search (Perplexity)
     # ========================
@@ -150,6 +154,20 @@ class Settings(BaseSettings):
         default="1UY5w",
         alias="GLIDE_COL_ALL_RFQ_COSTING_MAGNITUDE_REASON",
     )
+
+    # ALL Product table writeback (product line items extracted from the incoming query).
+    enable_product_writeback: bool = Field(default=True, alias="ENABLE_PRODUCT_WRITEBACK")
+    glide_all_product_table: str = Field(default="", alias="GLIDE_ALL_PRODUCT_TABLE")
+    glide_col_product_name: str = Field(default="Name", alias="GLIDE_COL_PRODUCT_NAME")
+    glide_col_product_qty: str = Field(default="", alias="GLIDE_COL_PRODUCT_QTY")
+    glide_col_product_details: str = Field(default="", alias="GLIDE_COL_PRODUCT_DETAILS")
+    glide_col_product_rfq_id: str = Field(default="", alias="GLIDE_COL_PRODUCT_RFQ_ID")
+    glide_col_product_target_price: str = Field(default="", alias="GLIDE_COL_PRODUCT_TARGET_PRICE")
+    glide_col_product_dwg_link: str = Field(default="", alias="GLIDE_COL_PRODUCT_DWG_LINK")
+    glide_col_product_rep_url: str = Field(default="", alias="GLIDE_COL_PRODUCT_REP_URL")
+    glide_col_product_addl_files: str = Field(default="", alias="GLIDE_COL_PRODUCT_ADDL_FILES")
+    # Max product rows written per Glide mutateTables request.
+    glide_product_rows_per_request: int = Field(default=20, alias="GLIDE_PRODUCT_ROWS_PER_REQUEST")
 
     # Gate triage writeback separately (keeps RFQ writeback safety intact)
     enable_triage_writeback: bool = Field(default=True, alias="ENABLE_TRIAGE_WRITEBACK")

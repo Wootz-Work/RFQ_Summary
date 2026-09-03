@@ -6,7 +6,7 @@ from typing import Dict
 
 from .config import Settings
 from .schema import InputPayload, OutputPayload, QueryPayload, TriageOutputPayload, RfqClassificationInputPayload, RfqClassificationOutputPayload, RfqRegenerateTriageInputPayload, RfqRegenerateTriageOutputPayload, RfqQueryInputPayload, RfqQueryOutputPayload
-from .glide_client import glide_upsert_zai_response_by_rfq_id, glide_update_all_rfq_triage_outputs, glide_update_prospect_rfq_classification, glide_add_zai_regenerate_row
+from .glide_client import glide_upsert_zai_response_by_rfq_id, glide_update_all_rfq_triage_outputs, glide_update_prospect_rfq_classification, glide_add_zai_regenerate_row, glide_add_product_rows
 from .gsheet_logger import append_rows, build_chunked_log_rows
 
 
@@ -141,6 +141,66 @@ def write_all(settings: Settings, inp: InputPayload, out: OutputPayload) -> None
     append_rows(settings, rows)
 
 
+def _write_extracted_products(settings: Settings, rfq_row_id: str, out: TriageOutputPayload) -> int:
+    """
+    Adds the extracted product line items to the ALL Product table.
+
+    Product writeback is best-effort: the triage response is already stored by the
+    time we get here, so a product-table failure is logged and swallowed rather
+    than failing the job.
+    """
+    extraction = out.product_extraction
+    if extraction is None or not extraction.products:
+        return 0
+
+    if not settings.enable_product_writeback:
+        print(f"[INFO] run_id={out.run_id} | product writeback disabled; {len(extraction.products)} line(s) not written")
+        return 0
+
+    if not (settings.glide_all_product_table or "").strip():
+        print(
+            f"[WARN] run_id={out.run_id} | GLIDE_ALL_PRODUCT_TABLE not configured; "
+            f"{len(extraction.products)} product line(s) not written"
+        )
+        return 0
+
+    try:
+        written = glide_add_product_rows(settings, rfq_row_id, extraction.products)
+        print(f"[INFO] run_id={out.run_id} | wrote {written} product row(s) to ALL Product for rfq_id={rfq_row_id}")
+        return written
+    except Exception as e:
+        print(f"[WARN] run_id={out.run_id} | product writeback failed: {type(e).__name__}: {e}")
+        return 0
+
+
+def _product_log_fields(out: TriageOutputPayload, products_written: int) -> Dict[str, str]:
+    extraction = out.product_extraction
+    if extraction is None:
+        return {
+            "products_extracted": "0",
+            "products_written": str(products_written),
+            "products_json": "[]",
+        }
+
+    header = extraction.header
+    summary = extraction.summary
+
+    return {
+        "products_extracted": str(len(extraction.products)),
+        "products_written": str(products_written),
+        "products_json": json.dumps(
+            [p.model_dump(mode="json") for p in extraction.products],
+            ensure_ascii=False,
+        ),
+        "products_header": json.dumps(header.model_dump(mode="json") if header else {}, ensure_ascii=False),
+        "products_summary": json.dumps(summary.model_dump(mode="json") if summary else {}, ensure_ascii=False),
+        "products_reconciliation": extraction.reconciliation_note(),
+        "products_skipped": json.dumps(extraction.skipped_products or [], ensure_ascii=False),
+        "products_parse_errors": json.dumps(extraction.parse_errors or [], ensure_ascii=False),
+        "raw_products_model_output": out.raw_products_model_output or "",
+    }
+
+
 def write_triage(settings: Settings, inp: QueryPayload, out: TriageOutputPayload) -> None:
     """
     Writes the initial triage output into the ZAI Regenerate table.
@@ -184,6 +244,9 @@ def write_triage(settings: Settings, inp: QueryPayload, out: TriageOutputPayload
             out.costing_estimate_reason_text or "",
         )
 
+    # Product line items extracted from the same email + attachments.
+    products_written = _write_extracted_products(settings, out.row_id, out)
+
     # Log to Sheets (same sheet schema; different field names)
     fields = {
         "subject": inp.subject,
@@ -203,6 +266,7 @@ def write_triage(settings: Settings, inp: QueryPayload, out: TriageOutputPayload
         "timings": json.dumps(out.timings or {}, ensure_ascii=False),
         "docai": json.dumps(out.docai or {}, ensure_ascii=False),
         "writeback_enabled": str(bool(settings.enable_triage_writeback)),
+        **_product_log_fields(out, products_written),
     }
 
     rows = build_chunked_log_rows(

@@ -11,6 +11,7 @@ from .schema import InputPayload, OutputPayload, WebFinding, QueryPayload, Triag
 from .attachments import analyze_attachments
 from .search import PerplexitySearchClient
 from .llm import load_prompt_file, generate_text
+from .product_extraction import parse_product_extraction
 from .glide_client import glide_query_all_companies, glide_query_geographies, glide_query_industries
 
 
@@ -698,18 +699,35 @@ def run_query_triage(settings: Settings, payload: QueryPayload, run_id: Optional
     extracted_text = _join_attachment_text_any("", attachment_findings)
     attachments_ms = int((time.perf_counter() - t_attach0) * 1000)
 
-    # 2) Build both prompts from the same parsed attachment context.
+    # 2) Build all prompts from the same parsed attachment context.
     triage_prompt_template = load_prompt_file(settings.prompt_query_triage_file)
     costing_prompt_template = load_prompt_file(settings.prompt_query_costing_file)
+    products_prompt_template = load_prompt_file(settings.prompt_product_extraction_file)
     triage_user_prompt = _build_query_triage_prompt(triage_prompt_template, payload, extracted_text)
     costing_user_prompt = _build_query_triage_prompt(costing_prompt_template, payload, extracted_text)
+    products_user_prompt = _build_query_triage_prompt(products_prompt_template, payload, extracted_text)
 
-    # 3) Run both Claude calls in parallel.
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    # 3) Run all Claude calls in parallel (triage, costing, product line items).
+    with ThreadPoolExecutor(max_workers=3) as executor:
         triage_future = executor.submit(_generate_text_with_timing, settings, triage_user_prompt)
         costing_future = executor.submit(_generate_text_with_timing, settings, costing_user_prompt)
+        products_future = executor.submit(_generate_text_with_timing, settings, products_user_prompt)
         model_text, triage_llm_ms = triage_future.result()
         costing_model_text, costing_llm_ms = costing_future.result()
+        try:
+            products_model_text, products_llm_ms = products_future.result()
+        except Exception as e:
+            # Product extraction must never take the triage output down with it.
+            print(f"[WARN] run_id={run_id} | product extraction LLM failed: {type(e).__name__}: {e}")
+            products_model_text, products_llm_ms = "", 0
+
+    product_extraction = parse_product_extraction(products_model_text)
+    if product_extraction.parse_errors:
+        print(f"[WARN] run_id={run_id} | product extraction parse errors: {product_extraction.parse_errors}")
+    print(
+        f"[INFO] run_id={run_id} | product lines extracted={len(product_extraction.products)} "
+        f"skipped={len(product_extraction.skipped_products)}"
+    )
 
     triage_text = _wrap_tagged_output(model_text, "triage")
     costing_estimate_text = _unwrap_tagged_output(costing_model_text, "estimate")
@@ -732,16 +750,24 @@ def run_query_triage(settings: Settings, payload: QueryPayload, run_id: Optional
         costing_estimate_reason_text=costing_estimate_reason_text,
         raw_model_output=model_text or "",
         raw_costing_model_output=costing_model_text or "",
+        raw_products_model_output=products_model_text or "",
+        product_extraction=product_extraction,
         attachment_findings=attachment_findings,
         timings={
             "attachments_ms": attachments_ms,
             "triage_llm_ms": triage_llm_ms,
             "costing_llm_ms": costing_llm_ms,
-            "llm_parallel_max_ms": max(triage_llm_ms, costing_llm_ms),
+            "products_llm_ms": products_llm_ms,
+            "llm_parallel_max_ms": max(triage_llm_ms, costing_llm_ms, products_llm_ms),
             "total_ms": total_ms,
         },
         docai=docai,
-        structured={"attachments_count": len(attachment_findings or [])},
+        structured={
+            "attachments_count": len(attachment_findings or []),
+            "products_extracted": len(product_extraction.products),
+            "products_skipped": len(product_extraction.skipped_products),
+            "products_parse_errors": len(product_extraction.parse_errors),
+        },
     )
 
 

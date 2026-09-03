@@ -452,8 +452,12 @@ async def _run_job(job: Job) -> None:
                 print(f"[STEP 2/3] run_id={job.run_id} | TRIAGE done in {int((time.perf_counter()-t0)*1000)}ms")
                 print(f"[STEP 2/3] run_id={job.run_id} | triage_text preview: {(out.triage_text or '')[:200]!r}")
                 print(f"[STEP 2/3] run_id={job.run_id} | estimate preview: {(out.costing_estimate_text or '')[:80]!r}")
+                extraction = out.product_extraction
+                print(f"[STEP 2/3] run_id={job.run_id} | product lines extracted: {len(extraction.products) if extraction else 0}")
+                if extraction and extraction.reconciliation_note():
+                    print(f"[STEP 2/3] run_id={job.run_id} | product reconciliation: {extraction.reconciliation_note()}")
 
-                print(f"[STEP 3/3] run_id={job.run_id} | Adding triage output to ZAI Regenerate (triage_writeback={settings.enable_triage_writeback})...")
+                print(f"[STEP 3/3] run_id={job.run_id} | Adding triage output to ZAI Regenerate (triage_writeback={settings.enable_triage_writeback}) and product rows to ALL Product (product_writeback={settings.enable_product_writeback})...")
                 t0 = time.perf_counter()
                 await asyncio.to_thread(write_triage, settings, qobj, out)
                 print(f"[STEP 3/3] run_id={job.run_id} | Write done in {int((time.perf_counter()-t0)*1000)}ms")
