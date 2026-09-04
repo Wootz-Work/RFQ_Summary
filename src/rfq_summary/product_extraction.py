@@ -179,6 +179,11 @@ def _validate(result: ProductExtractionResult) -> List[str]:
         if section and section not in QUERY_SECTIONS:
             warnings.append(f"query {q.query_ref or '?'}: unknown section {section!r}")
 
+    # A product carrying variants that never reach a table is worth flagging once.
+    for p in products:
+        if p.annexure and p.annexure.required and not p.annexure.by_reference and not p.annexure.rows:
+            warnings.append(f"line {p.index}: annexure marked required but carries no variant rows")
+
     # A query pointing at a line that was never emitted cannot be linked on insert.
     known = {p.index for p in products if p.index is not None}
     for q in queries:
@@ -186,6 +191,17 @@ def _validate(result: ProductExtractionResult) -> List[str]:
             warnings.append(f"query {q.query_ref or '?'} refers to line {q.product_ref}, which was not extracted")
 
     return warnings
+
+
+def _looks_truncated(model_text: str, errors: List[str]) -> bool:
+    """
+    An output cut off at the token cap ends mid-object: the last block fails to
+    parse and the text does not close it. Distinguishable from ordinary junk.
+    """
+    if not any("unparseable block" in e for e in errors):
+        return False
+    tail = (model_text or "").rstrip()
+    return bool(tail) and not tail.endswith(("}", "]"))
 
 
 def parse_product_extraction(model_text: str) -> ProductExtractionResult:
@@ -240,5 +256,13 @@ def parse_product_extraction(model_text: str) -> ProductExtractionResult:
         parse_errors=errors,
         raw_model_output=model_text or "",
     )
+    # Truncation is the one failure that silently costs a whole line item: the
+    # product object is unterminated, so it never becomes a row. Name it plainly.
+    if _looks_truncated(model_text, errors):
+        result.parse_errors.append(
+            "model output appears truncated — raise PRODUCT_EXTRACTION_MAX_TOKENS, or have the "
+            "prompt carry large annexures by reference instead of inline"
+        )
+
     result.validation_warnings = _validate(result)
     return result

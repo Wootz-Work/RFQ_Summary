@@ -76,8 +76,10 @@ def _detect_table_regions(rows: List[List[str]], max_tables: int) -> List[Dict[s
                         "start_row": r + 1,
                         "end_row": r2,
                         "header": header[:40],
-                        "rows_sample": [b[:40] for b in body[:200]],  # bigger sample for LLM
-                        "row_count_sampled": min(len(body), 200),
+                        # The matrix is already bounded by MAX_EXCEL_ROWS upstream; a
+                        # second cap here silently halved long BOMs.
+                        "rows_sample": [b[:40] for b in body],
+                        "row_count_sampled": len(body),
                     }
                 )
             r = r2 + 1
@@ -151,11 +153,17 @@ def analyze_excel_bytes(settings: Settings, url: str, data: bytes) -> Attachment
     for ws in wb_vals.worksheets:
         matrix = _extract_sheet_matrix(ws, settings.max_excel_rows, settings.max_excel_cols)
         tables = _detect_table_regions(matrix, settings.max_excel_tables_per_sheet)
+        # A sheet longer than the cap loses its tail. Say so, so the model can report
+        # it in reconciliation instead of quietly quoting a partial list.
+        sheet_rows_total = int(ws.max_row or 0)
+        rows_dropped = max(0, sheet_rows_total - settings.max_excel_rows)
 
         sheet_summaries.append(
             {
                 "sheet": ws.title,
                 "tables_detected": len(tables),
+                "rows_total": sheet_rows_total,
+                "rows_dropped_by_cap": rows_dropped,
                 "tables": tables,
             }
         )
@@ -164,6 +172,15 @@ def analyze_excel_bytes(settings: Settings, url: str, data: bytes) -> Attachment
         if remaining > 0:
             extracted_blocks.append(f"## EXCEL SHEET: {ws.title}")
             remaining -= len(extracted_blocks[-1]) + 1
+
+            if rows_dropped:
+                notice = (
+                    f"!! ROW LIMIT: this sheet has {sheet_rows_total} rows; only the first "
+                    f"{settings.max_excel_rows} are shown. {rows_dropped} row(s) are NOT included below "
+                    f"— report this in reconciliation and do not treat the list as complete."
+                )
+                extracted_blocks.append(notice)
+                remaining -= len(notice) + 1
 
             # 1) table regions (best signal)
             if tables and remaining > 0:
