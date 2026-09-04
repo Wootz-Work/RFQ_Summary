@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import httpx
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from .config import Settings
 
 if TYPE_CHECKING:
-    from .schema import ExtractedProduct
+    from .schema import ExtractedProduct, ExtractedQuery
 
 
 def glide_set_columns(settings: Settings, row_id: str, column_values: dict) -> None:
@@ -266,11 +266,36 @@ def glide_add_zai_regenerate_row(settings: Settings, column_values: Dict[str, An
     return None
 
 
+def _extract_row_ids(data: Any, expected: int) -> List[Optional[str]]:
+    """
+    Pull the Row IDs Glide returns for a batch of add-row mutations.
+
+    The response is one entry per mutation, in order. Anything we cannot read
+    comes back as None so the caller can degrade rather than mislink a row.
+    """
+    entries = data if isinstance(data, list) else [data]
+    out: List[Optional[str]] = []
+    for entry in entries[:expected]:
+        row_id: Optional[str] = None
+        if isinstance(entry, dict):
+            for key in ("Row ID", "$rowID", "rowID", "row_id"):
+                value = entry.get(key)
+                if isinstance(value, str) and value.strip():
+                    row_id = value.strip()
+                    break
+        elif isinstance(entry, str) and entry.strip():
+            row_id = entry.strip()
+        out.append(row_id)
+    while len(out) < expected:
+        out.append(None)
+    return out
+
+
 def glide_add_product_rows(
     settings: Settings,
     rfq_row_id: str,
     products: list["ExtractedProduct"],
-) -> int:
+) -> List[Optional[str]]:
     """
     Adds extracted product line items to the ALL Product table, one row per line item,
     linked back to the ALL RFQ row via the rfq id column.
@@ -278,12 +303,14 @@ def glide_add_product_rows(
     Only columns configured in the environment are written, so a partially
     configured table still gets Name/Qty/Details rather than failing.
 
-    Returns the number of rows written.
+    Returns the created Row IDs, positionally aligned with `products`; an entry is
+    None when Glide did not return an id for that row. Those ids are what the
+    queries table's "Product id" column is filled from.
     """
     if not settings.enable_product_writeback:
-        return 0
+        return []
     if not products:
-        return 0
+        return []
 
     if not settings.glide_api_key or not settings.glide_app_id:
         raise RuntimeError("Missing GLIDE_API_KEY/GLIDE_APP_ID.")
@@ -296,8 +323,14 @@ def glide_add_product_rows(
     if not name_col:
         raise RuntimeError("Missing GLIDE_COL_PRODUCT_NAME.")
 
+    # Rows with no RFQ to link back to are orphans in a live table: nobody can tell
+    # which enquiry they came from, and cleaning them up is manual. Refuse instead.
+    if (settings.glide_col_product_rfq_id or "").strip() and not (rfq_row_id or "").strip():
+        raise RuntimeError("rfq_row_id is empty; refusing to add unlinked product rows.")
+
     qty_col = (settings.glide_col_product_qty or "").strip()
     details_col = (settings.glide_col_product_details or "").strip()
+    internal_col = (settings.glide_col_product_internal_notes or "").strip()
     rfq_id_col = (settings.glide_col_product_rfq_id or "").strip()
     target_price_col = (settings.glide_col_product_target_price or "").strip()
     dwg_link_col = (settings.glide_col_product_dwg_link or "").strip()
@@ -313,9 +346,11 @@ def glide_add_product_rows(
         if rfq_id_col and (rfq_row_id or "").strip():
             column_values[rfq_id_col] = rfq_row_id.strip()
         if qty_col:
-            column_values[qty_col] = product.quantity.as_qty_text()
+            column_values[qty_col] = product.quantity or ""
         if details_col:
             column_values[details_col] = product.details or ""
+        if internal_col and (product.internal_notes or "").strip():
+            column_values[internal_col] = product.internal_notes
         if target_price_col and product.target_price:
             column_values[target_price_col] = product.target_price
         if dwg_link_col and product.dwg_link:
@@ -337,6 +372,97 @@ def glide_add_product_rows(
             column_values[sr_no_col] = product.index if product.index is not None else position
         if accepted_col:
             column_values[accepted_col] = True
+
+        mutations.append(
+            {
+                "kind": "add-row-to-table",
+                "tableName": table,
+                "columnValues": column_values,
+            }
+        )
+
+    url = "https://api.glideapp.io/api/function/mutateTables"
+    batch_size = max(1, int(settings.glide_product_rows_per_request))
+    row_ids: List[Optional[str]] = []
+
+    with httpx.Client(timeout=120) as client:
+        for start in range(0, len(mutations), batch_size):
+            batch = mutations[start : start + batch_size]
+            r = client.post(
+                url,
+                headers=_glide_headers(settings),
+                json={"appID": settings.glide_app_id, "mutations": batch},
+            )
+            r.raise_for_status()
+            try:
+                row_ids.extend(_extract_row_ids(r.json(), len(batch)))
+            except Exception:
+                row_ids.extend([None] * len(batch))
+
+    return row_ids
+
+
+def glide_add_query_rows(
+    settings: Settings,
+    rfq_row_id: str,
+    queries: list["ExtractedQuery"],
+    product_row_ids: Dict[int, str],
+) -> int:
+    """
+    Adds one row per open question to the queries table.
+
+    `product_row_ids` maps a product's index to the Row ID it was written as, so
+    each query can point at the line it blocks. A query whose product row id is
+    unknown, and every RFQ-level query, is still written — linked to the RFQ but
+    with no product — because losing the question entirely is worse.
+
+    Query ID is database-assigned and Query Response belongs to the customer;
+    neither is written here.
+
+    Returns the number of rows written.
+    """
+    if not settings.enable_query_writeback:
+        return 0
+    if not queries:
+        return 0
+
+    if not settings.glide_api_key or not settings.glide_app_id:
+        raise RuntimeError("Missing GLIDE_API_KEY/GLIDE_APP_ID.")
+
+    table = (settings.glide_queries_table or "").strip()
+    if not table:
+        raise RuntimeError("Missing GLIDE_QUERIES_TABLE.")
+
+    description_col = (settings.glide_col_query_description or "").strip()
+    if not description_col:
+        raise RuntimeError("Missing GLIDE_COL_QUERY_DESCRIPTION.")
+
+    rfq_id_col = (settings.glide_col_query_rfq_id or "").strip()
+    if rfq_id_col and not (rfq_row_id or "").strip():
+        raise RuntimeError("rfq_row_id is empty; refusing to add unlinked query rows.")
+
+    product_id_col = (settings.glide_col_query_product_id or "").strip()
+    photo_col = (settings.glide_col_query_photo or "").strip()
+
+    mutations: list[Dict[str, Any]] = []
+    for query in queries:
+        column_values: Dict[str, Any] = {description_col: query.description or ""}
+
+        if rfq_id_col and (rfq_row_id or "").strip():
+            column_values[rfq_id_col] = rfq_row_id.strip()
+
+        if product_id_col and query.product_ref is not None:
+            product_row_id = product_row_ids.get(query.product_ref)
+            if product_row_id:
+                column_values[product_id_col] = product_row_id
+            else:
+                print(
+                    f"[WARN] query {query.query_ref or '?'} points at line {query.product_ref}, "
+                    f"whose row id is unknown — writing it against the RFQ only"
+                )
+
+        if photo_col and query.photo_text():
+            column_values[photo_col] = query.photo_text()
 
         mutations.append(
             {

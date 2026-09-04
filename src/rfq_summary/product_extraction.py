@@ -3,20 +3,32 @@ from __future__ import annotations
 """
 Parsing for the RFQ product-extraction prompt (prompts/rfq_product_extraction.md).
 
-The prompt emits NDJSON: an rfq_header object, then one product object per line
-item in customer order, then an rfq_summary object. Kept separate from task.py so
-it can be exercised without the LLM / attachment stack.
+The prompt emits NDJSON: an rfq_header, then each product followed immediately by
+its own query objects, then the RFQ-level queries, then an rfq_summary. Kept
+separate from task.py so it can be exercised without the LLM / attachment stack.
+
+Several prompt rules are checked here rather than trusted to the model — the
+prompt's own maintainer notes call for exactly that. Violations become
+`validation_warnings`, which are logged and stored; they never block a write.
 """
 
 import json
 from typing import Any, Dict, List, Optional, Tuple
 
 from .schema import (
+    PLACEHOLDER,
+    QUERY_SECTIONS,
     ExtractedProduct,
+    ExtractedQuery,
     ProductExtractionHeader,
     ProductExtractionResult,
     ProductExtractionSummary,
 )
+
+MAX_NAME_CHARS = 50
+
+# §5.1 — a name that is only a number, or a pointer to somewhere else, is not a name.
+FORBIDDEN_NAMES = {"test", "fastener", "as per attached excel", "as per drawing", "as per excel"}
 
 
 def _strip_code_fences(text: str) -> str:
@@ -87,18 +99,98 @@ def parse_ndjson_objects(model_text: str) -> Tuple[List[Dict[str, Any]], List[st
 
 def _infer_object_type(obj: Dict[str, Any]) -> str:
     """"type" is occasionally omitted; infer it from the shape."""
-    if "line_count_expected" in obj or "rfq_title" in obj:
+    if "line_count_expected" in obj or "common_conditions" in obj or "rfq_title" in obj:
         return "rfq_header"
-    if "placeholder_count" in obj or "notes_for_reviewer" in obj:
+    if "placeholder_count" in obj or "notes_for_reviewer" in obj or "query_count" in obj:
         return "rfq_summary"
-    if obj.get("name") or obj.get("Name"):
+    if "description" in obj or "query_ref" in obj or "product_ref" in obj:
+        return "query"
+    if obj.get("name") or obj.get("Name") or obj.get("Product name"):
         return "product"
     return ""
 
 
+def _validate(result: ProductExtractionResult) -> List[str]:
+    """
+    Check the prompt rules that are cheap to verify and expensive to miss.
+    Returns human-readable warnings; never raises.
+    """
+    warnings: List[str] = []
+    products = result.products
+    queries = result.queries
+
+    # §5.1 — name length and shape.
+    for p in products:
+        name = (p.name or "").strip()
+        if len(name) > MAX_NAME_CHARS:
+            warnings.append(f"line {p.index}: name is {len(name)} chars (max {MAX_NAME_CHARS}): {name[:60]!r}")
+        if name.lower() in FORBIDDEN_NAMES or name.replace(" ", "").isdigit():
+            warnings.append(f"line {p.index}: {name!r} is not a product name")
+
+    # §8 — provenance is one token per field, never a phrase.
+    for p in products:
+        bad = p.bad_provenance_tokens()
+        if bad:
+            warnings.append(f"line {p.index}: provenance not a single token: {', '.join(bad[:4])}")
+
+    # §5.3 — no sub-headings inside RFQ Details.
+    for p in products:
+        if "**" in (p.details or ""):
+            warnings.append(f"line {p.index}: RFQ Details contains bold sub-headings")
+
+    # §5.3 / §9 — every \-- maps to exactly one query row, and vice versa.
+    placeholders = sum(p.placeholder_count() for p in products)
+    if result.summary and result.summary.placeholder_count is not None:
+        if result.summary.placeholder_count != placeholders:
+            warnings.append(
+                f"placeholder_count says {result.summary.placeholder_count} "
+                f"but {placeholders} '\\--' markers are in the details"
+            )
+    if result.summary and result.summary.query_count is not None:
+        if result.summary.query_count != len(queries):
+            warnings.append(
+                f"query_count says {result.summary.query_count} but {len(queries)} query objects were emitted"
+            )
+
+    rfq_level = [q for q in queries if q.is_rfq_level()]
+    for p in products:
+        if p.placeholder_count() and not result.queries_for(p.index) and not rfq_level:
+            warnings.append(f"line {p.index}: has a '\\--' marker but no query row covers it")
+    for p in products:
+        if not p.placeholder_count() and result.queries_for(p.index):
+            warnings.append(f"line {p.index}: has query rows but no '\\--' marker in the details")
+
+    # §8 — the same question must not be asked twice.
+    seen: Dict[str, ExtractedQuery] = {}
+    for q in queries:
+        key = " ".join((q.description or "").lower().split())
+        if key and key in seen:
+            warnings.append(f"duplicate query text: {(q.description or '')[:80]!r}")
+        seen[key] = q
+
+    # §1.2 — one question per row.
+    for q in queries:
+        if (q.description or "").count("?") > 1:
+            warnings.append(f"query {q.query_ref or '?'} asks more than one question")
+
+    # §9 — section must be one of the allowed tokens.
+    for q in queries:
+        section = (q.section or "").strip().lower()
+        if section and section not in QUERY_SECTIONS:
+            warnings.append(f"query {q.query_ref or '?'}: unknown section {section!r}")
+
+    # A query pointing at a line that was never emitted cannot be linked on insert.
+    known = {p.index for p in products if p.index is not None}
+    for q in queries:
+        if q.product_ref is not None and q.product_ref not in known:
+            warnings.append(f"query {q.query_ref or '?'} refers to line {q.product_ref}, which was not extracted")
+
+    return warnings
+
+
 def parse_product_extraction(model_text: str) -> ProductExtractionResult:
     """
-    Turn the product-extraction NDJSON into typed rows.
+    Turn the product-extraction NDJSON into typed products and queries.
 
     Unnamed rows are dropped into skipped_products instead of the product table:
     a line with no part type is not quotable (prompt section 5.1).
@@ -108,6 +200,7 @@ def parse_product_extraction(model_text: str) -> ProductExtractionResult:
     header: Optional[ProductExtractionHeader] = None
     summary: Optional[ProductExtractionSummary] = None
     products: List[ExtractedProduct] = []
+    queries: List[ExtractedQuery] = []
     skipped: List[Dict[str, Any]] = []
 
     for obj in objects:
@@ -118,6 +211,12 @@ def parse_product_extraction(model_text: str) -> ProductExtractionResult:
                 header = ProductExtractionHeader.model_validate(obj)
             elif kind == "rfq_summary":
                 summary = ProductExtractionSummary.model_validate(obj)
+            elif kind == "query":
+                query = ExtractedQuery.model_validate(obj)
+                if query.is_emittable():
+                    queries.append(query)
+                else:
+                    errors.append("query with no description dropped")
             elif kind == "product":
                 product = ExtractedProduct.model_validate(obj)
                 if product.is_emittable():
@@ -132,11 +231,14 @@ def parse_product_extraction(model_text: str) -> ProductExtractionResult:
     # Keep the customer's ordering; index is the customer-facing sequence.
     products.sort(key=lambda p: (p.index is None, p.index if p.index is not None else 0))
 
-    return ProductExtractionResult(
+    result = ProductExtractionResult(
         header=header,
         products=products,
+        queries=queries,
         summary=summary,
         skipped_products=skipped,
         parse_errors=errors,
         raw_model_output=model_text or "",
     )
+    result.validation_warnings = _validate(result)
+    return result

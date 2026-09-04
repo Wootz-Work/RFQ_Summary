@@ -6,7 +6,7 @@ from typing import Dict
 
 from .config import Settings
 from .schema import InputPayload, OutputPayload, QueryPayload, TriageOutputPayload, RfqClassificationInputPayload, RfqClassificationOutputPayload, RfqRegenerateTriageInputPayload, RfqRegenerateTriageOutputPayload, RfqQueryInputPayload, RfqQueryOutputPayload
-from .glide_client import glide_upsert_zai_response_by_rfq_id, glide_update_all_rfq_triage_outputs, glide_update_prospect_rfq_classification, glide_add_zai_regenerate_row, glide_add_product_rows
+from .glide_client import glide_upsert_zai_response_by_rfq_id, glide_update_all_rfq_triage_outputs, glide_update_prospect_rfq_classification, glide_add_zai_regenerate_row, glide_add_product_rows, glide_add_query_rows
 from .gsheet_logger import append_rows, build_chunked_log_rows
 
 
@@ -141,60 +141,87 @@ def write_all(settings: Settings, inp: InputPayload, out: OutputPayload) -> None
     append_rows(settings, rows)
 
 
-def _write_extracted_products(settings: Settings, rfq_row_id: str, out: TriageOutputPayload) -> int:
+def _write_extracted_products(settings: Settings, rfq_row_id: str, out: TriageOutputPayload):
     """
-    Adds the extracted product line items to the ALL Product table.
+    Adds the extracted product line items to the ALL Product table, then their open
+    questions to the queries table, linked by the Row IDs Glide returns.
 
-    Product writeback is best-effort: the triage response is already stored by the
-    time we get here, so a product-table failure is logged and swallowed rather
-    than failing the job.
+    Both are best-effort: the triage response is already stored by the time we get
+    here, so a failure is logged and swallowed rather than failing the job.
+
+    Returns (products_written, queries_written).
     """
     extraction = out.product_extraction
     if extraction is None or not extraction.products:
-        return 0
+        return 0, 0
 
     if not settings.enable_product_writeback:
         print(f"[INFO] run_id={out.run_id} | product writeback disabled; {len(extraction.products)} line(s) not written")
-        return 0
+        return 0, 0
 
     if not (settings.glide_all_product_table or "").strip():
         print(
             f"[WARN] run_id={out.run_id} | GLIDE_ALL_PRODUCT_TABLE not configured; "
             f"{len(extraction.products)} product line(s) not written"
         )
-        return 0
+        return 0, 0
 
     try:
-        written = glide_add_product_rows(settings, rfq_row_id, extraction.products)
-        print(f"[INFO] run_id={out.run_id} | wrote {written} product row(s) to ALL Product for rfq_id={rfq_row_id}")
-        return written
+        row_ids = glide_add_product_rows(settings, rfq_row_id, extraction.products)
     except Exception as e:
         print(f"[WARN] run_id={out.run_id} | product writeback failed: {type(e).__name__}: {e}")
-        return 0
+        return 0, 0
+
+    products_written = len(row_ids)
+    resolved = {
+        product.index: row_id
+        for product, row_id in zip(extraction.products, row_ids)
+        if product.index is not None and row_id
+    }
+    print(
+        f"[INFO] run_id={out.run_id} | wrote {products_written} product row(s) to ALL Product "
+        f"for rfq_id={rfq_row_id}; {len(resolved)}/{products_written} row id(s) resolved"
+    )
+    if products_written and not resolved:
+        print(
+            f"[WARN] run_id={out.run_id} | Glide returned no product row ids; "
+            f"queries will be linked to the RFQ but not to their lines"
+        )
+
+    # Queries are written after the products so each one can carry its Product id.
+    queries_written = 0
+    if extraction.queries:
+        try:
+            queries_written = glide_add_query_rows(settings, rfq_row_id, extraction.queries, resolved)
+            print(f"[INFO] run_id={out.run_id} | wrote {queries_written} query row(s)")
+        except Exception as e:
+            print(f"[WARN] run_id={out.run_id} | query writeback failed: {type(e).__name__}: {e}")
+
+    return products_written, queries_written
 
 
 def write_products(settings: Settings, inp: QueryPayload, out: TriageOutputPayload) -> int:
     """
-    Second phase of the triage job: add the extracted product line items to the
-    ALL Product table and log them.
+    Second phase of the triage job: add the extracted product line items and their
+    open questions, and log them.
 
     Runs after write_triage, so the ZAI response is already in Glide by the time
     anything here happens.
     """
-    products_written = _write_extracted_products(settings, out.row_id, out)
+    products_written, queries_written = _write_extracted_products(settings, out.row_id, out)
 
     rows = build_chunked_log_rows(
         settings=settings,
         run_id=out.run_id,
         mode="triage_products",
         row_id=out.row_id,
-        fields=_product_log_fields(out, products_written),
+        fields=_product_log_fields(out, products_written, queries_written),
     )
     append_rows(settings, rows)
     return products_written
 
 
-def _product_log_fields(out: TriageOutputPayload, products_written: int) -> Dict[str, str]:
+def _product_log_fields(out: TriageOutputPayload, products_written: int, queries_written: int) -> Dict[str, str]:
     extraction = out.product_extraction
     if extraction is None:
         return {
@@ -209,13 +236,20 @@ def _product_log_fields(out: TriageOutputPayload, products_written: int) -> Dict
     return {
         "products_extracted": str(len(extraction.products)),
         "products_written": str(products_written),
+        "queries_extracted": str(len(extraction.queries)),
+        "queries_written": str(queries_written),
         "products_json": json.dumps(
             [p.model_dump(mode="json") for p in extraction.products],
+            ensure_ascii=False,
+        ),
+        "queries_json": json.dumps(
+            [q.model_dump(mode="json") for q in extraction.queries],
             ensure_ascii=False,
         ),
         "products_header": json.dumps(header.model_dump(mode="json") if header else {}, ensure_ascii=False),
         "products_summary": json.dumps(summary.model_dump(mode="json") if summary else {}, ensure_ascii=False),
         "products_reconciliation": extraction.reconciliation_note(),
+        "products_validation_warnings": json.dumps(extraction.validation_warnings or [], ensure_ascii=False),
         "products_skipped": json.dumps(extraction.skipped_products or [], ensure_ascii=False),
         "products_parse_errors": json.dumps(extraction.parse_errors or [], ensure_ascii=False),
         "raw_products_model_output": out.raw_products_model_output or "",
