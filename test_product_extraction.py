@@ -100,7 +100,7 @@ NDJSON = "\n".join(
                 "query_ref": "Q1",
                 "product_ref": 2,
                 "section": "specification",
-                "description": "Which hardness class applies — 140 HV or 200 HV?",
+                "description": "DIN 125 offers 140 HV and 200 HV. We would suggest 140 HV against class 8.8 bolts — please confirm.",
                 "photo": [],
             }
         ),
@@ -127,7 +127,7 @@ NDJSON = "\n".join(
                 "query_ref": "Q2",
                 "product_ref": None,
                 "section": "application",
-                "description": "What is the end application, and is any line safety-critical?",
+                "description": "What is the end application for these parts? It lets us propose equivalents where they would save cost.",
                 "photo": [],
             }
         ),
@@ -221,6 +221,7 @@ def test_parse() -> bool:
         ok &= _check(f"[{label}] placeholder counted", screw.placeholder_count() == 1)
 
         ok &= _check(f"[{label}] line query linked to its line", r.queries_for(2)[0].query_ref == "Q1")
+        ok &= _check(f"[{label}] query reads as the team would ask it", r.queries_for(2)[0].description.startswith("DIN 125 offers"))
         ok &= _check(f"[{label}] rfq-level query has no product_ref", r.rfq_level_queries()[0].query_ref == "Q2")
         ok &= _check(f"[{label}] no validation warnings", not r.validation_warnings, str(r.validation_warnings))
     return ok
@@ -318,8 +319,7 @@ def test_glide_payload() -> bool:
         ok &= _check("accepted -> 117zS is JSON true", first["117zS"] is True)
         ok &= _check("srNo -> XbErc is a number", first["XbErc"] == 1 and second["XbErc"] == 2)
         ok &= _check("absent target price omitted", "hgVgd" not in first)
-        # No column id is configured for AI Internal notes yet, so it must not be sent.
-        ok &= _check("internal notes not written without a column id", settings.glide_col_product_internal_notes == "")
+        ok &= _check("internal notes -> vizbU", first["vizbU"] == INTERNAL, first.get("vizbU", "(missing)"))
         ok &= _check("no stray columns", "" not in first)
 
         # An RFQ row id is mandatory: unlinked rows are orphans in a live table.
@@ -359,7 +359,7 @@ def test_query_rows_link_to_products() -> bool:
             muts[0]["tableName"] == "native-table-19b47480-d912-462e-8721-584b5063f704",
         )
         line_q, rfq_q = muts[0]["columnValues"], muts[1]["columnValues"]
-        ok &= _check("description -> Ucd5N", line_q["Ucd5N"].startswith("Which hardness class"))
+        ok &= _check("description -> Ucd5N", line_q["Ucd5N"].startswith("DIN 125 offers"))
         ok &= _check("rfq id -> Name", line_q["Name"] == "ALL_RFQ_ROW")
         # Line 2's product row came back as ROW_B, so its query must point there.
         ok &= _check("product id -> pfIJe from the returned row id", line_q["pfIJe"] == "ROW_B", str(line_q))
@@ -373,7 +373,7 @@ def test_query_rows_link_to_products() -> bool:
         degraded = stub.sent[0]["mutations"][0]["columnValues"]
         ok &= _check("unresolved product id degrades to RFQ-only", "pfIJe" not in degraded and degraded["Name"] == "ALL_RFQ_ROW")
 
-        # Photos, when the model supplies them.
+        # Query Photo is off by default; a photo the model volunteers is not written.
         stub.sent.clear()
         q = ExtractedQuery.model_validate(
             {"description": "Which of these two revisions applies?", "product_ref": 1,
@@ -381,7 +381,16 @@ def test_query_rows_link_to_products() -> bool:
         )
         glide_add_query_rows(settings, "ALL_RFQ_ROW", [q], {1: "ROW_A"})
         photo_row = stub.sent[0]["mutations"][0]["columnValues"]
-        ok &= _check("photo -> KbO6i", photo_row["KbO6i"] == "https://example.com/rev-a.png")
+        ok &= _check("photo column off by default", "KbO6i" not in photo_row, str(photo_row))
+
+        # ...but still writeable if the column is switched on later.
+        stub.sent.clear()
+        with_photo = Settings(GLIDE_API_KEY="k", GLIDE_APP_ID="app", GLIDE_COL_QUERY_PHOTO="KbO6i")
+        glide_add_query_rows(with_photo, "ALL_RFQ_ROW", [q], {1: "ROW_A"})
+        ok &= _check(
+            "photo -> KbO6i when enabled",
+            stub.sent[0]["mutations"][0]["columnValues"]["KbO6i"] == "https://example.com/rev-a.png",
+        )
         return ok
     finally:
         stub.restore()

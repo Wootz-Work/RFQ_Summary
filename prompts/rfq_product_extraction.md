@@ -58,17 +58,36 @@ Every query is a row in a separate table, linked to the product it blocks:
 | `RFQ ID` | pipeline |
 | `Product id` | pipeline, after the product row is written |
 | `Query ID` | database |
-| `Query Photo` | you, when a specific attachment shows the ambiguity — otherwise empty |
 | `Query Description` | you |
 | `Query Response` | the customer, later — **never populated by you** |
 
 You cannot know `Product id`, `RFQ ID` or `Query ID` — those are assigned on insert. You emit `product_ref`, which is the product's `index`, and the pipeline resolves it. An RFQ-level query that blocks every line carries `product_ref: null`.
 
-Write `Query Description` as a question a customer can answer without reading the RFQ back. State what is unclear, why it matters, and the options if there are options. One question per row — never two questions joined by "and", because a single response field cannot answer both.
+**Write it the way the team would actually ask the customer.** This text reaches the customer as you wrote it. Nothing is added around it, and they have their own enquiry in front of them but not your RFQ.
 
-Good: *"MTL5102B has two sub-states — B1 (5 µm, 480 h NSS) and B2 (8 µm, 720 h NSS). Which applies? Coating cost differs materially."*
+- **Ask the thing directly.** One sentence where one sentence does it.
+- **Name what you are asking about** — the part, the value, the standard. Don't make them re-read their own enquiry to work out which line you mean.
+- **State the options when there are options**, with the fact that separates them. That is what lets the customer answer in one word.
+- **Give a reason only when you are recommending something, or when the reason would change their answer.** One clause, not a paragraph.
+- **Professional, plain and direct.** No apologies, no hedging, no "we would be grateful if". Length is not clarity.
+- **Never use internal vocabulary.** No placeholders, sections, provenance, line indices, or anything from this prompt.
+- **One question per row.** A single response field cannot answer two.
 
-Bad: *"Confirm coating and quantity basis."*
+Good:
+
+- `What is the quantity basis for these tiers — annual usage, one-time lots, or a blanket order?`
+- `MTL5102B has two sub-states: B1 (min 5 µm, 480 h salt spray to red rust) and B2 (min 8 µm, 720 h). Which applies?`
+- `DIN 125 offers 140 HV and 200 HV. We would suggest 140 HV, which is standard against class 8.8 bolts — please confirm, or let us know if 200 HV is required.`
+- `What currency and incoterm should we quote against?`
+- `ISO 4014 was not attached to the enquiry. Is it acceptable to quote against the current edition, ISO 4014:2022?`
+- `Is PPAP required on these parts, and at which level?` — one question; the level is part of the same answer.
+
+Bad:
+
+- `Confirm coating and quantity basis.` — two questions in one row.
+- `Please clarify the application.` — which part, and why does it matter?
+- `Application is unknown (provenance: unknown), please advise.` — internal vocabulary.
+- `We note that your esteemed enquiry does not appear to specify the basis upon which the quantities have been stated, and would be grateful if you could kindly clarify the same at your earliest convenience.` — padding around a one-line question.
 
 ### 1.3 The RFQ record
 
@@ -376,12 +395,11 @@ NDJSON. One object per line, no wrapping array, no fences, no commentary.
 **Query** — one per line, immediately after the product it blocks:
 
 ```json
-{"type":"query","query_ref":"Q1","product_ref":1,"section":"specification","description":"","photo":[]}
+{"type":"query","query_ref":"Q1","product_ref":1,"section":"specification","description":""}
 ```
 
 - `product_ref` is the product's `index`, or `null` for a query that blocks every line
 - `section` ∈ `specification | scope | application | standards | additional_note | quantity | commercial` — it is what the `\--` markers are validated against, and what tells the reviewer which section an answer unblocks
-- `photo` is a list of URLs of attachments that show the ambiguity; usually empty
 - `query_ref` is yours, unique within the run, for validation only — the database assigns the real `Query ID`
 - never emit a response field
 
@@ -459,7 +477,7 @@ Context: Sales lead flagged as priority. Customer is price-conscious and competi
 One `\--` (Application), and it is covered by an RFQ-level query, so this product emits no query objects of its own. The dash is satisfied by:
 
 ```json
-{"type":"query","query_ref":"Q7","product_ref":null,"section":"application","description":"What is the end application of these fasteners, and are any of them safety-critical? Knowing the assembly lets suppliers propose equivalents and set the right process capability.","photo":[]}
+{"type":"query","query_ref":"Q7","product_ref":null,"section":"application","description":"What is the end application for these fasteners? Knowing the assembly lets us propose equivalents where they would save cost, and set the right inspection level if any are safety-critical."}
 ```
 
 ### Example B — same RFQ, line with a line-specific open query and an unattached standard
@@ -508,8 +526,8 @@ Context: Highest-value line in the package by unit price.
 Three `\--` — Specification, Application, Applicable standards. Application is covered by the RFQ-level query above; the other two emit immediately after this product:
 
 ```json
-{"type":"query","query_ref":"Q3","product_ref":3,"section":"specification","description":"MTL5102B has two sub-states — B1 (min 5 µm, 480 h NSS to red rust) and B2 (min 8 µm, 720 h). Which applies? Coating cost differs materially. Note the Aug 2024 edition replaced the former 'B' with B1.","photo":[]}
-{"type":"query","query_ref":"Q4","product_ref":3,"section":"standards","description":"ISO 4014 was not supplied with the enquiry. Is it acceptable for suppliers to quote against the current edition, ISO 4014:2022?","photo":[]}
+{"type":"query","query_ref":"Q3","product_ref":3,"section":"specification","description":"MTL5102B has two sub-states: B1 (min 5 µm, 480 h salt spray to red rust) and B2 (min 8 µm, 720 h). Which applies? The August 2024 edition replaced the former \"B\" with B1, so we have assumed B1 unless you tell us otherwise."}
+{"type":"query","query_ref":"Q4","product_ref":3,"section":"standards","description":"ISO 4014 was not attached to the enquiry. Is it acceptable to quote against the current edition, ISO 4014:2022?"}
 ```
 
 ### Example C — system

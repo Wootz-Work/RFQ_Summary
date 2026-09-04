@@ -24,9 +24,13 @@ steps because the second depends on the first:
    `Target price`, `Dwg link`, `Rep URL`, `Addl. files`, plus `srNo` and
    `acceptedProduct`. Glide returns a Row ID per row.
 2. Each open question becomes a row in the **Queries** table, carrying the Row ID
-   of the line it blocks in `Product id`. An RFQ-level question (`product_ref:
+   of the line it blocks in `Product id`. `Query Description` is written the way the
+   team would ask the customer — one question per row, options stated where there
+   are options, a reason only where it is a recommendation. An RFQ-level question (`product_ref:
    null`) is linked to the RFQ only. `Query ID` is database-assigned and
-   `Query Response` belongs to the customer — this service writes neither.
+   `Query Response` belongs to the customer — this service writes neither. `Query Photo`
+   is off: the model has no reliable way to pick the attachment that shows an
+   ambiguity (`GLIDE_COL_QUERY_PHOTO` re-enables it).
 
 The three calls start together, but the job only waits for triage and costing before
 writing the ZAI response — product extraction keeps running in the background and is
