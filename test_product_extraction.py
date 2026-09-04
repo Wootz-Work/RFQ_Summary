@@ -98,7 +98,7 @@ NDJSON = "\n".join(
             {
                 "type": "query",
                 "query_ref": "Q1",
-                "product_ref": 2,
+                "product_ref": [2],
                 "section": "specification",
                 "description": "DIN 125 offers 140 HV and 200 HV. We would suggest 140 HV against class 8.8 bolts — please confirm.",
                 "photo": [],
@@ -241,13 +241,13 @@ def test_validations() -> bool:
                     "provenance": {"specification": "verbatim + derived (cross-referenced)"},
                 }
             ),
-            json.dumps({"type": "query", "query_ref": "Q1", "product_ref": 1, "section": "scope",
+            json.dumps({"type": "query", "query_ref": "Q1", "product_ref": [1], "section": "scope",
                         "description": "Confirm the scope boundary."}),
-            json.dumps({"type": "query", "query_ref": "Q2", "product_ref": 1, "section": "scope",
+            json.dumps({"type": "query", "query_ref": "Q2", "product_ref": [1], "section": "scope",
                         "description": "confirm the scope boundary."}),
-            json.dumps({"type": "query", "query_ref": "Q3", "product_ref": 9, "section": "quantity",
+            json.dumps({"type": "query", "query_ref": "Q3", "product_ref": [9], "section": "quantity",
                         "description": "Is this annual? And what incoterm applies?"}),
-            json.dumps({"type": "query", "query_ref": "Q4", "product_ref": 1, "section": "pricing",
+            json.dumps({"type": "query", "query_ref": "Q4", "product_ref": [1], "section": "pricing",
                         "description": "What currency?"}),
             json.dumps({"type": "rfq_summary", "placeholder_count": 5, "query_count": 2}),
         ]
@@ -263,7 +263,7 @@ def test_validations() -> bool:
     ok &= _check("duplicate query flagged", "duplicate query text" in w, w)
     ok &= _check("two-questions-in-one flagged", "more than one question" in w, w)
     ok &= _check("unknown section flagged", "unknown section" in w, w)
-    ok &= _check("query pointing at a missing line flagged", "was not extracted" in w, w)
+    ok &= _check("query pointing at a missing line flagged", "not extracted" in w, w)
 
     # A response is the customer's to give; never accept one from the model.
     q = ExtractedQuery.model_validate({"description": "x?", "Query Response": "B1", "response": "B1"})
@@ -301,7 +301,7 @@ def test_banned_queries() -> bool:
     def warnings_for(text):
         nd = "\n".join([
             json.dumps({"type": "product", "index": 1, "name": "Hex Bolt M10", "details": "Specification:\nx\n\\--"}),
-            json.dumps({"type": "query", "query_ref": "Q1", "product_ref": 1,
+            json.dumps({"type": "query", "query_ref": "Q1", "product_ref": [1],
                         "section": "specification", "description": text}),
         ])
         return [w for w in parse_product_extraction(nd).validation_warnings if "query Q1" in w]
@@ -309,7 +309,7 @@ def test_banned_queries() -> bool:
     # A commercial section is itself the defect, whatever the wording.
     nd = "\n".join([
         json.dumps({"type": "product", "index": 1, "name": "Hex Bolt M10", "details": "Specification:\nx\n\\--"}),
-        json.dumps({"type": "query", "query_ref": "Q1", "product_ref": 1,
+        json.dumps({"type": "query", "query_ref": "Q1", "product_ref": [1],
                     "section": "commercial", "description": "What are the payment milestones?"}),
     ])
     ok = _check(
@@ -320,6 +320,56 @@ def test_banned_queries() -> bool:
         ok &= _check(f"flags {label}", bool(warnings_for(text)), text[:60])
     for text in allowed:
         ok &= _check(f"allows {text[:44]!r}", not warnings_for(text), str(warnings_for(text)))
+    return ok
+
+
+def test_query_budget_and_merging() -> bool:
+    """§1.2 — four questions per RFQ, and one question covering several lines is one row."""
+    def build(queries):
+        objs = [{"type": "product", "index": i, "name": f"Part {i}",
+                 "details": "Specification:\nx\n\\--"} for i in (1, 2, 3, 4)]
+        return "\n".join(json.dumps(o) for o in objs + queries)
+
+    same_a = ("The descriptor references both MTL5102A and VDA 235-104.20. We have treated "
+              "VDA 235-104.20 as the VDA code for the same coating defined in MTL5102A. Please confirm.")
+    same_b = ("The descriptor references VDA235-104 without the .20 suffix. We have treated this "
+              "as the same VDA 235-104.20 / MTL5102A coating. Please confirm.")
+    other = "DIN 125 Part 1 offers two hardness classes: 140 HV and 200 HV. Should we quote 140 HV?"
+    third = "MTL5102B has two sub-states: B1 (min 5 um, 480 h) and B2 (min 8 um, 720 h). Which applies?"
+
+    # The same question split across two lines must be caught even though the wording differs.
+    r = parse_product_extraction(build([
+        {"type": "query", "query_ref": "Q1", "product_ref": 1, "section": "specification", "description": same_a},
+        {"type": "query", "query_ref": "Q8", "product_ref": 4, "section": "specification", "description": same_b},
+    ]))
+    ok = _check("reworded duplicate caught", any("ask the same thing" in w for w in r.validation_warnings),
+                str(r.validation_warnings))
+    ok &= _check("merge hint names both lines", any("[1, 4]" in w for w in r.validation_warnings))
+
+    # Genuinely different questions in the same section must not be merged.
+    r = parse_product_extraction(build([
+        {"type": "query", "query_ref": "Q3", "product_ref": 2, "section": "specification", "description": other},
+        {"type": "query", "query_ref": "Q5", "product_ref": 3, "section": "specification", "description": third},
+    ]))
+    ok &= _check("distinct questions left alone", not any("ask the same thing" in w for w in r.validation_warnings),
+                 str(r.validation_warnings))
+
+    # Five questions is over the cap.
+    five = [{"type": "query", "query_ref": f"Q{i}", "product_ref": [i % 4 + 1], "section": "standards",
+             "description": f"Drawing rev {i} conflicts with the enquiry. Which revision governs part {i}?"}
+            for i in range(5)]
+    r = parse_product_extraction(build(five))
+    ok &= _check("over-cap flagged", any("the cap is 4" in w for w in r.validation_warnings))
+
+    # Four is fine, and one row may carry several lines.
+    r = parse_product_extraction(build([
+        {"type": "query", "query_ref": "Q1", "product_ref": [1, 4], "section": "specification", "description": same_a},
+        {"type": "query", "query_ref": "Q3", "product_ref": [2], "section": "specification", "description": other},
+        {"type": "query", "query_ref": "Q5", "product_ref": [3], "section": "specification", "description": third},
+    ]))
+    ok &= _check("at-cap run is clean", not r.validation_warnings, str(r.validation_warnings))
+    ok &= _check("merged query covers both lines", r.queries[0].product_refs == [1, 4])
+    ok &= _check("queries_for finds a merged query", r.queries_for(4)[0].query_ref == "Q1")
     return ok
 
 
@@ -428,7 +478,7 @@ def test_query_rows_link_to_products() -> bool:
         # Query Photo is off by default; a photo the model volunteers is not written.
         stub.sent.clear()
         q = ExtractedQuery.model_validate(
-            {"description": "Which of these two revisions applies?", "product_ref": 1,
+            {"description": "Which of these two revisions applies?", "product_ref": [1],
              "photo": ["https://example.com/rev-a.png"]}
         )
         glide_add_query_rows(settings, "ALL_RFQ_ROW", [q], {1: "ROW_A"})
@@ -454,6 +504,7 @@ if __name__ == "__main__":
             test_parse(),
             test_validations(),
             test_banned_queries(),
+            test_query_budget_and_merging(),
             test_mismatch_is_reported(),
             test_garbage_is_not_fatal(),
             test_glide_payload(),

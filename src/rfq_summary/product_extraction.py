@@ -27,6 +27,8 @@ from .schema import (
 )
 
 MAX_NAME_CHARS = 50
+# §1.2 — a customer reads these. Four is the ceiling for a whole RFQ.
+MAX_QUERIES_PER_RFQ = 4
 
 # §1.2 — four kinds of question that must never reach a customer. Checked here
 # because a single bad query is visible to the customer the moment it is sent.
@@ -199,13 +201,27 @@ def _validate(result: ProductExtractionResult) -> List[str]:
         if not p.placeholder_count() and result.queries_for(p.index):
             warnings.append(f"line {p.index}: has query rows but no '\\--' marker in the details")
 
-    # §8 — the same question must not be asked twice.
+    # §1.2 — at most four questions go to a customer for the whole RFQ.
+    if len(queries) > MAX_QUERIES_PER_RFQ:
+        warnings.append(
+            f"{len(queries)} queries emitted; the cap is {MAX_QUERIES_PER_RFQ} for the whole RFQ — "
+            f"keep the ones with the largest price impact and drop the rest"
+        )
+
+    # §8 — the same question must not be asked twice, verbatim or reworded. One
+    # question covering several lines is one row carrying all their indexes.
     seen: Dict[str, ExtractedQuery] = {}
     for q in queries:
         key = " ".join((q.description or "").lower().split())
         if key and key in seen:
             warnings.append(f"duplicate query text: {(q.description or '')[:80]!r}")
         seen[key] = q
+
+    for a, b in _near_duplicate_pairs(queries):
+        warnings.append(
+            f"queries {a.query_ref or '?'} and {b.query_ref or '?'} ask the same thing in different words — "
+            f"merge into one row covering lines {sorted(set(a.product_refs) | set(b.product_refs))}"
+        )
 
     # §1.2 — one question per row.
     for q in queries:
@@ -239,10 +255,53 @@ def _validate(result: ProductExtractionResult) -> List[str]:
     # A query pointing at a line that was never emitted cannot be linked on insert.
     known = {p.index for p in products if p.index is not None}
     for q in queries:
-        if q.product_ref is not None and q.product_ref not in known:
-            warnings.append(f"query {q.query_ref or '?'} refers to line {q.product_ref}, which was not extracted")
+        missing = [ref for ref in q.product_refs if ref not in known]
+        if missing:
+            warnings.append(
+                f"query {q.query_ref or '?'} refers to line(s) {missing}, which were not extracted"
+            )
 
     return warnings
+
+
+# Words that carry no signal when comparing two questions for sameness.
+_STOPWORDS = {
+    "the", "a", "an", "is", "are", "and", "or", "of", "to", "for", "on", "in", "at", "we",
+    "you", "your", "our", "us", "it", "this", "these", "those", "that", "be", "please",
+    "confirm", "which", "what", "if", "so", "with", "have", "has", "would", "should",
+    "could", "can", "let", "know", "any", "applies", "apply", "required", "there",
+}
+
+
+def _significant_words(text: str) -> set:
+    words = (w.strip(".,;:") for w in re.findall(r"[a-z0-9.\-]{3,}", (text or "").lower()))
+    return {w for w in words if len(w) >= 3 and w not in _STOPWORDS}
+
+
+def _near_duplicate_pairs(queries: List[ExtractedQuery]):
+    """
+    Two questions asking the same thing in different words — the failure a
+    verbatim-match check misses, and the reason one question gets asked per line
+    instead of once across several.
+    """
+    pairs = []
+    for i, a in enumerate(queries):
+        words_a = _significant_words(a.description)
+        if len(words_a) < 3:
+            continue
+        for b in queries[i + 1 :]:
+            if (a.section or "").strip().lower() != (b.section or "").strip().lower():
+                continue
+            words_b = _significant_words(b.description)
+            if len(words_b) < 3:
+                continue
+            # Containment against the shorter question, so a long restatement of a
+            # short one is still caught. Measured on real output, the same question
+            # reworded scores ~0.6 while genuinely different ones score ~0.1.
+            containment = len(words_a & words_b) / min(len(words_a), len(words_b))
+            if containment >= 0.5:
+                pairs.append((a, b))
+    return pairs
 
 
 def _looks_truncated(model_text: str, errors: List[str]) -> bool:

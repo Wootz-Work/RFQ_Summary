@@ -73,6 +73,10 @@ You cannot know `Product id`, `RFQ ID` or `Query ID` — those are assigned on i
 
 If a gap passes none of these, it is not a query. Assume it, or let it go.
 
+**At most four queries for the whole RFQ.** Not four per line — four in total, however many lines there are. A customer answers a short, sharp list; they skim a long one and reply to none of it. So rank every candidate by how much money rides on the answer and keep the top four. A coating sub-state that changes cost materially beats a standard edition we could buy ourselves. If a fifth question genuinely matters, it belongs in `notes_for_reviewer` for the team to judge, not in the customer's list.
+
+**One question covering several lines is one query, not one per line.** If the same thing is unclear on lines 1 and 4, emit a single query whose `product_ref` is `[1, 4]`. Asking it twice wastes two of your four and reads as carelessness. Before emitting, check the questions you have already written: if a new one restates an existing one in different words, add the line index to that one instead.
+
 **Five things you never ask.**
 
 1. **Our own problems.** An attachment that would not open, a link that failed, a file we could not read, a standard we do not hold a copy of — ours to chase, not theirs to answer. Never surface it as a question. Note it in `reconciliation` for the team.
@@ -436,10 +440,10 @@ NDJSON. One object per line, no wrapping array, no fences, no commentary.
 **Query** — one per line, immediately after the product it blocks:
 
 ```json
-{"type":"query","query_ref":"Q1","product_ref":1,"section":"specification","description":""}
+{"type":"query","query_ref":"Q1","product_ref":[1],"section":"specification","description":""}
 ```
 
-- `product_ref` is the product's `index`, or `null` for a query that blocks every line
+- `product_ref` is a list of the product `index` values the question covers — `[1]`, or `[1, 4]` when one question applies to several lines, or `null` when it blocks every line. The pipeline turns it into the comma-separated `Product id` on the row. A bare integer is still accepted.
 - `section` ∈ `specification | scope | application | standards | additional_note | quantity` — it is what the `\--` markers are validated against, and what tells the reviewer which section an answer unblocks. There is no `commercial` section: commercial terms are never asked.
 - `query_ref` is yours, unique within the run, for validation only — the database assigns the real `Query ID`
 - never emit a response field
@@ -567,8 +571,8 @@ Context: Highest-value line in the package by unit price.
 Three `\--` — Specification, Application, Applicable standards. Application is covered by the RFQ-level query above; the other two emit immediately after this product:
 
 ```json
-{"type":"query","query_ref":"Q3","product_ref":3,"section":"specification","description":"MTL5102B has two sub-states: B1 (min 5 µm, 480 h salt spray to red rust) and B2 (min 8 µm, 720 h). Which applies? The August 2024 edition replaced the former \"B\" with B1, so we have assumed B1 unless you tell us otherwise."}
-{"type":"query","query_ref":"Q4","product_ref":3,"section":"standards","description":"ISO 4014 was not attached to the enquiry. Is it acceptable to quote against the current edition, ISO 4014:2022?"}
+{"type":"query","query_ref":"Q3","product_ref":[3],"section":"specification","description":"MTL5102B has two sub-states: B1 (min 5 µm, 480 h salt spray to red rust) and B2 (min 8 µm, 720 h). Which applies? The August 2024 edition replaced the former \"B\" with B1, so we have assumed B1 unless you tell us otherwise."}
+{"type":"query","query_ref":"Q4","product_ref":[3],"section":"standards","description":"ISO 4014 was not attached to the enquiry. Is it acceptable to quote against the current edition, ISO 4014:2022?"}
 ```
 
 ### Example C — system
@@ -647,6 +651,7 @@ Scope carries the tooling clauses (quoted separately per part; supplier stores a
 10. Never repeat an all-lines query per product — one row, `product_ref: null`.
 11. Never put queries or assumptions in the product object, and never populate `Query Response`.
 12. Never join two questions into one query row.
+12b. Never exceed four queries for the whole RFQ, and never ask one question twice — one row carrying every line index it covers.
 12a. Every query is technical and passes one of the three tests in §1.2. Never ask about our own file or attachment problems, project names or anything administrative, commercial terms, or anything on the assume list — quantity basis above all. Never let the word `supplier` or `vendor`, or the reason behind one, appear in a query.
 13. Never consolidate across process families or material classes; never force a system into the variant annexure.
 14. Never put a customer-proprietary or purchased standard in `Addl. files`.
@@ -661,7 +666,7 @@ Scope carries the tooling clauses (quoted separately per part; supplier stores a
 2. Every `\--` has exactly one query row covering that product and section — directly or via a `product_ref: null` row; no two query rows ask the same thing; every query row is a single question; no `Query Response` is populated.
 3. No name exceeds 50 characters; every Qty is quantity only.
 4. No customer, contact or end-customer name in any field.
-4a. Every query passes one of the three tests in §1.2 and is technical. None asks about our file problems, a project name, a commercial term, quantity basis, or anything else on the assume list; none names a supplier or vendor.
+4a. Four queries or fewer for the whole RFQ; no question appears twice under different wording; every query passes one of the three tests in §1.2 and is technical. None asks about our file problems, a project name, a commercial term, quantity basis, or anything else on the assume list; none names a supplier or vendor.
 5. No fact appears in two sections of one line; nothing on a line duplicates `common_conditions`.
 6. No bold sub-headings inside RFQ Details; five headings present on every line.
 7. Every provenance value is a single token from the allowed set.

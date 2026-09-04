@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, model_validator, AliasChoices, ConfigDict, BeforeValidator
@@ -376,8 +377,9 @@ class ExtractedQuery(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     query_ref: _LooseStr = ""
-    # The product's index, or None for a query that blocks every line.
-    product_ref: Optional[int] = None
+    # The product indexes this question covers. One question that applies to
+    # several lines is one row, not one per line. Empty = blocks every line.
+    product_refs: List[int] = Field(default_factory=list)
     section: _LooseStr = ""
     description: _LooseStr = ""
     photo: _StrOrList = Field(default_factory=list)
@@ -400,12 +402,21 @@ class ExtractedQuery(BaseModel):
             if src in data and dst not in data:
                 data[dst] = data.get(src)
 
-        ref = data.get("product_ref")
-        if isinstance(ref, str):
-            digits = "".join(ch for ch in ref if ch.isdigit())
-            data["product_ref"] = int(digits) if digits else None
-        elif isinstance(ref, float):
-            data["product_ref"] = int(ref)
+        # Accept 1, [1, 4], "1,4", "line 1" or null — all become a list of ints.
+        ref = data.pop("product_ref", None) if "product_refs" not in data else data.get("product_refs")
+        refs: List[int] = []
+        if isinstance(ref, (int, float)) and not isinstance(ref, bool):
+            refs = [int(ref)]
+        elif isinstance(ref, str):
+            refs = [int(part) for part in re.findall(r"\d+", ref)]
+        elif isinstance(ref, list):
+            for item in ref:
+                if isinstance(item, (int, float)) and not isinstance(item, bool):
+                    refs.append(int(item))
+                elif isinstance(item, str):
+                    refs.extend(int(part) for part in re.findall(r"\d+", item))
+        # Preserve order, drop repeats.
+        data["product_refs"] = list(dict.fromkeys(refs))
 
         if data.get("photo") is None:
             data["photo"] = []
@@ -416,7 +427,7 @@ class ExtractedQuery(BaseModel):
         return data
 
     def is_rfq_level(self) -> bool:
-        return self.product_ref is None
+        return not self.product_refs
 
     def is_emittable(self) -> bool:
         return bool((self.description or "").strip())
@@ -603,7 +614,7 @@ class ProductExtractionResult(BaseModel):
         return f"line_count_expected={expected} but {len(self.products)} product line(s) parsed"
 
     def queries_for(self, product_index: Optional[int]) -> List[ExtractedQuery]:
-        return [q for q in self.queries if q.product_ref == product_index]
+        return [q for q in self.queries if product_index in q.product_refs]
 
     def rfq_level_queries(self) -> List[ExtractedQuery]:
         return [q for q in self.queries if q.is_rfq_level()]

@@ -24,7 +24,9 @@ steps because the second depends on the first:
    `Target price`, `Dwg link`, `Rep URL`, `Addl. files`, plus `srNo` and
    `acceptedProduct`. Glide returns a Row ID per row.
 2. Each open question becomes a row in the **Queries** table, carrying the Row ID
-   of the line it blocks in `Product id`. `Query Description` is written the way the
+   of every line it covers in `Product id`, comma-separated — one question that
+   applies to several lines is one row, not one per line. At most four queries go
+   to a customer for a whole RFQ. `Query Description` is written the way the
    team would ask the customer — one question per row, options stated where there
    are options, a reason only where it is a recommendation. An RFQ-level question (`product_ref:
    null`) is linked to the RFQ only. `Query ID` is database-assigned and

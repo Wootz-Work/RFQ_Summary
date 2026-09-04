@@ -354,7 +354,15 @@ def glide_add_product_rows(
         if target_price_col and product.target_price:
             column_values[target_price_col] = product.target_price
         if dwg_link_col and product.dwg_link:
-            column_values[dwg_link_col] = product.dwg_link
+            # Also a single uri. The model sometimes comma-joins several documents,
+            # which renders as one broken link rather than any working one.
+            links = [u.strip() for u in str(product.dwg_link).split(",") if u.strip()]
+            column_values[dwg_link_col] = links[0] if links else product.dwg_link
+            if len(links) > 1:
+                print(
+                    f"[WARN] product {product.name!r}: {len(links) - 1} additional drawing link(s) "
+                    f"dropped — 'Dwg link' holds one uri"
+                )
         if rep_url_col and product.rep_url:
             column_values[rep_url_col] = product.rep_url
         if addl_files_col:
@@ -451,14 +459,16 @@ def glide_add_query_rows(
         if rfq_id_col and (rfq_row_id or "").strip():
             column_values[rfq_id_col] = rfq_row_id.strip()
 
-        if product_id_col and query.product_ref is not None:
-            product_row_id = product_row_ids.get(query.product_ref)
-            if product_row_id:
-                column_values[product_id_col] = product_row_id
-            else:
+        if product_id_col and query.product_refs:
+            # One question covering several lines is one row carrying all their ids.
+            resolved = [product_row_ids[ref] for ref in query.product_refs if ref in product_row_ids]
+            if resolved:
+                column_values[product_id_col] = ", ".join(resolved)
+            unresolved = [ref for ref in query.product_refs if ref not in product_row_ids]
+            if unresolved:
                 print(
-                    f"[WARN] query {query.query_ref or '?'} points at line {query.product_ref}, "
-                    f"whose row id is unknown — writing it against the RFQ only"
+                    f"[WARN] query {query.query_ref or '?'} points at line(s) {unresolved}, "
+                    f"whose row ids are unknown — linked to the rest only"
                 )
 
         if photo_col and query.photo_text():
