@@ -742,9 +742,11 @@ def resolve_product_extraction(out: TriageOutputPayload, timeout_sec: Optional[f
     extraction = parse_product_extraction(products_model_text)
     if extraction.parse_errors:
         print(f"[WARN] run_id={pending.run_id} | product extraction parse errors: {extraction.parse_errors}")
+    for warning in extraction.validation_warnings:
+        print(f"[WARN] run_id={pending.run_id} | prompt rule broken: {warning}")
     print(
         f"[INFO] run_id={pending.run_id} | product lines extracted={len(extraction.products)} "
-        f"skipped={len(extraction.skipped_products)} llm_ms={products_llm_ms}"
+        f"queries={len(extraction.queries)} skipped={len(extraction.skipped_products)} llm_ms={products_llm_ms}"
     )
 
     out.product_extraction = extraction
@@ -758,8 +760,10 @@ def resolve_product_extraction(out: TriageOutputPayload, timeout_sec: Optional[f
     out.structured = {
         **(out.structured or {}),
         "products_extracted": len(extraction.products),
+        "queries_extracted": len(extraction.queries),
         "products_skipped": len(extraction.skipped_products),
         "products_parse_errors": len(extraction.parse_errors),
+        "products_validation_warnings": len(extraction.validation_warnings),
     }
 
 

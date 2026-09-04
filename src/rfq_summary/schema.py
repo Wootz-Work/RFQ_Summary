@@ -347,19 +347,15 @@ _OptStr = Annotated[Optional[str], BeforeValidator(_coerce_optional_str)]
 _LooseStr = Annotated[str, BeforeValidator(_coerce_str)]
 
 
-class ProductQuantity(BaseModel):
-    model_config = ConfigDict(populate_by_name=True, extra="ignore")
-
-    value: _LooseStr = ""
-    basis: _LooseStr = ""
-
-    def as_qty_text(self) -> str:
-        """Glide Qty is a single free-text cell: 'value (basis)'."""
-        value = (self.value or "").strip()
-        basis = (self.basis or "").strip()
-        if value and basis:
-            return f"{value} ({basis})"
-        return value or basis
+QUANTITY_BASES = {
+    "annual", "one_time", "blanket", "price_breaks", "release_schedule", "not_stated",
+}
+PROVENANCE_TOKENS = {"verbatim", "derived", "internal", "not_stated", "unknown"}
+QUERY_SECTIONS = {
+    "specification", "scope", "application", "standards",
+    "additional_note", "quantity", "commercial",
+}
+PLACEHOLDER = "\\--"
 
 
 class ProductAnnexure(BaseModel):
@@ -372,22 +368,59 @@ class ProductAnnexure(BaseModel):
     rows: List[Any] = Field(default_factory=list)
 
 
-class ProductNote(BaseModel):
-    """Shared shape for assumptions ({text, affects}) and queries ({text, blocks, field})."""
+class ExtractedQuery(BaseModel):
+    """One row of the queries table: a single question for the customer."""
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
-    text: _LooseStr = ""
-    affects: _LooseStr = ""
-    blocks: _LooseStr = ""
-    field: _LooseStr = ""
+    query_ref: _LooseStr = ""
+    # The product's index, or None for a query that blocks every line.
+    product_ref: Optional[int] = None
+    section: _LooseStr = ""
+    description: _LooseStr = ""
+    photo: _StrOrList = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
-    def accept_plain_string(cls, data: Any) -> Any:
-        if isinstance(data, str):
-            return {"text": data}
+    def normalize_fields(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+
+        # Tolerate the v2 wording and the Glide column labels.
+        for src, dst in (
+            ("text", "description"),
+            ("Query Description", "description"),
+            ("blocks", "product_ref"),
+            ("field", "section"),
+            ("Query Photo", "photo"),
+        ):
+            if src in data and dst not in data:
+                data[dst] = data.get(src)
+
+        ref = data.get("product_ref")
+        if isinstance(ref, str):
+            digits = "".join(ch for ch in ref if ch.isdigit())
+            data["product_ref"] = int(digits) if digits else None
+        elif isinstance(ref, float):
+            data["product_ref"] = int(ref)
+
+        if data.get("photo") is None:
+            data["photo"] = []
+
+        # A response is the customer's to give; never accept one from the model.
+        data.pop("response", None)
+        data.pop("Query Response", None)
         return data
+
+    def is_rfq_level(self) -> bool:
+        return self.product_ref is None
+
+    def is_emittable(self) -> bool:
+        return bool((self.description or "").strip())
+
+    def photo_text(self) -> str:
+        return ", ".join([u for u in (self.photo or []) if (u or "").strip()])
 
 
 class ExtractedProduct(BaseModel):
@@ -398,16 +431,16 @@ class ExtractedProduct(BaseModel):
     name: _LooseStr = ""
     structure: _LooseStr = "single"
     variant_count: Optional[int] = None
+    quantity: _LooseStr = ""
+    quantity_basis: _LooseStr = "not_stated"
     details: _LooseStr = ""
-    quantity: ProductQuantity = Field(default_factory=ProductQuantity)
+    internal_notes: _LooseStr = ""
     target_price: _OptStr = None
     dwg_link: _OptStr = None
     rep_url: _OptStr = None
     addl_files: _StrOrList = Field(default_factory=list)
     annexure: Optional[ProductAnnexure] = None
     provenance: Dict[str, str] = Field(default_factory=dict)
-    assumptions: List[ProductNote] = Field(default_factory=list)
-    queries: List[ProductNote] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -417,15 +450,17 @@ class ExtractedProduct(BaseModel):
 
         data = dict(data)
 
-        # Model sometimes emits the Glide column labels instead of the NDJSON keys.
+        # The model sometimes emits Glide column labels instead of the NDJSON keys.
         aliases = {
+            "Product name": "name",
             "Name": "name",
             "Qty": "quantity",
+            "RFQ Details": "details",
             "Details": "details",
+            "AI Internal notes": "internal_notes",
             "Target price": "target_price",
             "target price": "target_price",
             "Dwg link": "dwg_link",
-            "dwglink": "dwg_link",
             "Rep URL": "rep_url",
             "rep_URL": "rep_url",
             "Addl. files": "addl_files",
@@ -435,9 +470,16 @@ class ExtractedProduct(BaseModel):
             if src in data and dst not in data:
                 data[dst] = data.get(src)
 
+        # v2 emitted {"value": ..., "basis": ...}; v3 wants one string.
         qty = data.get("quantity")
-        if isinstance(qty, (str, int, float)):
-            data["quantity"] = {"value": qty, "basis": ""}
+        if isinstance(qty, dict):
+            value = _coerce_optional_str(qty.get("value")) or ""
+            basis = _coerce_optional_str(qty.get("basis")) or ""
+            data["quantity"] = f"{value} ({basis})" if value and basis else (value or basis)
+
+        basis_token = _coerce_optional_str(data.get("quantity_basis")) or "not_stated"
+        basis_token = basis_token.strip().lower().replace("-", "_").replace(" ", "_")
+        data["quantity_basis"] = basis_token if basis_token in QUANTITY_BASES else "not_stated"
 
         for key in ("index", "variant_count"):
             val = data.get(key)
@@ -457,41 +499,52 @@ class ExtractedProduct(BaseModel):
         if isinstance(annexure, bool):
             data["annexure"] = {"required": annexure} if annexure else None
 
-        for key in ("assumptions", "queries"):
-            val = data.get(key)
-            if isinstance(val, (str, dict)):
-                data[key] = [val]
-            elif val is None:
-                data[key] = []
-
         if data.get("addl_files") is None:
             data["addl_files"] = []
 
+        # Queries and assumptions have their own homes now; never carried on a product.
+        data.pop("queries", None)
+        data.pop("assumptions", None)
         return data
 
     def is_emittable(self) -> bool:
         """A row with no name is not quotable and must never reach the product table."""
         return bool((self.name or "").strip())
 
+    def placeholder_count(self) -> int:
+        return (self.details or "").count(PLACEHOLDER)
+
     def addl_files_text(self) -> str:
         return ", ".join([u for u in (self.addl_files or []) if (u or "").strip()])
+
+    def bad_provenance_tokens(self) -> List[str]:
+        """Provenance must be one token per field — a phrase means the model improvised."""
+        return [
+            f"{k}={v}"
+            for k, v in (self.provenance or {}).items()
+            if (v or "").strip() and (v or "").strip().lower() not in PROVENANCE_TOKENS
+        ]
 
 
 class ProductExtractionHeader(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
-    customer: _LooseStr = ""
+    project: _LooseStr = ""
     rfq_title: _LooseStr = ""
     line_count_expected: Optional[int] = None
     line_count_extracted: Optional[int] = None
     reconciliation: _LooseStr = ""
+    common_conditions: _LooseStr = ""
 
     @model_validator(mode="before")
     @classmethod
-    def normalize_counts(cls, data: Any) -> Any:
+    def normalize_fields(cls, data: Any) -> Any:
         if not isinstance(data, dict):
             return data
         data = dict(data)
+        # v2 named this "customer"; v3 anonymises it to a project name.
+        if "project" not in data and "customer" in data:
+            data["project"] = data.get("customer")
         for key in ("line_count_expected", "line_count_extracted"):
             val = data.get(key)
             if isinstance(val, str):
@@ -505,9 +558,8 @@ class ProductExtractionHeader(BaseModel):
 class ProductExtractionSummary(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
-    assumptions: List[ProductNote] = Field(default_factory=list)
-    queries: List[ProductNote] = Field(default_factory=list)
     placeholder_count: Optional[int] = None
+    query_count: Optional[int] = None
     notes_for_reviewer: _LooseStr = ""
 
     @model_validator(mode="before")
@@ -516,18 +568,13 @@ class ProductExtractionSummary(BaseModel):
         if not isinstance(data, dict):
             return data
         data = dict(data)
-        for key in ("assumptions", "queries"):
+        for key in ("placeholder_count", "query_count"):
             val = data.get(key)
-            if isinstance(val, (str, dict)):
-                data[key] = [val]
-            elif val is None:
-                data[key] = []
-        val = data.get("placeholder_count")
-        if isinstance(val, str):
-            digits = val.strip()
-            data["placeholder_count"] = int(digits) if digits.isdigit() else None
-        elif isinstance(val, float):
-            data["placeholder_count"] = int(val)
+            if isinstance(val, str):
+                digits = val.strip()
+                data[key] = int(digits) if digits.isdigit() else None
+            elif isinstance(val, float):
+                data[key] = int(val)
         return data
 
 
@@ -536,9 +583,12 @@ class ProductExtractionResult(BaseModel):
 
     header: Optional[ProductExtractionHeader] = None
     products: List[ExtractedProduct] = Field(default_factory=list)
+    queries: List[ExtractedQuery] = Field(default_factory=list)
     summary: Optional[ProductExtractionSummary] = None
     skipped_products: List[Dict[str, Any]] = Field(default_factory=list)
     parse_errors: List[str] = Field(default_factory=list)
+    # Prompt rules the model broke — the appendix asks for these in code, not prose.
+    validation_warnings: List[str] = Field(default_factory=list)
     raw_model_output: str = ""
 
     def reconciliation_note(self) -> str:
@@ -549,6 +599,12 @@ class ProductExtractionResult(BaseModel):
         if expected == len(self.products):
             return ""
         return f"line_count_expected={expected} but {len(self.products)} product line(s) parsed"
+
+    def queries_for(self, product_index: Optional[int]) -> List[ExtractedQuery]:
+        return [q for q in self.queries if q.product_ref == product_index]
+
+    def rfq_level_queries(self) -> List[ExtractedQuery]:
+        return [q for q in self.queries if q.is_rfq_level()]
 
 
 class TriageOutputPayload(BaseModel):

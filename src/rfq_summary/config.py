@@ -174,12 +174,28 @@ class Settings(BaseSettings):
     glide_col_product_dwg_link: str = Field(default="f4QCb", alias="GLIDE_COL_PRODUCT_DWG_LINK")
     glide_col_product_rep_url: str = Field(default="LXcW2", alias="GLIDE_COL_PRODUCT_REP_URL")
     glide_col_product_addl_files: str = Field(default="JR0Lx", alias="GLIDE_COL_PRODUCT_ADDL_FILES")
+    # Team-only notes (sourcing route, assumptions, context). No column exists for
+    # this yet — add one in Glide and set its id here to start writing it.
+    glide_col_product_internal_notes: str = Field(default="", alias="GLIDE_COL_PRODUCT_INTERNAL_NOTES")
     # Line number in the customer's own ordering. Set to "" to leave the column alone.
     glide_col_product_sr_no: str = Field(default="XbErc", alias="GLIDE_COL_PRODUCT_SR_NO")
     # Boolean flag set to true on every row this service adds.
     glide_col_product_accepted: str = Field(default="117zS", alias="GLIDE_COL_PRODUCT_ACCEPTED")
     # Max product rows written per Glide mutateTables request.
     glide_product_rows_per_request: int = Field(default=20, alias="GLIDE_PRODUCT_ROWS_PER_REQUEST")
+    # Queries table: one row per open question, linked to the product it blocks.
+    enable_query_writeback: bool = Field(default=True, alias="ENABLE_QUERY_WRITEBACK")
+    glide_queries_table: str = Field(
+        default="native-table-19b47480-d912-462e-8721-584b5063f704",
+        alias="GLIDE_QUERIES_TABLE",
+    )
+    glide_col_query_rfq_id: str = Field(default="Name", alias="GLIDE_COL_QUERY_RFQ_ID")
+    glide_col_query_product_id: str = Field(default="pfIJe", alias="GLIDE_COL_QUERY_PRODUCT_ID")
+    glide_col_query_description: str = Field(default="Ucd5N", alias="GLIDE_COL_QUERY_DESCRIPTION")
+    glide_col_query_photo: str = Field(default="KbO6i", alias="GLIDE_COL_QUERY_PHOTO")
+    # Query ID (OMn91) is database-assigned and Query Response (YoqlH) is the
+    # customer's to fill: this service writes neither.
+
     # How long to wait for product extraction AFTER the triage output is written.
     # Giving up here costs the product rows only; the ZAI response is already saved.
     # Note JOB_TIMEOUT_SEC is the real ceiling: the job is killed at that point

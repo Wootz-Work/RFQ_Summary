@@ -467,7 +467,11 @@ async def _run_job(job: Job) -> None:
                 if extraction and extraction.reconciliation_note():
                     print(f"[STEP 4/4] run_id={job.run_id} | product reconciliation: {extraction.reconciliation_note()}")
                 written = await asyncio.to_thread(write_products, settings, qobj, out)
-                print(f"[STEP 4/4] run_id={job.run_id} | {written} product row(s) written in {int((time.perf_counter()-t0)*1000)}ms")
+                print(
+                    f"[STEP 4/4] run_id={job.run_id} | {written} product row(s) + "
+                    f"{len(extraction.queries) if extraction else 0} query row(s) handled in "
+                    f"{int((time.perf_counter()-t0)*1000)}ms"
+                )
 
             elif job.mode == "classify":
                 print(f"[STEP 1/3] run_id={job.run_id} | Validating RFQ classification payload...")
