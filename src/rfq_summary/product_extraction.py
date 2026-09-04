@@ -13,6 +13,7 @@ prompt's own maintainer notes call for exactly that. Violations become
 """
 
 import json
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from .schema import (
@@ -26,6 +27,33 @@ from .schema import (
 )
 
 MAX_NAME_CHARS = 50
+
+# §1.2 — four kinds of question that must never reach a customer. Checked here
+# because a single bad query is visible to the customer the moment it is sent.
+BANNED_QUERY_PATTERNS: List[Tuple[str, str]] = [
+    # Our own tooling problems.
+    (r"\b(could\s?n[o']t|cannot|can'?t|unable to|failed to|did\s?n[o']t|would\s?n[o']t|will not|wo\s?n't|does\s?n[o']t|is not)\s+(open|opening|read|readable|access|accessible|download|fetch|extract)\b",
+     "asks the customer about a file we could not open — ours to chase"),
+    # "share it again" implies we had it and lost it. Asking for something never
+    # sent ("the drawing is referenced but not attached") stays legitimate.
+    (r"\b(re-?send|resend|send (it |them )?again|share (it |them |the \w+ )?again|forward (it |them )?again)\b",
+     "asks the customer to resend something we already had — ours to chase"),
+    (r"\b(corrupt|unreadable|blank|empty)\b.{0,25}\b(file|attachment|pdf|sheet)\b",
+     "asks the customer about an unreadable file — ours to chase"),
+    # Our internal overhead.
+    (r"\b(project|reference|enquiry|rfq)\s*(number|no\.?|code|id)\b.{0,60}\b(our|internal|record|tracking|file|system)\b",
+     "asks for a reference for our own tracking"),
+    (r"\bfor (our|internal) (record|records|tracking|reference|system)\b",
+     "asks for something for our own records"),
+    # The supplier model is ours, not theirs.
+    (r"\b(supplier|suppliers|vendor|vendors|sub-?contractor|partner factory|our factory partner)\b",
+     "names a supplier or vendor — to the customer we are the manufacturer"),
+    # On the assume list.
+    (r"\b(annual|one-?time|blanket|per year|every \d+ months?)\b.{0,60}\b(basis|usage|requirement|quantit)",
+     "asks for quantity basis, which is assumed and covered in the quote"),
+    (r"\b(quantit\w+|volume)\b.{0,40}\b(one-?time|annual|recurring|repeat|blanket)\b",
+     "asks for quantity basis, which is assumed and covered in the quote"),
+]
 
 # §5.1 — a name that is only a number, or a pointer to somewhere else, is not a name.
 FORBIDDEN_NAMES = {"test", "fastener", "as per attached excel", "as per drawing", "as per excel"}
@@ -172,6 +200,14 @@ def _validate(result: ProductExtractionResult) -> List[str]:
     for q in queries:
         if (q.description or "").count("?") > 1:
             warnings.append(f"query {q.query_ref or '?'} asks more than one question")
+
+    # §1.2 — questions that must never be put to a customer.
+    for q in queries:
+        text = " ".join((q.description or "").split())
+        for pattern, reason in BANNED_QUERY_PATTERNS:
+            if re.search(pattern, text, flags=re.IGNORECASE):
+                warnings.append(f"query {q.query_ref or '?'} {reason}: {text[:90]!r}")
+                break
 
     # §9 — section must be one of the allowed tokens.
     for q in queries:

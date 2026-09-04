@@ -271,6 +271,40 @@ def test_validations() -> bool:
     return ok
 
 
+def test_banned_queries() -> bool:
+    """§1.2 — four kinds of question that must never reach a customer."""
+    banned = [
+        ("a file we could not open", "One of the attached files would not open at our end — could you resend the drawing?"),
+        ("an unreadable file", "The PDF appears corrupt — please share the file again."),
+        ("our own tracking", "Could you share your project reference number for our internal records?"),
+        ("the supplier model", "Which hardness class applies, so our supplier can quote correctly?"),
+        ("quantity basis", "Are these quantities annual usage or a one-time requirement?"),
+        ("quantity basis", "Is the 650,000 volume a one-time order or recurring?"),
+    ]
+    allowed = [
+        "MTL5102B has two sub-states: B1 (min 5 um, 480 h salt spray) and B2 (min 8 um, 720 h). Which applies?",
+        "DIN 125 offers 140 HV and 200 HV. We would suggest 140 HV against class 8.8 bolts — please confirm.",
+        "Is any of these parts used in a safety-critical assembly? It changes the inspection level we build in.",
+        "Drawing MT-4471 rev C is referenced but we have rev B. Which revision should we quote against?",
+        "The enquiry references ISO 4014 but it was not attached. Could you share a copy?",
+    ]
+
+    def warnings_for(text):
+        nd = "\n".join([
+            json.dumps({"type": "product", "index": 1, "name": "Hex Bolt M10", "details": "Specification:\nx\n\\--"}),
+            json.dumps({"type": "query", "query_ref": "Q1", "product_ref": 1,
+                        "section": "specification", "description": text}),
+        ])
+        return [w for w in parse_product_extraction(nd).validation_warnings if "query Q1" in w]
+
+    ok = True
+    for label, text in banned:
+        ok &= _check(f"flags {label}", bool(warnings_for(text)), text[:60])
+    for text in allowed:
+        ok &= _check(f"allows {text[:44]!r}", not warnings_for(text), str(warnings_for(text)))
+    return ok
+
+
 def test_mismatch_is_reported() -> bool:
     text = "\n".join(
         [
@@ -401,6 +435,7 @@ if __name__ == "__main__":
         [
             test_parse(),
             test_validations(),
+            test_banned_queries(),
             test_mismatch_is_reported(),
             test_garbage_is_not_fatal(),
             test_glide_payload(),

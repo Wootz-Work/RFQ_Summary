@@ -43,7 +43,9 @@ wait; giving up costs the product rows only.
 The prompt asks for several rules to be checked rather than trusted, because the
 model broke them in testing. `_validate()` in `product_extraction.py` reports them
 as `validation_warnings` — logged, and stored in the Sheets log — without ever
-blocking a write: product name over 50 characters or not a name at all, provenance
+blocking a write: a query that asks the customer about a file we could not open, asks
+for something for our own tracking, names a supplier or vendor, or asks for quantity
+basis and the rest of the assume list; product name over 50 characters or not a name at all, provenance
 given as a phrase instead of one token, bold sub-headings inside `RFQ Details`,
 `placeholder_count` or `query_count` disagreeing with what was emitted, a `\--`
 marker with no query row (or the reverse), duplicate query text, two questions in
