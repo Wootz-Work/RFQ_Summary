@@ -50,6 +50,15 @@ marker with no query row (or the reverse), duplicate query text, two questions i
 one query row, an unknown `section`, and a query pointing at a line that was never
 extracted.
 
+### Model
+
+All seven tasks share one model (`ANTHROPIC_MODEL`, default `claude-opus-5`), with
+`ANTHROPIC_MODEL_FALLBACKS` as the retry chain. `generate_text` sends no
+`temperature` — Opus 5, Opus 4.8/4.7 and Sonnet 5 reject it with a 400 — and uses
+adaptive thinking instead (`ANTHROPIC_ADAPTIVE_THINKING=false` turns it off). When a
+fallback answers, the model that replied is logged, so a quietly worse answer is not
+mistaken for a good one.
+
 ### Configuration
 
 Both table ids and all column ids ship as defaults in `config.py`, so the

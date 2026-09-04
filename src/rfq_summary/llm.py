@@ -33,14 +33,24 @@ def generate_text(
     if not (settings.anthropic_api_key or "").strip():
         raise RuntimeError("Missing ANTHROPIC_API_KEY")
 
+    models = _models(settings)
+    primary = models[0] if models else ""
+
+    # Opus 5, Opus 4.8/4.7 and Sonnet 5 reject `temperature` with a 400, so it is
+    # not sent at all. Adaptive thinking is the recommended replacement lever and
+    # is accepted by every model in the fallback chain.
+    kwargs: dict = {}
+    if settings.anthropic_adaptive_thinking:
+        kwargs["thinking"] = {"type": "adaptive"}
+
     last_err: Exception | None = None
-    for model in _models(settings):
+    for model in models:
         try:
             llm = ChatAnthropic(
                 model=model,
                 anthropic_api_key=settings.anthropic_api_key,
-                temperature=0.2,
                 max_tokens=8000 if max_tokens is None else max(1000, int(max_tokens)),
+                **kwargs,
             )
             resp = llm.invoke(
                 [
@@ -48,8 +58,12 @@ def generate_text(
                     HumanMessage(content=user_prompt),
                 ]
             )
+            # A silent fallback is a quietly worse answer. Say which model replied.
+            if model != primary:
+                print(f"[WARN] llm | {primary} failed, answered by fallback {model}: {type(last_err).__name__}: {last_err}")
             return (resp.content or "").strip()
         except Exception as e:
             last_err = e
+            print(f"[WARN] llm | model {model} failed: {type(e).__name__}: {e}")
 
-    raise RuntimeError(f"All Claude models failed. Last error: {last_err}")
+    raise RuntimeError(f"All Claude models failed ({', '.join(models)}). Last error: {last_err}")

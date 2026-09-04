@@ -11,12 +11,17 @@ class Settings(BaseSettings):
     # LLM (Claude / Anthropic)
     # ========================
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
-    anthropic_model: str = Field(default="claude-3-5-sonnet-latest", alias="ANTHROPIC_MODEL")
+    anthropic_model: str = Field(default="claude-opus-5", alias="ANTHROPIC_MODEL")
+    # Fallbacks must be peers of the primary. A retry that lands on a much weaker
+    # model produces a quietly worse answer, which is harder to catch than a failure.
     anthropic_model_fallbacks: str = Field(
-        default="claude-3-5-sonnet-latest,claude-3-5-haiku-latest",
+        default="claude-opus-4-8,claude-sonnet-5",
         alias="ANTHROPIC_MODEL_FALLBACKS",
     )
     anthropic_max_tokens: int = Field(default=8000, alias="ANTHROPIC_MAX_TOKENS")
+    # Adaptive thinking: recommended on Opus 4.6 and the default on Opus 5. Set false
+    # to turn it off without a code change.
+    anthropic_adaptive_thinking: bool = Field(default=True, alias="ANTHROPIC_ADAPTIVE_THINKING")
     # Prompts (two endpoints)
     prompt_pricing_file: str = Field(default="prompts/pricing_estimate.md", alias="PROMPT_PRICING_FILE")
     prompt_summary_file: str = Field(default="prompts/rfq_summary.md", alias="PROMPT_SUMMARY_FILE")
