@@ -351,9 +351,11 @@ QUANTITY_BASES = {
     "annual", "one_time", "blanket", "price_breaks", "release_schedule", "not_stated",
 }
 PROVENANCE_TOKENS = {"verbatim", "derived", "internal", "not_stated", "unknown"}
+# No "commercial": currency, incoterm and payment terms are held in our own
+# systems, so they are never asked and never raised as a gap.
 QUERY_SECTIONS = {
     "specification", "scope", "application", "standards",
-    "additional_note", "quantity", "commercial",
+    "additional_note", "quantity",
 }
 PLACEHOLDER = "\\--"
 

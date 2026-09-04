@@ -40,14 +40,25 @@ BANNED_QUERY_PATTERNS: List[Tuple[str, str]] = [
      "asks the customer to resend something we already had — ours to chase"),
     (r"\b(corrupt|unreadable|blank|empty)\b.{0,25}\b(file|attachment|pdf|sheet)\b",
      "asks the customer about an unreadable file — ours to chase"),
-    # Our internal overhead.
-    (r"\b(project|reference|enquiry|rfq)\s*(number|no\.?|code|id)\b.{0,60}\b(our|internal|record|tracking|file|system)\b",
-     "asks for a reference for our own tracking"),
-    (r"\bfor (our|internal) (record|records|tracking|reference|system)\b",
+    # Our internal overhead — administrative, whatever reason is given.
+    (r"\b(project|programme|program)\s+(or\s+\w+\s+)?(name|title|number|reference|code)\b",
+     "asks for a project name or reference — administrative, note it for the reviewer instead"),
+    (r"\b(reference|enquiry|rfq)\s*(number|no\.?|code|id)\b",
+     "asks for a reference number — administrative"),
+    (r"\bfor (our|internal) (record|records|tracking|reference|system|purposes)\b",
      "asks for something for our own records"),
+    (r"\btrack (it|this) internally\b",
+     "asks for something for our own tracking"),
+    # Commercial terms: we hold these already.
+    (r"\b(currency|incoterm|inco-?term|payment terms|delivery address|billing)\b",
+     "asks a commercial term — we hold these, they are never asked"),
     # The supplier model is ours, not theirs.
     (r"\b(supplier|suppliers|vendor|vendors|sub-?contractor|partner factory|our factory partner)\b",
      "names a supplier or vendor — to the customer we are the manufacturer"),
+    # On the assume list. A genuine contradiction ("the drawing says Level 3 but the
+    # email says Level 2") reads differently and is not caught by this.
+    (r"\b(ppap|first[- ]article|fai|isir)\b.{0,50}\b(required|require|needed|need|applicable|apply|which level|what level|level\?)",
+     "asks whether PPAP applies — assumed not included and quotable separately"),
     # On the assume list.
     (r"\b(annual|one-?time|blanket|per year|every \d+ months?)\b.{0,60}\b(basis|usage|requirement|quantit)",
      "asks for quantity basis, which is assumed and covered in the quote"),
@@ -212,7 +223,12 @@ def _validate(result: ProductExtractionResult) -> List[str]:
     # §9 — section must be one of the allowed tokens.
     for q in queries:
         section = (q.section or "").strip().lower()
-        if section and section not in QUERY_SECTIONS:
+        if section == "commercial":
+            warnings.append(
+                f"query {q.query_ref or '?'} is a commercial query — currency, incoterm and "
+                f"payment terms are held in our systems and are never asked"
+            )
+        elif section and section not in QUERY_SECTIONS:
             warnings.append(f"query {q.query_ref or '?'}: unknown section {section!r}")
 
     # A product carrying variants that never reach a table is worth flagging once.

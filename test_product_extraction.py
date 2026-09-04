@@ -280,6 +280,10 @@ def test_banned_queries() -> bool:
         ("the supplier model", "Which hardness class applies, so our supplier can quote correctly?"),
         ("quantity basis", "Are these quantities annual usage or a one-time requirement?"),
         ("quantity basis", "Is the 650,000 volume a one-time order or recurring?"),
+        ("a commercial term", "What currency and incoterm should we quote against?"),
+        ("a project name", "No project name was provided. Could you confirm the project or programme name?"),
+        ("a PPAP ask", "Is PPAP required on these parts, and if so at which level?"),
+        ("a fetch failure", "Two of the attached files failed to fetch — could you check and resend them?"),
     ]
     allowed = [
         "MTL5102B has two sub-states: B1 (min 5 um, 480 h salt spray) and B2 (min 8 um, 720 h). Which applies?",
@@ -287,6 +291,11 @@ def test_banned_queries() -> bool:
         "Is any of these parts used in a safety-critical assembly? It changes the inspection level we build in.",
         "Drawing MT-4471 rev C is referenced but we have rev B. Which revision should we quote against?",
         "The enquiry references ISO 4014 but it was not attached. Could you share a copy?",
+        # Real technical questions from the live run — these must survive the filter.
+        "The descriptor references VDA235-104 without the .20 suffix used elsewhere. We have treated it as "
+        "VDA 235-104.20. Please confirm, or clarify if a different VDA code applies.",
+        "What is the end application for these fasteners? Knowing the assembly helps us propose equivalents "
+        "where they would save cost, and set the right inspection level if any are safety-critical.",
     ]
 
     def warnings_for(text):
@@ -297,7 +306,16 @@ def test_banned_queries() -> bool:
         ])
         return [w for w in parse_product_extraction(nd).validation_warnings if "query Q1" in w]
 
-    ok = True
+    # A commercial section is itself the defect, whatever the wording.
+    nd = "\n".join([
+        json.dumps({"type": "product", "index": 1, "name": "Hex Bolt M10", "details": "Specification:\nx\n\\--"}),
+        json.dumps({"type": "query", "query_ref": "Q1", "product_ref": 1,
+                    "section": "commercial", "description": "What are the payment milestones?"}),
+    ])
+    ok = _check(
+        "flags a commercial section",
+        any("commercial query" in w for w in parse_product_extraction(nd).validation_warnings),
+    )
     for label, text in banned:
         ok &= _check(f"flags {label}", bool(warnings_for(text)), text[:60])
     for text in allowed:
