@@ -166,7 +166,11 @@ class Settings(BaseSettings):
     # ENABLE_PRODUCT_WRITEBACK=false still runs the extraction but writes nothing.
     enable_product_extraction: bool = Field(default=True, alias="ENABLE_PRODUCT_EXTRACTION")
     enable_product_writeback: bool = Field(default=True, alias="ENABLE_PRODUCT_WRITEBACK")
-    product_extraction_max_tokens: int = Field(default=8000, alias="PRODUCT_EXTRACTION_MAX_TOKENS")
+    # 8000 truncated a real 9-line RFQ mid-way through the ninth product, losing
+    # that line entirely. 16000 is the documented safe ceiling for a non-streaming
+    # request; the models in the fallback chain all allow far more, but larger
+    # values need streaming to avoid HTTP timeouts.
+    product_extraction_max_tokens: int = Field(default=16000, alias="PRODUCT_EXTRACTION_MAX_TOKENS")
     glide_all_product_table: str = Field(
         default="native-table-4c42a6c4-6b7c-476f-88a8-65c0e8d3c774",
         alias="GLIDE_ALL_PRODUCT_TABLE",

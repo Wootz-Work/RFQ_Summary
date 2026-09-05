@@ -312,7 +312,31 @@ def _looks_truncated(model_text: str, errors: List[str]) -> bool:
     if not any("unparseable block" in e for e in errors):
         return False
     tail = (model_text or "").rstrip()
-    return bool(tail) and not tail.endswith(("}", "]"))
+    if not tail or tail.endswith(("}", "]")):
+        return False
+    # The tail has to be a JSON object that was cut off, not prose that never
+    # was one: an opening brace with at least one quoted key after it.
+    fragment = tail[tail.rfind("{") :] if "{" in tail else ""
+    return bool(re.search(r'^\{\s*"[^"]+"\s*:', fragment))
+
+
+def _describe_lost_object(model_text: str) -> str:
+    """
+    Name the line that truncation cost us. The fields that identify a product —
+    index and name — come early in the object, so they usually survive the cut
+    even when the object does not. Nothing here is written anywhere: a
+    half-specified row is worse than a missing one, and the reviewer needs to
+    know which line to chase.
+    """
+    tail = (model_text or "").rstrip()
+    fragment = tail[tail.rfind("{") :] if "{" in tail else tail
+    index = re.search(r'"index"\s*:\s*(\d+)', fragment)
+    name = re.search(r'"name"\s*:\s*"([^"]{1,80})', fragment)
+    if not index and not name:
+        return ""
+    which = f"line {index.group(1)}" if index else "a line"
+    called = f" {name.group(1)!r}" if name else ""
+    return f"{which}{called}"
 
 
 def parse_product_extraction(model_text: str) -> ProductExtractionResult:
@@ -370,9 +394,11 @@ def parse_product_extraction(model_text: str) -> ProductExtractionResult:
     # Truncation is the one failure that silently costs a whole line item: the
     # product object is unterminated, so it never becomes a row. Name it plainly.
     if _looks_truncated(model_text, errors):
+        lost = _describe_lost_object(model_text)
         result.parse_errors.append(
-            "model output appears truncated — raise PRODUCT_EXTRACTION_MAX_TOKENS, or have the "
-            "prompt carry large annexures by reference instead of inline"
+            f"model output was truncated at the token cap and {lost or 'the last object'} was lost — "
+            f"raise PRODUCT_EXTRACTION_MAX_TOKENS, or have the prompt carry large annexures by "
+            f"reference instead of inline"
         )
 
     result.validation_warnings = _validate(result)

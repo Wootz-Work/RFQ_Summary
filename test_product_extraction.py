@@ -373,6 +373,34 @@ def test_query_budget_and_merging() -> bool:
     return ok
 
 
+def test_truncation_names_the_lost_line() -> bool:
+    """A real 9-line RFQ truncated mid-way through the ninth product."""
+    objs = [{"type": "rfq_header", "project": "P", "line_count_expected": 9}]
+    objs += [{"type": "product", "index": i, "name": f"Line {i}", "details": "Specification:\nx"}
+             for i in range(1, 9)]
+    text = "\n".join(json.dumps(o) for o in objs)
+    text += ('\n{"type":"product","index":9,"source_ref":"M080726 / Supports",'
+             '"name":"Pipe Supports — Phase 2.5 BoP (family)","structure":"family",'
+             '"variant_count":42,"quantity"')
+
+    r = parse_product_extraction(text)
+    truncation = [e for e in r.parse_errors if "truncated" in e]
+
+    ok = _check("eight complete lines still parse", len(r.products) == 8, str(len(r.products)))
+    ok &= _check("truncation is reported", bool(truncation), str(r.parse_errors))
+    ok &= _check("the lost line is named", "line 9" in (truncation[0] if truncation else ""))
+    ok &= _check("its name is named", "Pipe Supports" in (truncation[0] if truncation else ""))
+    ok &= _check("count mismatch surfaces too",
+                 r.reconciliation_note() == "line_count_expected=9 but 8 product line(s) parsed")
+    # A half-specified row is worse than a missing one: nothing partial is emitted.
+    ok &= _check("no partial row emitted", all(p.index != 9 for p in r.products))
+
+    # Ordinary junk is not mistaken for truncation.
+    r2 = parse_product_extraction("I could not find any products in this email.")
+    ok &= _check("prose is not called truncation", not [e for e in r2.parse_errors if "truncated" in e])
+    return ok
+
+
 def test_mismatch_is_reported() -> bool:
     text = "\n".join(
         [
@@ -507,6 +535,7 @@ if __name__ == "__main__":
             test_query_budget_and_merging(),
             test_mismatch_is_reported(),
             test_garbage_is_not_fatal(),
+            test_truncation_names_the_lost_line(),
             test_glide_payload(),
             test_query_rows_link_to_products(),
         ]
