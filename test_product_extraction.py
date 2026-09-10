@@ -442,6 +442,87 @@ def test_query_budget_and_merging() -> bool:
     return ok
 
 
+def test_empty_reply_is_explained() -> bool:
+    """A 200 with thinking blocks and no text is not a silent zero.
+
+    Thinking and output share one max_tokens budget. On a big extraction the
+    model can spend the whole budget reasoning and stop before writing any
+    answer. That cost a 214-second production run reported only as
+    'empty model output'.
+    """
+    from rfq_summary.llm import describe_empty_reply
+
+    class Resp:
+        def __init__(self, content, meta=None):
+            self.content = content
+            self.response_metadata = meta or {}
+
+    # The exact production shape.
+    r = Resp([{"type": "thinking", "thinking": "working through the lines..."}],
+             {"stop_reason": "max_tokens"})
+    why = describe_empty_reply(r)
+    ok = _check("budget exhaustion named", "whole max_tokens budget" in why, why)
+    ok &= _check("stop_reason surfaced", "max_tokens" in why, why)
+    ok &= _check("the remedy is stated", "thinking off" in why, why)
+
+    # Thinking present but a different stop reason is a different story.
+    why = describe_empty_reply(Resp([{"type": "thinking", "thinking": "x"}], {"stop_reason": "end_turn"}))
+    ok &= _check("non-budget case distinguished", "whole max_tokens" not in why and "thinking block" in why, why)
+
+    # Other block types are named rather than lumped in.
+    why = describe_empty_reply(Resp([{"type": "tool_use", "name": "x"}], {"stop_reason": "tool_use"}))
+    ok &= _check("tool_use named", "tool_use" in why, why)
+
+    # Genuinely empty, and missing metadata, both stay readable.
+    ok &= _check("empty content handled", "nothing at all" in describe_empty_reply(Resp([], {"stop_reason": "end_turn"})))
+    ok &= _check("absent metadata handled", "unknown" in describe_empty_reply(Resp([])))
+    ok &= _check("string content handled", bool(describe_empty_reply(Resp(""))))
+
+    # Object-style blocks count too.
+    class Block:
+        def __init__(self, t): self.type = t
+    why = describe_empty_reply(Resp([Block("thinking")], {"stop_reason": "max_tokens"}))
+    ok &= _check("object blocks counted", "whole max_tokens budget" in why, why)
+    return ok
+
+
+def test_budget_fits_thinking_plus_answer() -> bool:
+    """Thinking and output share max_tokens, so the budget has to hold both.
+
+    A production run spent 214s thinking, hit the 16000 cap, and returned no
+    answer at all. Thinking is worth keeping on this task, so the fix is a
+    bigger budget plus streaming, not switching the reasoning off.
+    """
+    import inspect
+    from pathlib import Path
+    from rfq_summary import llm
+    from rfq_summary.config import Settings
+
+    s = Settings(GLIDE_API_KEY="k", GLIDE_APP_ID="app")
+    ok = _check("budget exceeds the old 16000 cap", s.product_extraction_max_tokens > 16000,
+                str(s.product_extraction_max_tokens))
+    ok &= _check("large budgets stream", s.product_extraction_max_tokens > llm.STREAM_ABOVE_TOKENS)
+    ok &= _check("the wait outlasts a long generation", s.product_extraction_timeout_sec >= 420,
+                 str(s.product_extraction_timeout_sec))
+    ok &= _check("the job kill is looser than the wait",
+                 s.job_timeout_sec > s.product_extraction_timeout_sec,
+                 f"job={s.job_timeout_sec} wait={s.product_extraction_timeout_sec}")
+
+    # Thinking stays on by default; the override exists for callers who need it.
+    sig = inspect.signature(llm.generate_text)
+    ok &= _check("generate_text takes a thinking override", "thinking" in sig.parameters)
+    ok &= _check("it defaults to following the setting", sig.parameters["thinking"].default is None)
+    ok &= _check("adaptive thinking is on by default", s.anthropic_adaptive_thinking is True)
+
+    # Read task.py as text: importing it needs fitz, which is not installed here.
+    src = Path("src/rfq_summary/task.py").read_text(encoding="utf-8")
+    idx = src.find("settings.product_extraction_max_tokens")
+    ok &= _check("product extraction call found", idx > 0)
+    ok &= _check("product extraction does NOT disable thinking",
+                 "False," not in src[idx:idx + 200], src[idx:idx + 200])
+    return ok
+
+
 def test_response_text_handles_thinking_blocks() -> bool:
     """With thinking on, LangChain returns a LIST of blocks, not a string.
 
@@ -727,6 +808,8 @@ if __name__ == "__main__":
             test_internal_notes_formatting(),
             test_adaptive_thinking_gating(),
             test_response_text_handles_thinking_blocks(),
+            test_empty_reply_is_explained(),
+            test_budget_fits_thinking_plus_answer(),
             test_mismatch_is_reported(),
             test_garbage_is_not_fatal(),
             test_truncation_names_the_lost_line(),
