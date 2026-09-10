@@ -97,7 +97,7 @@ class Settings(BaseSettings):
     # ========================
     max_queue_size: int = Field(default=50, alias="MAX_QUEUE_SIZE")
     max_concurrent_jobs: int = Field(default=2, alias="MAX_CONCURRENT_JOBS")
-    job_timeout_sec: int = Field(default=420, alias="JOB_TIMEOUT_SEC")  # safety kill
+    job_timeout_sec: int = Field(default=600, alias="JOB_TIMEOUT_SEC")  # safety kill
 
     # ========================
     # Glide writeback (SAFETY: default off)
@@ -170,7 +170,7 @@ class Settings(BaseSettings):
     # that line entirely. 16000 is the documented safe ceiling for a non-streaming
     # request; the models in the fallback chain all allow far more, but larger
     # values need streaming to avoid HTTP timeouts.
-    product_extraction_max_tokens: int = Field(default=16000, alias="PRODUCT_EXTRACTION_MAX_TOKENS")
+    product_extraction_max_tokens: int = Field(default=32000, alias="PRODUCT_EXTRACTION_MAX_TOKENS")
     glide_all_product_table: str = Field(
         default="native-table-4c42a6c4-6b7c-476f-88a8-65c0e8d3c774",
         alias="GLIDE_ALL_PRODUCT_TABLE",
@@ -216,7 +216,7 @@ class Settings(BaseSettings):
     # Note JOB_TIMEOUT_SEC is the real ceiling: the job is killed at that point
     # regardless, so a value above (JOB_TIMEOUT_SEC - attachments - triage) never
     # gets used. Raise JOB_TIMEOUT_SEC too if long packages are being cut off.
-    product_extraction_timeout_sec: int = Field(default=300, alias="PRODUCT_EXTRACTION_TIMEOUT_SEC")
+    product_extraction_timeout_sec: int = Field(default=420, alias="PRODUCT_EXTRACTION_TIMEOUT_SEC")
 
     # Gate triage writeback separately (keeps RFQ writeback safety intact)
     enable_triage_writeback: bool = Field(default=True, alias="ENABLE_TRIAGE_WRITEBACK")

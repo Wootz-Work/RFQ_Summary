@@ -205,6 +205,7 @@ def _generate_text_with_timing(
     settings: Settings,
     user_prompt: str,
     max_tokens: Optional[int] = None,
+    thinking: Optional[bool] = None,
 ) -> Tuple[str, int]:
     t_llm0 = time.perf_counter()
     model_text = generate_text(
@@ -212,6 +213,7 @@ def _generate_text_with_timing(
         system_prompt="You must follow the user instructions exactly.",
         user_prompt=user_prompt,
         max_tokens=max_tokens,
+        thinking=thinking,
     )
     llm_ms = int((time.perf_counter() - t_llm0) * 1000)
     return model_text, llm_ms

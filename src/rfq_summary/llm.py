@@ -24,6 +24,12 @@ _ADAPTIVE_THINKING_MODELS = re.compile(
 )
 
 
+# Above this, a request has to stream: the SDK's HTTP timeout can fire before a
+# large answer finishes generating. Thinking makes this likelier, since thinking
+# and output draw on the same max_tokens budget.
+STREAM_ABOVE_TOKENS = 16000
+
+
 def _supports_adaptive_thinking(model: str) -> bool:
     return bool(_ADAPTIVE_THINKING_MODELS.match((model or "").strip()))
 
@@ -61,6 +67,43 @@ def response_text(content: object) -> str:
     return str(content).strip()
 
 
+def describe_empty_reply(resp: object) -> str:
+    """
+    Say why an otherwise-successful call produced no text.
+
+    The expensive case: thinking and output share one max_tokens budget, so on a
+    hard prompt the model can spend the entire budget reasoning and stop before
+    writing any answer. That returns HTTP 200 with thinking blocks and no text
+    block, which is indistinguishable from "the model said nothing" unless we
+    look. Silently reporting that as an empty output cost a 214-second run.
+    """
+    content = getattr(resp, "content", None)
+    meta = getattr(resp, "response_metadata", None) or {}
+    stop = meta.get("stop_reason") or meta.get("finish_reason") or "unknown"
+
+    thinking_blocks = 0
+    other_types = []
+    if isinstance(content, list):
+        for block in content:
+            btype = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+            if btype == "thinking":
+                thinking_blocks += 1
+            elif btype and btype != "text":
+                other_types.append(str(btype))
+
+    if thinking_blocks and stop == "max_tokens":
+        return (
+            f"thinking used the whole max_tokens budget before any answer was written "
+            f"({thinking_blocks} thinking block(s), stop_reason=max_tokens) — raise the "
+            f"budget or turn thinking off for this call"
+        )
+    if thinking_blocks:
+        return f"reply carried {thinking_blocks} thinking block(s) but no text (stop_reason={stop})"
+    if other_types:
+        return f"reply carried only {', '.join(sorted(set(other_types)))} blocks (stop_reason={stop})"
+    return f"model returned nothing at all (stop_reason={stop})"
+
+
 def _models(settings: Settings) -> List[str]:
     primary = (settings.anthropic_model or "").strip()
     fallbacks = [m.strip() for m in (settings.anthropic_model_fallbacks or "").split(",") if m.strip()]
@@ -76,7 +119,14 @@ def generate_text(
     system_prompt: str,
     user_prompt: str,
     max_tokens: int | None = None,
+    thinking: bool | None = None,
 ) -> str:
+    """
+    `thinking` overrides ANTHROPIC_ADAPTIVE_THINKING for this one call. Pass
+    False for long structured output: thinking shares the max_tokens budget with
+    the answer, so on a big extraction it can spend the lot reasoning and return
+    nothing. Leave it None to follow the setting.
+    """
     if not (settings.anthropic_api_key or "").strip():
         raise RuntimeError("Missing ANTHROPIC_API_KEY")
 
@@ -89,25 +139,50 @@ def generate_text(
     failures: List[str] = []
     last_err: Exception | None = None
 
-    for model in models:
-        kwargs: dict = {}
-        if settings.anthropic_adaptive_thinking and _supports_adaptive_thinking(model):
-            kwargs["thinking"] = {"type": "adaptive"}
+    want_thinking = settings.anthropic_adaptive_thinking if thinking is None else bool(thinking)
+    budget = 8000 if max_tokens is None else max(1000, int(max_tokens))
+    messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
 
+    def _ask(model: str, with_thinking: bool):
+        kwargs: dict = {}
+        if with_thinking and _supports_adaptive_thinking(model):
+            kwargs["thinking"] = {"type": "adaptive"}
+        # A large max_tokens on a non-streaming request risks an HTTP timeout
+        # long before the model is done. Streaming removes that ceiling, and
+        # LangChain still returns one aggregated message from .invoke().
+        if budget > STREAM_ABOVE_TOKENS:
+            kwargs["streaming"] = True
+        llm = ChatAnthropic(
+            model=model,
+            anthropic_api_key=settings.anthropic_api_key,
+            max_tokens=budget,
+            **kwargs,
+        )
+        return llm.invoke(messages)
+
+    for model in models:
         try:
-            llm = ChatAnthropic(
-                model=model,
-                anthropic_api_key=settings.anthropic_api_key,
-                max_tokens=8000 if max_tokens is None else max(1000, int(max_tokens)),
-                **kwargs,
-            )
-            resp = llm.invoke(
-                [
-                    SystemMessage(content=system_prompt),
-                    HumanMessage(content=user_prompt),
-                ]
-            )
+            resp = _ask(model, want_thinking)
             text = response_text(resp.content)
+
+            # A successful call that yields no text is not a silent zero. If
+            # thinking consumed the whole budget, retry once with it off so the
+            # budget goes to the answer. Last resort only — thinking earns its
+            # keep on this task, so the real fix is a budget that fits both.
+            if not text:
+                reason = describe_empty_reply(resp)
+                print(f"[WARN] llm | {model} returned no text: {reason}")
+                if want_thinking and _supports_adaptive_thinking(model):
+                    print(f"[WARN] llm | retrying {model} with thinking off")
+                    resp = _ask(model, False)
+                    text = response_text(resp.content)
+                    if not text:
+                        raise RuntimeError(
+                            f"no text with thinking off either: {describe_empty_reply(resp)}"
+                        )
+                else:
+                    raise RuntimeError(reason)
+
             # Only now is the answer actually in hand — announcing the fallback
             # before this point claimed success for a call that then threw.
             if model != primary:
