@@ -55,49 +55,96 @@ def parse_recipients(raw: object) -> List[str]:
 
 def _markdown_to_html(text: str) -> str:
     """
-    Render the small markdown vocabulary the diff prompt emits: a `####`
-    heading, `-` bullets and `**bold**`. Everything is escaped first, so model
-    output and customer-supplied titles cannot inject markup.
+    Render the markdown the triage and diff prompts emit: `####` headings,
+    `-` bullets, `**bold**`, `*italic*`, `` `code` ``, `---` rules and pipe
+    tables.
+
+    Everything is escaped before any markup is added, so neither the model's
+    text nor a customer-supplied RFQ title can inject HTML into the mail.
     """
-    lines = (text or "").splitlines()
-    parts: List[str] = []
-    in_list = False
-
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        safe = html.escape(stripped)
+    def inline(raw: str) -> str:
+        safe = html.escape(raw)
         safe = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", safe)
-        safe = re.sub(r"\*(.+?)\*", r"<em>\1</em>", safe)
+        safe = re.sub(r"(?<!\*)\*([^*]+?)\*(?!\*)", r"<em>\1</em>", safe)
         safe = re.sub(r"`(.+?)`", r"<code>\1</code>", safe)
+        return safe
 
-        if stripped.startswith("####"):
-            if in_list:
-                parts.append("</ul>")
-                in_list = False
-            parts.append(
-                f'<p style="margin:0 0 12px 0; font-size:16px; font-weight:bold; color:#1f2328;">'
-                f'{safe.lstrip("# ").strip()}</p>'
+    # The triage body arrives inside its tag; the tag is plumbing, not content.
+    text = re.sub(r"</?triage>", "", text or "", flags=re.I)
+
+    P = 'margin:0 0 12px 0; font-size:15px; line-height:24px; color:#33383f;'
+    parts: List[str] = []
+    lines = [l.rstrip() for l in text.splitlines()]
+    i, in_list = 0, False
+
+    def close_list():
+        nonlocal in_list
+        if in_list:
+            parts.append("</ul>")
+            in_list = False
+
+    while i < len(lines):
+        line = lines[i].strip()
+
+        if not line:
+            i += 1
+            continue
+
+        # Pipe table: a header row, a separator row, then body rows.
+        if line.startswith("|") and i + 1 < len(lines) and re.match(r"^\|[\s:|-]+\|$", lines[i + 1].strip()):
+            close_list()
+            def cells(row):
+                return [c.strip() for c in row.strip().strip("|").split("|")]
+            head = cells(line)
+            i += 2
+            body = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                body.append(cells(lines[i].strip()))
+                i += 1
+            th = "".join(
+                f'<th style="text-align:left; padding:8px 10px; border-bottom:1px solid #d5dae1; '
+                f'font-size:13px; color:#4a6178;">{inline(c)}</th>' for c in head
             )
-        elif stripped.startswith("- "):
+            rows = "".join(
+                "<tr>" + "".join(
+                    f'<td style="padding:8px 10px; border-bottom:1px solid #eceff3; '
+                    f'font-size:14px; line-height:21px; color:#33383f; vertical-align:top;">{inline(c)}</td>'
+                    for c in r
+                ) + "</tr>"
+                for r in body
+            )
+            parts.append(
+                '<table role="presentation" cellpadding="0" cellspacing="0" border="0" '
+                'style="width:100%; border-collapse:collapse; margin:0 0 14px 0;">'
+                f"<tr>{th}</tr>{rows}</table>"
+            )
+            continue
+
+        if re.match(r"^(-{3,}|\*{3,}|_{3,})$", line):
+            close_list()
+            parts.append('<div style="height:1px; background:#e0e4e9; margin:16px 0;"></div>')
+        elif line.startswith("#"):
+            close_list()
+            level = len(line) - len(line.lstrip("#"))
+            size = 18 if level <= 3 else 16
+            parts.append(
+                f'<p style="margin:16px 0 10px 0; font-size:{size}px; font-weight:bold; '
+                f'color:#1f2328;">{inline(line.lstrip("# ").strip())}</p>'
+            )
+        elif line.startswith(("- ", "* ")):
             if not in_list:
                 parts.append('<ul style="margin:0 0 12px 0; padding-left:20px;">')
                 in_list = True
             parts.append(
-                f'<li style="margin:0 0 8px 0; font-size:15px; line-height:24px; color:#33383f;">'
-                f'{safe[2:]}</li>'
+                f'<li style="margin:0 0 8px 0; font-size:15px; line-height:24px; '
+                f'color:#33383f;">{inline(line[2:])}</li>'
             )
         else:
-            if in_list:
-                parts.append("</ul>")
-                in_list = False
-            parts.append(
-                f'<p style="margin:0 0 12px 0; font-size:15px; line-height:24px; color:#33383f;">{safe}</p>'
-            )
+            close_list()
+            parts.append(f'<p style="{P}">{inline(line)}</p>')
+        i += 1
 
-    if in_list:
-        parts.append("</ul>")
+    close_list()
     return "\n".join(parts)
 
 
@@ -106,49 +153,29 @@ def _build_message(
     recipients: List[str],
     rfq_id: str,
     rfq_title: str,
-    changed_text: str,
-    requested_by: str,
+    summary_text: str,
 ) -> EmailMessage:
-    title = (rfq_title or "").strip() or rfq_id or "an RFQ"
-    subject = f"Updated: {title}"[:160]
+    title = (rfq_title or "").strip() or rfq_id or "this RFQ"
 
     msg = EmailMessage()
-    msg["Subject"] = subject
+    msg["Subject"] = f"Zai updated summary - {title}"[:200]
     msg["From"] = formataddr((settings.email_from_name or "Wootz.Strike", settings.email_from_address))
-    # Recipients go in Bcc: a shared list is not an invitation for reply-all,
-    # and it keeps one person's address off everyone else's screen.
-    msg["To"] = settings.email_from_address
-    msg["Bcc"] = ", ".join(recipients)
+    msg["To"] = ", ".join(recipients)
     if settings.email_reply_to:
         msg["Reply-To"] = settings.email_reply_to
 
-    by = (requested_by or "").strip()
-    attribution = f"Regenerated by {by}." if by else "The summary was regenerated."
+    greeting = f"Hi folks, Zai summary updated based on the recent changes in the RFQ {title}"
+    body = re.sub(r"</?triage>", "", summary_text or "", flags=re.I).strip()
 
-    plain = (
-        f"{title}\n\n"
-        f"{attribution} This is what moved since the previous version.\n\n"
-        f"{(changed_text or '').strip()}\n\n"
-        f"Open the RFQ in Strike for the full summary.\n"
-    )
-    msg.set_content(plain)
-
+    msg.set_content(f"{greeting}\n\n{body}\n")
     msg.add_alternative(
         f"""<div style="font-family:Arial,Helvetica,sans-serif; background:#f6f7f8; padding:24px;">
-  <div style="max-width:600px; margin:0 auto; background:#ffffff; border:1px solid #e0e4e9;
+  <div style="max-width:640px; margin:0 auto; background:#ffffff; border:1px solid #e0e4e9;
               border-top:3px solid #4a6178; padding:28px 32px;">
-    <p style="margin:0 0 6px 0; font-size:11px; letter-spacing:1.4px; text-transform:uppercase;
-              color:#4a6178; font-weight:bold;">Strike &middot; RFQ updated</p>
-    <p style="margin:0 0 18px 0; font-size:20px; line-height:28px; color:#1f2328;">{html.escape(title)}</p>
-    <p style="margin:0 0 18px 0; font-size:14px; line-height:22px; color:#5f6570;">
-      {html.escape(attribution)} This is what moved since the previous version.
+    <p style="margin:0 0 20px 0; font-size:15px; line-height:24px; color:#33383f;">
+      {html.escape(greeting)}
     </p>
-    <div style="border-left:3px solid #4a6178; background:#eef1f4; padding:18px 20px;">
-      {_markdown_to_html(changed_text)}
-    </div>
-    <p style="margin:20px 0 0 0; font-size:14px; line-height:22px; color:#71777f;">
-      Open the RFQ in Strike for the full summary.
-    </p>
+    {_markdown_to_html(body)}
   </div>
 </div>""",
         subtype="html",
@@ -163,6 +190,7 @@ def send_change_notification(
     changed_text: str,
     shared_members: object,
     requested_by: str = "",
+    summary_text: str = "",
 ) -> int:
     """
     Mail the shared members that something material changed.
@@ -192,7 +220,10 @@ def send_change_notification(
         )
         return 0
 
-    msg = _build_message(settings, recipients, rfq_id, rfq_title, changed, requested_by)
+    # changed_text decides WHETHER to send; summary_text is WHAT is sent. The
+    # summary already carries the change note at its top, so a reader gets the
+    # delta first and the full picture underneath.
+    msg = _build_message(settings, recipients, rfq_id, rfq_title, (summary_text or "").strip() or changed)
 
     try:
         if settings.smtp_use_ssl:

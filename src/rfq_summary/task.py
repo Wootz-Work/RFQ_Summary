@@ -1094,6 +1094,9 @@ def run_regenerate_triage(
                 changed_text=changed_text,
                 shared_members=payload.shared_members,
                 requested_by=payload.requested_by or "",
+                # triage_text already has the change note prepended, so the mail
+                # leads with what moved and carries the full summary underneath.
+                summary_text=triage_text,
             )
         except Exception as e:
             print(f"[WARN] run_id={run_id} | notification failed, regeneration unaffected: "

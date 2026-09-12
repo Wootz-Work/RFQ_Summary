@@ -38,8 +38,8 @@ class _Server:
 
 
 def _settings(**kw):
-    base = dict(GLIDE_API_KEY="k", GLIDE_APP_ID="a", SMTP_HOST="smtp.example.com",
-                EMAIL_FROM_ADDRESS="strike@wootz.work")
+    base = dict(GLIDE_API_KEY="k", GLIDE_APP_ID="a", SMTP_HOST="smtp.office365.com",
+                EMAIL_FROM_ADDRESS="technology@wootz.work")
     base.update(kw)
     return Settings(**base)
 
@@ -69,7 +69,8 @@ def test_recipients():
 def test_sends_only_on_change():
     def go(changed, members, settings=None):
         return _with_stub(lambda: send_change_notification(
-            settings or _settings(), "R1", "Duplex tubesheet", changed, members, "Ayush"))
+            settings or _settings(), "R1", "Duplex tubesheet", changed, members, "Ayush",
+            summary_text="<triage>full updated summary</triage>"))
 
     ok = _check("a real change sends", go(CHANGED, "a@b.com, c@d.com") == 2)
     ok &= _check("no change sends nothing", go("", "a@b.com") == 0)
@@ -77,35 +78,59 @@ def test_sends_only_on_change():
     ok &= _check("no members sends nothing", go(CHANGED, "") == 0)
     ok &= _check("only junk members sends nothing", go(CHANGED, "n/a, -") == 0)
     ok &= _check("kill switch", go(CHANGED, "a@b.com", _settings(ENABLE_REGENERATE_EMAIL="false")) == 0)
-    ok &= _check("unconfigured SMTP sends nothing",
-                 go(CHANGED, "a@b.com", Settings(GLIDE_API_KEY="k", GLIDE_APP_ID="a")) == 0)
+    ok &= _check("cleared SMTP host sends nothing",
+                 go(CHANGED, "a@b.com", _settings(SMTP_HOST="")) == 0)
+    ok &= _check("cleared from address sends nothing",
+                 go(CHANGED, "a@b.com", _settings(EMAIL_FROM_ADDRESS="")) == 0)
     return ok
 
 
 def test_message_shape():
     s = _settings(EMAIL_REPLY_TO="rfq@wootz.work")
-    msg = _build_message(s, ["a@b.com", "c@d.com"], "R1", "Duplex tubesheet", CHANGED, "Ayush")
+    summary = (
+        "#### What changed since the last version\n"
+        "- **Coating** — was zinc, now zinc flake. Reprice the finish.\n\n"
+        "<triage>\n"
+        "**Duplex tubesheet package. Drilling hours dominate.**\n\n"
+        "| Description | Value | Sensitivity |\n"
+        "|---|---|---|\n"
+        "| **Cost** | $xx,xxx | 371 holes assumed |\n"
+        "</triage>"
+    )
+    msg = _build_message(s, ["a@wootz.work", "b@wootz.work"], "R1", "FRUITLAND 46", summary)
 
-    ok = _check("from name is Wootz.Strike", "Wootz.Strike" in msg["From"], msg["From"])
-    ok &= _check("from address used", "strike@wootz.work" in msg["From"])
-    ok &= _check("recipients are Bcc, not To", "a@b.com" in msg["Bcc"] and "a@b.com" not in msg["To"],
-                 f"To={msg['To']} Bcc={msg['Bcc']}")
+    ok = _check("subject is the agreed line", msg["Subject"] == "Zai updated summary - FRUITLAND 46",
+                msg["Subject"])
+    ok &= _check("from address is technology@", "technology@wootz.work" in msg["From"], msg["From"])
+    ok &= _check("from name is Wootz.Strike", "Wootz.Strike" in msg["From"], msg["From"])
+    ok &= _check("recipients are in To", msg["To"] == "a@wootz.work, b@wootz.work", str(msg["To"]))
+    ok &= _check("nothing is Bcc'd", msg["Bcc"] is None, str(msg["Bcc"]))
     ok &= _check("reply-to honoured", msg["Reply-To"] == "rfq@wootz.work")
-    ok &= _check("subject names the RFQ", "Duplex tubesheet" in msg["Subject"], msg["Subject"])
-    ok &= _check("requester attributed", "Ayush" in msg.get_body("plain").get_content())
 
-    html = msg.get_body("html").get_content()
-    ok &= _check("change text is in the html", "Coating" in html)
-    ok &= _check("markdown bold rendered", "<strong>Coating</strong>" in html, html[:200])
-    ok &= _check("bullets rendered", "<li" in html)
+    plain = msg.get_body("plain").get_content()
+    ok &= _check("greeting is the agreed line",
+                 plain.startswith("Hi folks, Zai summary updated based on the recent changes in the RFQ FRUITLAND 46"),
+                 plain[:120])
+    ok &= _check("the triage tag never reaches the reader", "<triage>" not in plain)
+
+    html_body = msg.get_body("html").get_content()
+    ok &= _check("the change note is carried", "Coating" in html_body)
+    ok &= _check("the full summary is carried", "Drilling hours dominate" in html_body)
+    ok &= _check("the triage table renders as a table", "<table" in html_body and "<th" in html_body)
+    ok &= _check("bold renders", "<strong>Cost</strong>" in html_body)
+    ok &= _check("bullets render", "<li" in html_body)
+    ok &= _check("no stray triage tag in html", "&lt;triage&gt;" not in html_body and "<triage>" not in html_body)
 
     # Model output and customer titles must not be able to inject markup.
     evil = _build_message(s, ["a@b.com"], "R1", "<script>alert(1)</script>",
-                          "- **x** <img src=x onerror=alert(1)>", "")
+                          "- **x** <img src=x onerror=alert(1)>")
     ehtml = evil.get_body("html").get_content()
     ok &= _check("title is escaped", "<script>" not in ehtml)
-    ok &= _check("change text is escaped", "<img src=x" not in ehtml)
-    ok &= _check("missing requester degrades", "regenerated" in evil.get_body("plain").get_content().lower())
+    ok &= _check("summary is escaped", "<img src=x" not in ehtml)
+
+    # Falling back to the id when no title came through.
+    bare = _build_message(s, ["a@b.com"], "RFQ-77", "", "- something")
+    ok &= _check("id stands in for a missing title", "RFQ-77" in bare["Subject"], bare["Subject"])
     return ok
 
 
@@ -116,12 +141,12 @@ def test_never_breaks_the_run():
     real = smtplib.SMTP
     smtplib.SMTP = boom
     try:
-        n = send_change_notification(_settings(), "R1", "T", CHANGED, "a@b.com", "Ayush")
+        n = send_change_notification(_settings(), "R1", "T", CHANGED, "a@b.com", "Ayush", "summary")
     finally:
         smtplib.SMTP = real
     ok = _check("SMTP failure returns 0 rather than raising", n == 0)
 
-    n = send_change_notification(_settings(), "R1", "T", CHANGED, object(), "Ayush")
+    n = send_change_notification(_settings(), "R1", "T", CHANGED, object(), "Ayush", "summary")
     ok &= _check("a nonsense members value is survivable", n == 0)
     return ok
 
