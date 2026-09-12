@@ -955,6 +955,12 @@ def _describe_what_changed(
     Compare this regeneration against the previous one and return the note a
     reader needs, or "" when nothing material moved.
 
+    Scope is the triage summary, and deliberately only that. Regenerating does
+    not touch products or queries, so there is nothing about them for a diff to
+    find. Widening this to the product table would mean re-extracting on every
+    regeneration — a different feature, with its own question of whether that
+    updates existing rows or appends duplicates. Do not widen it here.
+
     Runs as its own call, after the regeneration, so the previous answer is
     never in the regeneration's own context — a model handed its last answer
     edits it instead of re-deriving, and a regeneration that only edits is not
