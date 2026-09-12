@@ -523,6 +523,56 @@ def test_budget_fits_thinking_plus_answer() -> bool:
     return ok
 
 
+def test_name_describes_the_part_not_the_order() -> bool:
+    """§5.1 / rule 12g — a name must say what the part is.
+
+    Production produced 'Repeat Order Part — as previously supplied' on an
+    enquiry that carried the customer reference 068273.2889. The name described
+    the paperwork; the reader learned nothing about what they were quoting.
+    """
+    def one(name):
+        return parse_product_extraction(json.dumps(
+            {"type": "product", "index": 1, "name": name, "details": "Specification:\nx"}))
+
+    def flagged(name):
+        return any("names the" in w for w in one(name).validation_warnings)
+
+    bad = [
+        "Repeat Order Part — as previously supplied",
+        "Repeat-order Bracket",
+        "Reorder — same as before",
+        "Re-order Washer",
+        "Bracket as previously supplied",
+        "Tubesheet per previous order",
+        "Budgetary Tubesheet",
+        "Sample Wire Basket",
+    ]
+    ok = True
+    for name in bad:
+        ok &= _check(f"flagged: {name[:38]}", flagged(name))
+
+    # Real names, and the reorder exception: when the enquiry carries no
+    # technical description, the customer reference IS the identity.
+    good = [
+        "Hex Cap Screw M10 x 25 — 8.8",
+        "Drilled Tubesheet 29-5/8\" OD",
+        "Fastener — 068273.2889",
+        "Part 068273.2889",
+        "Flat Washers — 14 sizes (family)",
+    ]
+    for name in good:
+        ok &= _check(f"allowed: {name[:38]}", not flagged(name), str(one(name).validation_warnings))
+
+    # The warning has to say what to do instead.
+    w = [x for x in one(bad[0]).validation_warnings if "names the" in x][0]
+    ok &= _check("warning names the remedy", "technical detail" in w and "reference" in w, w)
+    ok &= _check("and says where the repeat belongs", "Context" in w, w)
+
+    # Warning only — the name still reaches Glide exactly as written.
+    ok &= _check("name never rewritten", one(bad[0]).products[0].name == bad[0])
+    return ok
+
+
 def test_usage_is_reported() -> bool:
     """Log what the call actually spent, instead of inferring it from output length.
 
@@ -879,6 +929,7 @@ if __name__ == "__main__":
             test_response_text_handles_thinking_blocks(),
             test_empty_reply_is_explained(),
             test_budget_fits_thinking_plus_answer(),
+            test_name_describes_the_part_not_the_order(),
             test_usage_is_reported(),
             test_complete_lines_survive_truncation(),
             test_mismatch_is_reported(),

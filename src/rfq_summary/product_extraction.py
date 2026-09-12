@@ -74,6 +74,21 @@ TEAM_ONLY_QUERY_PATTERNS: List[Tuple[str, str]] = [
 # §5.1 — a name that is only a number, or a pointer to somewhere else, is not a name.
 FORBIDDEN_NAMES = {"test", "fastener", "as per attached excel", "as per drawing", "as per excel"}
 
+# §5.1 / hard rule 12g — a name describing the transaction rather than the part.
+# "Repeat Order Part — as previously supplied" tells a reader nothing about what
+# they are quoting; the customer's own reference would have been a better name.
+SITUATION_NAME_PATTERNS: List[Tuple[str, str]] = [
+    (r"\brepeat[\s-]+order\b", "names the transaction, not the part"),
+    (r"\bre-?order\b", "names the transaction, not the part"),
+    (r"\bas\s+(previously|prev\.?)\s+(supplied|quoted|ordered|manufactured)\b",
+     "names the previous supply, not the part"),
+    (r"\b(as\s+)?per\s+(the\s+)?previous\s+(order|supply|shipment|quote)\b",
+     "names the previous order, not the part"),
+    (r"\bsame\s+as\s+(before|last\s+time|previous)\b", "names the previous order, not the part"),
+    (r"\bbudgetary\b", "names the quote type, not the part"),
+    (r"^\s*sample\b", "names the purpose, not the part"),
+]
+
 # §5.4 — the fixed mini-structure of AI Internal notes. Each block starts a new
 # topic, so each needs a bold label and a blank line above it.
 NOTE_BLOCK_LABELS = ("Sourcing", "Applicable standards", "Attachments", "Assumptions", "Context")
@@ -201,6 +216,14 @@ def _validate(result: ProductExtractionResult) -> List[str]:
             warnings.append(f"line {p.index}: name is {len(name)} chars (max {MAX_NAME_CHARS}): {name[:60]!r}")
         if name.lower() in FORBIDDEN_NAMES or name.replace(" ", "").isdigit():
             warnings.append(f"line {p.index}: {name!r} is not a product name")
+        for pattern, why in SITUATION_NAME_PATTERNS:
+            if re.search(pattern, name, re.IGNORECASE):
+                warnings.append(
+                    f"line {p.index}: name {name!r} {why} — use the part type plus its "
+                    f"technical detail, or the customer's reference when a reorder carries "
+                    f"no description; note the repeat under Context in the internal notes"
+                )
+                break
 
     # §8 — provenance is one token per field, never a phrase.
     for p in products:
