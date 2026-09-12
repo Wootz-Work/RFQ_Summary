@@ -13,6 +13,7 @@ from .attachments import analyze_attachments
 from .search import PerplexitySearchClient
 from .llm import load_prompt_file, generate_text
 from .product_extraction import parse_product_extraction
+from .emailer import send_change_notification
 from .glide_client import (
     glide_fetch_last_regenerate_response,
     glide_query_all_companies,
@@ -1079,9 +1080,24 @@ def run_regenerate_triage(
     changed_text, raw_diff_text, diff_ms = _describe_what_changed(
         settings, run_id, payload, triage_text
     )
+    notified = 0
     if changed_text:
         # Prepend, so a reader meets the delta before re-reading the summary.
         triage_text = f"{changed_text}\n\n{triage_text}"
+        # Mail the shared members — only on a real change. An unchanged
+        # regeneration generating mail is how a notification stops being read.
+        try:
+            notified = send_change_notification(
+                settings,
+                rfq_id=payload.rfq_id,
+                rfq_title=str((payload.rfq or {}).get("title") or ""),
+                changed_text=changed_text,
+                shared_members=payload.shared_members,
+                requested_by=payload.requested_by or "",
+            )
+        except Exception as e:
+            print(f"[WARN] run_id={run_id} | notification failed, regeneration unaffected: "
+                  f"{type(e).__name__}: {e}")
 
     total_ms = int((time.perf_counter() - t0) * 1000)
 
@@ -1109,6 +1125,7 @@ def run_regenerate_triage(
             "attachments_count": len(attachment_findings or []),
             "products_count": len(payload.products or []),
             "changed_reported": bool(changed_text),
+            "members_notified": notified,
         },
     )
 

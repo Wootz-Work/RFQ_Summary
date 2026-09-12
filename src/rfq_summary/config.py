@@ -57,6 +57,22 @@ class Settings(BaseSettings):
     )
     # The "what changed" note is additive; off switches it off entirely.
     enable_regenerate_diff: bool = Field(default=True, alias="ENABLE_REGENERATE_DIFF")
+
+    # --- Outbound notification mail -------------------------------------
+    # Fires only when the regenerate diff found something material. Inert
+    # until SMTP_HOST and EMAIL_FROM_ADDRESS are set, so deploying this does
+    # not start mailing anyone before it is configured on purpose.
+    enable_regenerate_email: bool = Field(default=True, alias="ENABLE_REGENERATE_EMAIL")
+    smtp_host: str = Field(default="", alias="SMTP_HOST")
+    smtp_port: int = Field(default=587, alias="SMTP_PORT")
+    smtp_user: str = Field(default="", alias="SMTP_USER")
+    smtp_password: str = Field(default="", alias="SMTP_PASSWORD")
+    smtp_use_tls: bool = Field(default=True, alias="SMTP_USE_TLS")
+    smtp_use_ssl: bool = Field(default=False, alias="SMTP_USE_SSL")
+    smtp_timeout_sec: int = Field(default=20, alias="SMTP_TIMEOUT_SEC")
+    email_from_name: str = Field(default="Wootz.Strike", alias="EMAIL_FROM_NAME")
+    email_from_address: str = Field(default="", alias="EMAIL_FROM_ADDRESS")
+    email_reply_to: str = Field(default="", alias="EMAIL_REPLY_TO")
     prompt_query_regenerate_costing_file: str = Field(
         default="prompts/query_regenerate_costing_estimate.md",
         alias="PROMPT_QUERY_REGENERATE_COSTING_FILE",

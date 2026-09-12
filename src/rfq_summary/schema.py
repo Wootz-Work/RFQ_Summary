@@ -706,6 +706,9 @@ class RfqRegenerateTriageInputPayload(BaseModel):
     # Baseline for the "what changed" note. Optional: when absent the server
     # fetches the last response from the regenerate table itself.
     previous_response: str = ""
+    # Comma-separated addresses of the people sharing this RFQ. Mailed only
+    # when the diff found something material.
+    shared_members: Any = ""
     rfq: Dict[str, Any] = Field(default_factory=dict)
     products: List[Dict[str, Any]] = Field(default_factory=list)
     google_attachment_ids: List[str] = Field(default_factory=list)
@@ -728,6 +731,9 @@ class RfqRegenerateTriageInputPayload(BaseModel):
             data["previous_instructions"] = data.get("previousInstructions")
         if "previous_response" not in data and "previousResponse" in data:
             data["previous_response"] = data.get("previousResponse")
+        for alias in ("sharedMembers", "shared_member", "sharedMember"):
+            if "shared_members" not in data and alias in data:
+                data["shared_members"] = data.get(alias)
 
         prev = data.get("previous_instructions")
         if isinstance(prev, str) and prev.strip():
