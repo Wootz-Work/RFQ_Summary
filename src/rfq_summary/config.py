@@ -51,6 +51,12 @@ class Settings(BaseSettings):
         default="prompts/query_regenerate_triage.md",
         alias="PROMPT_QUERY_REGENERATE_TRIAGE_FILE",
     )
+    prompt_query_regenerate_diff_file: str = Field(
+        default="prompts/query_regenerate_diff.md",
+        alias="PROMPT_QUERY_REGENERATE_DIFF_FILE",
+    )
+    # The "what changed" note is additive; off switches it off entirely.
+    enable_regenerate_diff: bool = Field(default=True, alias="ENABLE_REGENERATE_DIFF")
     prompt_query_regenerate_costing_file: str = Field(
         default="prompts/query_regenerate_costing_estimate.md",
         alias="PROMPT_QUERY_REGENERATE_COSTING_FILE",
