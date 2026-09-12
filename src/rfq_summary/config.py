@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     # Adaptive thinking: recommended on Opus 4.6 and the default on Opus 5. Set false
     # to turn it off without a code change.
     anthropic_adaptive_thinking: bool = Field(default=True, alias="ANTHROPIC_ADAPTIVE_THINKING")
+    # How deep adaptive thinking goes: low | medium | high | xhigh | max.
+    # Empty means the API default. Thinking and the answer share max_tokens, so
+    # this is the lever when reasoning crowds the answer out of the budget.
+    anthropic_effort: str = Field(default="", alias="ANTHROPIC_EFFORT")
     # Prompts (two endpoints)
     prompt_pricing_file: str = Field(default="prompts/pricing_estimate.md", alias="PROMPT_PRICING_FILE")
     prompt_summary_file: str = Field(default="prompts/rfq_summary.md", alias="PROMPT_SUMMARY_FILE")
@@ -47,6 +51,28 @@ class Settings(BaseSettings):
         default="prompts/query_regenerate_triage.md",
         alias="PROMPT_QUERY_REGENERATE_TRIAGE_FILE",
     )
+    prompt_query_regenerate_diff_file: str = Field(
+        default="prompts/query_regenerate_diff.md",
+        alias="PROMPT_QUERY_REGENERATE_DIFF_FILE",
+    )
+    # The "what changed" note is additive; off switches it off entirely.
+    enable_regenerate_diff: bool = Field(default=True, alias="ENABLE_REGENERATE_DIFF")
+
+    # --- Outbound notification mail -------------------------------------
+    # Fires only when the regenerate diff found something material. Inert
+    # until SMTP_HOST and EMAIL_FROM_ADDRESS are set, so deploying this does
+    # not start mailing anyone before it is configured on purpose.
+    enable_regenerate_email: bool = Field(default=True, alias="ENABLE_REGENERATE_EMAIL")
+    smtp_host: str = Field(default="smtp.office365.com", alias="SMTP_HOST")
+    smtp_port: int = Field(default=587, alias="SMTP_PORT")
+    smtp_user: str = Field(default="", alias="SMTP_USER")
+    smtp_password: str = Field(default="", alias="SMTP_PASSWORD")
+    smtp_use_tls: bool = Field(default=True, alias="SMTP_USE_TLS")
+    smtp_use_ssl: bool = Field(default=False, alias="SMTP_USE_SSL")
+    smtp_timeout_sec: int = Field(default=20, alias="SMTP_TIMEOUT_SEC")
+    email_from_name: str = Field(default="Wootz.Strike", alias="EMAIL_FROM_NAME")
+    email_from_address: str = Field(default="technology@wootz.work", alias="EMAIL_FROM_ADDRESS")
+    email_reply_to: str = Field(default="", alias="EMAIL_REPLY_TO")
     prompt_query_regenerate_costing_file: str = Field(
         default="prompts/query_regenerate_costing_estimate.md",
         alias="PROMPT_QUERY_REGENERATE_COSTING_FILE",
@@ -170,7 +196,7 @@ class Settings(BaseSettings):
     # that line entirely. 16000 is the documented safe ceiling for a non-streaming
     # request; the models in the fallback chain all allow far more, but larger
     # values need streaming to avoid HTTP timeouts.
-    product_extraction_max_tokens: int = Field(default=32000, alias="PRODUCT_EXTRACTION_MAX_TOKENS")
+    product_extraction_max_tokens: int = Field(default=64000, alias="PRODUCT_EXTRACTION_MAX_TOKENS")
     glide_all_product_table: str = Field(
         default="native-table-4c42a6c4-6b7c-476f-88a8-65c0e8d3c774",
         alias="GLIDE_ALL_PRODUCT_TABLE",

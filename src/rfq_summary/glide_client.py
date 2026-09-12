@@ -632,3 +632,43 @@ def glide_upsert_zai_response_by_rfq_id(settings: Settings, rfq_id: str, column_
     with httpx.Client(timeout=60) as client:
         r = client.post(url, headers=_glide_headers(settings), json=payload)
         r.raise_for_status()
+
+
+def glide_fetch_last_regenerate_response(settings: Settings, rfq_id: str) -> str:
+    """
+    The most recent regenerate response already written for this RFQ.
+
+    Used as the baseline when the caller does not send one. Best-effort: a
+    missing table, an empty history or a failed query all return "" rather than
+    raising, because a regeneration must never fail over a missing diff baseline.
+    """
+    rfq_id = (rfq_id or "").strip()
+    table = (settings.glide_zai_regenerate_table or "").strip()
+    rfq_col = (settings.glide_col_zai_regenerate_rfq_id or "").strip()
+    resp_col = (settings.glide_col_zai_regenerate_response or "").strip()
+    if not (rfq_id and table and rfq_col and resp_col):
+        return ""
+    if not (settings.glide_api_key and settings.glide_app_id):
+        return ""
+
+    time_col = (settings.glide_col_zai_regenerate_response_generated_time or "").strip()
+    order = f' ORDER BY "{time_col}" DESC' if time_col else ""
+    sql = f'SELECT * FROM "{table}" WHERE "{rfq_col}" = $1{order} LIMIT 1'
+
+    try:
+        with httpx.Client(timeout=60) as client:
+            r = client.post(
+                "https://api.glideapp.io/api/function/queryTables",
+                headers=_glide_headers(settings),
+                json={"appID": settings.glide_app_id, "queries": [{"sql": sql, "params": [rfq_id]}]},
+            )
+            r.raise_for_status()
+            rows = (r.json() or [])[0].get("rows") or []
+    except Exception as e:
+        print(f"[WARN] glide | could not fetch previous regenerate response: {type(e).__name__}: {e}")
+        return ""
+
+    if not rows:
+        return ""
+    value = (rows[0] or {}).get(resp_col)
+    return value.strip() if isinstance(value, str) else ""

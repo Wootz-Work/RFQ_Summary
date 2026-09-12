@@ -225,7 +225,11 @@ Qty is the number of complete systems. If the customer wants subsystems priced s
 
 ≤ 50 characters. Part type first, then the technical detail that identifies it — size, class, material, standard variant. Family marker when consolidated.
 
-**No drawing numbers, part numbers or print references in the name.** They belong to the drawing and to the team's own records, and a name built around one tells a reader nothing about what the part is. `Hex Bolt M10 x 120 — 10.9` is a name; `MT_WST00112380` is a filing code. If the part type is genuinely unclear without the customer's reference, that is a `Customer` query, not a name.
+**No drawing numbers, part numbers or print references in the name** — while there is technical detail to use instead. They belong to the drawing and to the team's own records, and a name built around one tells a reader nothing about what the part is. `Hex Bolt M10 x 120 — 10.9` is a name; `MT_WST00112380` is a filing code.
+
+**Never name a line by its commercial situation.** A repeat order, a reorder, a previous supply, a sample, a budgetary enquiry — these describe the *transaction*, not the part. `Repeat Order Part — as previously supplied` is not a name: it is a sentence about the paperwork, and it leaves the reader knowing nothing. That the line is a reorder goes in Specification and under `Context:` in AI Internal notes, where it belongs.
+
+**The one case where the customer's reference carries the name.** In a pure reorder the enquiry often has no technical description at all — the specification lives in a previous order file. When that happens, and only then, the customer's own part number *is* the part's identity for this account. Lead with whatever part type you do know, then the reference: `Fastener — 068273.2889`. If even the part type is unknown, `Part 068273.2889` is still a better name than a sentence about the order being a repeat. A real identifier beats an empty description every time.
 
 ```
 Hex Cap Screw M10 x 25 — 8.8
@@ -238,7 +242,7 @@ Flat Washers — 14 sizes (family)
 Inconel 718 Forged Parts (family)
 ```
 
-Not names: `Item 3`, `223882`, `MT_WST00112380`, `Fastener`, `As per attached excel`, `As per drawing`, `Test`, or anything carrying grade, coating and standard all at once — those have fields.
+Not names: `Item 3`, `223882`, `MT_WST00112380`, `Fastener`, `As per attached excel`, `As per drawing`, `Test`, `Repeat Order Part`, `As previously supplied`, `Reorder — same as before`, or anything carrying grade, coating and standard all at once — those have fields.
 
 ### 5.2 Qty
 
@@ -695,9 +699,10 @@ Scope carries the tooling clauses (quoted separately per part; stored and mainta
 12a. Every query is technical, carries a `query_type` of `Team` or `Customer`, and passes one of the three tests in §1.2. Never emit a query of either type about our own file problems, a project name or anything administrative, or anything that reveals how the part is made.
 12b. Never put a commercial, logistical or administrative question to a customer — incoterm, payment, packaging, delivery, quantity basis, PPAP and project references are `Team`, always. A `Customer` query is technical and about the product itself. Never ask one question twice — one row carrying every line index it covers.
 12c. Never fill `Dwg link`, `Rep URL` or `Addl. files`. Name what to attach under `Attachments:` in AI Internal notes instead.
-12d. Never put a drawing number, part number or print reference in `Product name`.
+12d. Never put a drawing number, part number or print reference in `Product name` while any technical detail exists to name the part with. In a pure reorder that carries no technical description at all, the customer's reference is the exception and becomes the name.
 12e. Never leave packaging out of Scope, and never drop an instruction the customer wrote in the email.
 12f. Never run the AI Internal notes blocks together. Bold label, blank line between blocks, every time — five topics in one paragraph is a note nobody reads.
+12g. Never name a line after the transaction — `Repeat Order Part`, `As previously supplied`, `Reorder`, `Sample`. That the line is a repeat goes in Specification and under `Context:` in AI Internal notes.
 13. Never consolidate across process families or material classes; never force a system into the variant annexure.
 14. Never put a customer-proprietary or purchased standard in `Addl. files`.
 15. Never exceed 50 characters in Product name, or put anything but the quantity in Qty.

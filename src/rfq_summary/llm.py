@@ -67,6 +67,27 @@ def response_text(content: object) -> str:
     return str(content).strip()
 
 
+def _log_usage(model: str, resp: object, budget: int) -> None:
+    """
+    Print what the call actually spent. output_tokens covers thinking AND the
+    answer, so this line is what tells you whether thinking crowded the answer
+    out, rather than having to infer it from how short the JSON looks.
+    """
+    meta = getattr(resp, "response_metadata", None) or {}
+    usage = meta.get("usage") or {}
+    out = usage.get("output_tokens")
+    stop = meta.get("stop_reason", "?")
+    if out is None:
+        print(f"[INFO] llm | {model} stop_reason={stop} (no usage reported)")
+        return
+    pct = int(round(100 * out / budget)) if budget else 0
+    flag = "  <<< HIT THE CAP" if stop == "max_tokens" else ""
+    print(
+        f"[INFO] llm | {model} in={usage.get('input_tokens', '?')} "
+        f"out={out}/{budget} ({pct}% of budget, thinking included) stop={stop}{flag}"
+    )
+
+
 def describe_empty_reply(resp: object) -> str:
     """
     Say why an otherwise-successful call produced no text.
@@ -147,6 +168,12 @@ def generate_text(
         kwargs: dict = {}
         if with_thinking and _supports_adaptive_thinking(model):
             kwargs["thinking"] = {"type": "adaptive"}
+            # Effort is the only lever on how deep adaptive thinking goes
+            # (budget_tokens is gone on these models). Left unset it is the API
+            # default; dial it down if thinking keeps crowding out the answer.
+            effort = (settings.anthropic_effort or "").strip().lower()
+            if effort:
+                kwargs["output_config"] = {"effort": effort}
         # A large max_tokens on a non-streaming request risks an HTTP timeout
         # long before the model is done. Streaming removes that ceiling, and
         # LangChain still returns one aggregated message from .invoke().
@@ -163,6 +190,7 @@ def generate_text(
     for model in models:
         try:
             resp = _ask(model, want_thinking)
+            _log_usage(model, resp, budget)
             text = response_text(resp.content)
 
             # A successful call that yields no text is not a silent zero. If

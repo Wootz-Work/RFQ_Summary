@@ -74,6 +74,21 @@ TEAM_ONLY_QUERY_PATTERNS: List[Tuple[str, str]] = [
 # §5.1 — a name that is only a number, or a pointer to somewhere else, is not a name.
 FORBIDDEN_NAMES = {"test", "fastener", "as per attached excel", "as per drawing", "as per excel"}
 
+# §5.1 / hard rule 12g — a name describing the transaction rather than the part.
+# "Repeat Order Part — as previously supplied" tells a reader nothing about what
+# they are quoting; the customer's own reference would have been a better name.
+SITUATION_NAME_PATTERNS: List[Tuple[str, str]] = [
+    (r"\brepeat[\s-]+order\b", "names the transaction, not the part"),
+    (r"\bre-?order\b", "names the transaction, not the part"),
+    (r"\bas\s+(previously|prev\.?)\s+(supplied|quoted|ordered|manufactured)\b",
+     "names the previous supply, not the part"),
+    (r"\b(as\s+)?per\s+(the\s+)?previous\s+(order|supply|shipment|quote)\b",
+     "names the previous order, not the part"),
+    (r"\bsame\s+as\s+(before|last\s+time|previous)\b", "names the previous order, not the part"),
+    (r"\bbudgetary\b", "names the quote type, not the part"),
+    (r"^\s*sample\b", "names the purpose, not the part"),
+]
+
 # §5.4 — the fixed mini-structure of AI Internal notes. Each block starts a new
 # topic, so each needs a bold label and a blank line above it.
 NOTE_BLOCK_LABELS = ("Sourcing", "Applicable standards", "Attachments", "Assumptions", "Context")
@@ -201,6 +216,14 @@ def _validate(result: ProductExtractionResult) -> List[str]:
             warnings.append(f"line {p.index}: name is {len(name)} chars (max {MAX_NAME_CHARS}): {name[:60]!r}")
         if name.lower() in FORBIDDEN_NAMES or name.replace(" ", "").isdigit():
             warnings.append(f"line {p.index}: {name!r} is not a product name")
+        for pattern, why in SITUATION_NAME_PATTERNS:
+            if re.search(pattern, name, re.IGNORECASE):
+                warnings.append(
+                    f"line {p.index}: name {name!r} {why} — use the part type plus its "
+                    f"technical detail, or the customer's reference when a reorder carries "
+                    f"no description; note the repeat under Context in the internal notes"
+                )
+                break
 
     # §8 — provenance is one token per field, never a phrase.
     for p in products:
@@ -441,14 +464,19 @@ def parse_product_extraction(model_text: str) -> ProductExtractionResult:
         parse_errors=errors,
         raw_model_output=model_text or "",
     )
-    # Truncation is the one failure that silently costs a whole line item: the
-    # product object is unterminated, so it never becomes a row. Name it plainly.
+    # A cut-off object silently costs a whole line item: it is unterminated, so
+    # it never becomes a row. Report the fact; do NOT claim to know the cause.
+    # This detects only THAT the text stops mid-object. Whether the token cap was
+    # reached, or a stream ended early, is decided by stop_reason on the call —
+    # see the "[INFO] llm | ... stop=" line for the same run.
     if _looks_truncated(model_text, errors):
         lost = _describe_lost_object(model_text)
         result.parse_errors.append(
-            f"model output was truncated at the token cap and {lost or 'the last object'} was lost — "
-            f"raise PRODUCT_EXTRACTION_MAX_TOKENS, or have the prompt carry large annexures by "
-            f"reference instead of inline"
+            f"model output stops mid-object and {lost or 'the last object'} was lost. "
+            f"Cause is not determined here — check the '[INFO] llm |' line for this run: "
+            f"stop=max_tokens means the budget ran out (raise PRODUCT_EXTRACTION_MAX_TOKENS, "
+            f"or lower ANTHROPIC_EFFORT so thinking leaves room for the answer); any other "
+            f"stop reason means the reply was cut short in transit, and a bigger budget will not help"
         )
 
     result.validation_warnings = _validate(result)

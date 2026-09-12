@@ -643,10 +643,12 @@ class TriageOutputPayload(BaseModel):
     mode: str = "triage"
     row_id: str
     triage_text: str = ""
+    changed_text: str = ""
     costing_estimate_text: str = ""
     costing_estimate_reason_text: str = ""
     raw_model_output: str = ""
     raw_costing_model_output: str = ""
+    raw_diff_model_output: str = ""
     raw_products_model_output: str = ""
 
     product_extraction: Optional[ProductExtractionResult] = None
@@ -701,6 +703,12 @@ class RfqRegenerateTriageInputPayload(BaseModel):
     rfq_id: str = ""
     instruction: str = ""
     previous_instructions: Any = Field(default_factory=list)
+    # Baseline for the "what changed" note. Optional: when absent the server
+    # fetches the last response from the regenerate table itself.
+    previous_response: str = ""
+    # Comma-separated addresses of the people sharing this RFQ. Mailed only
+    # when the diff found something material.
+    shared_members: Any = ""
     rfq: Dict[str, Any] = Field(default_factory=dict)
     products: List[Dict[str, Any]] = Field(default_factory=list)
     google_attachment_ids: List[str] = Field(default_factory=list)
@@ -721,6 +729,11 @@ class RfqRegenerateTriageInputPayload(BaseModel):
             data["version"] = str(data.get("version"))
         if "previous_instructions" not in data and "previousInstructions" in data:
             data["previous_instructions"] = data.get("previousInstructions")
+        if "previous_response" not in data and "previousResponse" in data:
+            data["previous_response"] = data.get("previousResponse")
+        for alias in ("sharedMembers", "shared_member", "sharedMember"):
+            if "shared_members" not in data and alias in data:
+                data["shared_members"] = data.get(alias)
 
         prev = data.get("previous_instructions")
         if isinstance(prev, str) and prev.strip():

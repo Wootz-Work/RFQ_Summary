@@ -13,7 +13,13 @@ from .attachments import analyze_attachments
 from .search import PerplexitySearchClient
 from .llm import load_prompt_file, generate_text
 from .product_extraction import parse_product_extraction
-from .glide_client import glide_query_all_companies, glide_query_geographies, glide_query_industries
+from .emailer import send_change_notification
+from .glide_client import (
+    glide_fetch_last_regenerate_response,
+    glide_query_all_companies,
+    glide_query_geographies,
+    glide_query_industries,
+)
 
 
 LEGAL_SUFFIX_RE = re.compile(
@@ -939,6 +945,84 @@ def run_rfq_classification(
     )
 
 
+def _describe_what_changed(
+    settings: Settings,
+    run_id: str,
+    payload: RfqRegenerateTriageInputPayload,
+    new_triage_text: str,
+) -> Tuple[str, str, int]:
+    """
+    Compare this regeneration against the previous one and return the note a
+    reader needs, or "" when nothing material moved.
+
+    Scope is the triage summary, and deliberately only that. Regenerating does
+    not touch products or queries, so there is nothing about them for a diff to
+    find. Widening this to the product table would mean re-extracting on every
+    regeneration — a different feature, with its own question of whether that
+    updates existing rows or appends duplicates. Do not widen it here.
+
+    Runs as its own call, after the regeneration, so the previous answer is
+    never in the regeneration's own context — a model handed its last answer
+    edits it instead of re-deriving, and a regeneration that only edits is not
+    a regeneration. Nothing here can fail the run: no baseline, a missing
+    prompt or a failed call all return "" and the regeneration stands.
+
+    Returns (changed_text, raw_model_output, elapsed_ms).
+    """
+    if not settings.enable_regenerate_diff:
+        return "", "", 0
+
+    previous = (payload.previous_response or "").strip()
+    source = "payload"
+    if not previous:
+        # The caller does not have to send it — we wrote it, so we can read it.
+        try:
+            previous = glide_fetch_last_regenerate_response(settings, payload.rfq_id)
+            source = "glide"
+        except Exception as e:
+            print(f"[WARN] run_id={run_id} | previous response lookup failed: {type(e).__name__}: {e}")
+            return "", "", 0
+
+    if not previous:
+        print(f"[INFO] run_id={run_id} | no previous version to compare against — first regeneration")
+        return "", "", 0
+
+    try:
+        template = load_prompt_file(settings.prompt_query_regenerate_diff_file)
+    except Exception as e:
+        print(f"[WARN] run_id={run_id} | diff prompt unavailable: {type(e).__name__}: {e}")
+        return "", "", 0
+
+    prompt = (
+        template
+        .replace("{{previous_response}}", previous)
+        .replace("{{current_response}}", new_triage_text or "")
+        .replace("{{current_instruction}}", (payload.instruction or "").strip())
+    )
+    print(
+        f"[INFO] run_id={run_id} | diffing against previous version from {source} "
+        f"({len(previous):,} chars); diff prompt {len(prompt):,} chars"
+    )
+
+    t0 = time.perf_counter()
+    try:
+        raw, _ = _generate_text_with_timing(settings, prompt)
+    except Exception as e:
+        print(f"[WARN] run_id={run_id} | diff call failed, regeneration unaffected: {type(e).__name__}: {e}")
+        return "", "", int((time.perf_counter() - t0) * 1000)
+    elapsed = int((time.perf_counter() - t0) * 1000)
+
+    changed = _unwrap_tagged_output(raw, "changed").strip()
+    # An empty <changed> tag is the expected answer most of the time. Treat a
+    # tag holding only punctuation or a "no changes" sentence as empty too.
+    if not changed or len(changed) < 12 or re.match(r"^(no|none|nothing)\b", changed, re.I):
+        print(f"[INFO] run_id={run_id} | nothing material changed ({elapsed} ms)")
+        return "", raw or "", elapsed
+
+    print(f"[INFO] run_id={run_id} | reported {changed.count(chr(10) + '-') + changed.count('- ')} change(s) ({elapsed} ms)")
+    return changed, raw or "", elapsed
+
+
 def run_regenerate_triage(
     settings: Settings,
     payload: RfqRegenerateTriageInputPayload,
@@ -997,13 +1081,42 @@ def run_regenerate_triage(
 
     costing_estimate_text = _unwrap_tagged_output(costing_model_text, "estimate")
     costing_estimate_reason_text = _unwrap_tagged_output(costing_model_text, "reason")
+
+    triage_text = _wrap_tagged_output(model_text, "triage")
+    changed_text, raw_diff_text, diff_ms = _describe_what_changed(
+        settings, run_id, payload, triage_text
+    )
+    notified = 0
+    if changed_text:
+        # Prepend, so a reader meets the delta before re-reading the summary.
+        triage_text = f"{changed_text}\n\n{triage_text}"
+        # Mail the shared members — only on a real change. An unchanged
+        # regeneration generating mail is how a notification stops being read.
+        try:
+            notified = send_change_notification(
+                settings,
+                rfq_id=payload.rfq_id,
+                rfq_title=str((payload.rfq or {}).get("title") or ""),
+                changed_text=changed_text,
+                shared_members=payload.shared_members,
+                requested_by=payload.requested_by or "",
+                # triage_text already has the change note prepended, so the mail
+                # leads with what moved and carries the full summary underneath.
+                summary_text=triage_text,
+            )
+        except Exception as e:
+            print(f"[WARN] run_id={run_id} | notification failed, regeneration unaffected: "
+                  f"{type(e).__name__}: {e}")
+
     total_ms = int((time.perf_counter() - t0) * 1000)
 
     return RfqRegenerateTriageOutputPayload(
         run_id=run_id,
         rfq_id=payload.rfq_id,
         instruction=payload.instruction or "",
-        triage_text=_wrap_tagged_output(model_text, "triage"),
+        changed_text=changed_text,
+        raw_diff_model_output=raw_diff_text,
+        triage_text=triage_text,
         costing_estimate_text=costing_estimate_text,
         costing_estimate_reason_text=costing_estimate_reason_text,
         raw_model_output=model_text or "",
@@ -1014,11 +1127,14 @@ def run_regenerate_triage(
             "triage_llm_ms": triage_llm_ms,
             "costing_llm_ms": costing_llm_ms,
             "llm_parallel_max_ms": max(triage_llm_ms, costing_llm_ms),
+            "diff_llm_ms": diff_ms,
             "total_ms": total_ms,
         },
         structured={
             "attachments_count": len(attachment_findings or []),
             "products_count": len(payload.products or []),
+            "changed_reported": bool(changed_text),
+            "members_notified": notified,
         },
     )
 
