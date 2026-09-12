@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     # Adaptive thinking: recommended on Opus 4.6 and the default on Opus 5. Set false
     # to turn it off without a code change.
     anthropic_adaptive_thinking: bool = Field(default=True, alias="ANTHROPIC_ADAPTIVE_THINKING")
+    # How deep adaptive thinking goes: low | medium | high | xhigh | max.
+    # Empty means the API default. Thinking and the answer share max_tokens, so
+    # this is the lever when reasoning crowds the answer out of the budget.
+    anthropic_effort: str = Field(default="", alias="ANTHROPIC_EFFORT")
     # Prompts (two endpoints)
     prompt_pricing_file: str = Field(default="prompts/pricing_estimate.md", alias="PROMPT_PRICING_FILE")
     prompt_summary_file: str = Field(default="prompts/rfq_summary.md", alias="PROMPT_SUMMARY_FILE")
@@ -170,7 +174,7 @@ class Settings(BaseSettings):
     # that line entirely. 16000 is the documented safe ceiling for a non-streaming
     # request; the models in the fallback chain all allow far more, but larger
     # values need streaming to avoid HTTP timeouts.
-    product_extraction_max_tokens: int = Field(default=32000, alias="PRODUCT_EXTRACTION_MAX_TOKENS")
+    product_extraction_max_tokens: int = Field(default=64000, alias="PRODUCT_EXTRACTION_MAX_TOKENS")
     glide_all_product_table: str = Field(
         default="native-table-4c42a6c4-6b7c-476f-88a8-65c0e8d3c774",
         alias="GLIDE_ALL_PRODUCT_TABLE",

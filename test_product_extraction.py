@@ -499,7 +499,7 @@ def test_budget_fits_thinking_plus_answer() -> bool:
     from rfq_summary.config import Settings
 
     s = Settings(GLIDE_API_KEY="k", GLIDE_APP_ID="app")
-    ok = _check("budget exceeds the old 16000 cap", s.product_extraction_max_tokens > 16000,
+    ok = _check("budget has real headroom", s.product_extraction_max_tokens >= 64000,
                 str(s.product_extraction_max_tokens))
     ok &= _check("large budgets stream", s.product_extraction_max_tokens > llm.STREAM_ABOVE_TOKENS)
     ok &= _check("the wait outlasts a long generation", s.product_extraction_timeout_sec >= 420,
@@ -520,6 +520,71 @@ def test_budget_fits_thinking_plus_answer() -> bool:
     ok &= _check("product extraction call found", idx > 0)
     ok &= _check("product extraction does NOT disable thinking",
                  "False," not in src[idx:idx + 200], src[idx:idx + 200])
+    return ok
+
+
+def test_usage_is_reported() -> bool:
+    """Log what the call actually spent, instead of inferring it from output length.
+
+    output_tokens covers thinking AND the answer, so this is the line that says
+    whether thinking crowded the answer out of the budget.
+    """
+    import io, contextlib
+    from rfq_summary import llm
+    from rfq_summary.config import Settings
+
+    class Resp:
+        def __init__(self, meta): self.response_metadata = meta
+
+    def log(meta, budget=64000):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            llm._log_usage("claude-opus-4-6", Resp(meta), budget)
+        return buf.getvalue()
+
+    out = log({"usage": {"input_tokens": 18000, "output_tokens": 64000}, "stop_reason": "max_tokens"})
+    ok = _check("cap hit is called out", "HIT THE CAP" in out, out.strip())
+    ok &= _check("the split is shown", "64000/64000" in out, out.strip())
+    ok &= _check("thinking is named as included", "thinking included" in out, out.strip())
+
+    out = log({"usage": {"input_tokens": 18000, "output_tokens": 9500}, "stop_reason": "end_turn"})
+    ok &= _check("a healthy call is not flagged", "HIT THE CAP" not in out, out.strip())
+    ok &= _check("percentage of budget shown", "15%" in out, out.strip())
+
+    ok &= _check("absent usage survives", "no usage reported" in log({"stop_reason": "end_turn"}))
+    ok &= _check("absent metadata survives", bool(log(None)))
+
+    st = Settings(GLIDE_API_KEY="k", GLIDE_APP_ID="app")
+    ok &= _check("effort defaults to the API default", st.anthropic_effort == "")
+    ok &= _check("effort is configurable",
+                 Settings(GLIDE_API_KEY="k", GLIDE_APP_ID="app",
+                          ANTHROPIC_EFFORT="medium").anthropic_effort == "medium")
+    return ok
+
+
+def test_complete_lines_survive_truncation() -> bool:
+    """A cap hit partway through must not throw away the lines already finished."""
+    def line(i):
+        return json.dumps({"type": "product", "index": i, "name": f"Part {i}",
+                           "details": "Specification:\nx", "quantity": "10 pcs"})
+
+    nd = "\n".join([json.dumps({"type": "rfq_header", "line_count_expected": 5}),
+                    line(1), line(2),
+                    '{"type":"product","index":3,"name":"Part 3","details":"Spec'])
+    r = parse_product_extraction(nd)
+    ok = _check("finished lines are kept", [p.index for p in r.products] == [1, 2],
+                str([p.index for p in r.products]))
+    ok &= _check("truncation is reported", any("truncat" in e for e in r.parse_errors))
+    ok &= _check("the lost line is named", any("Part 3" in e for e in r.parse_errors))
+
+    # When the FIRST product is the one cut off there is nothing to salvage.
+    # That is the production case, and zero products is the correct answer.
+    r2 = parse_product_extraction("\n".join([
+        json.dumps({"type": "rfq_header", "line_count_expected": 3}),
+        '{"type":"product","index":1,"name":"Drilled Tubesheet","addl_files":[],']))
+    ok &= _check("nothing salvageable yields nothing", len(r2.products) == 0)
+    ok &= _check("and still says why", any("truncat" in e for e in r2.parse_errors),
+                 str(r2.parse_errors))
     return ok
 
 
@@ -810,6 +875,8 @@ if __name__ == "__main__":
             test_response_text_handles_thinking_blocks(),
             test_empty_reply_is_explained(),
             test_budget_fits_thinking_plus_answer(),
+            test_usage_is_reported(),
+            test_complete_lines_survive_truncation(),
             test_mismatch_is_reported(),
             test_garbage_is_not_fatal(),
             test_truncation_names_the_lost_line(),
