@@ -574,7 +574,7 @@ def test_complete_lines_survive_truncation() -> bool:
     r = parse_product_extraction(nd)
     ok = _check("finished lines are kept", [p.index for p in r.products] == [1, 2],
                 str([p.index for p in r.products]))
-    ok &= _check("truncation is reported", any("truncat" in e for e in r.parse_errors))
+    ok &= _check("the cut-off is reported", any("stops mid-object" in e for e in r.parse_errors))
     ok &= _check("the lost line is named", any("Part 3" in e for e in r.parse_errors))
 
     # When the FIRST product is the one cut off there is nothing to salvage.
@@ -583,7 +583,7 @@ def test_complete_lines_survive_truncation() -> bool:
         json.dumps({"type": "rfq_header", "line_count_expected": 3}),
         '{"type":"product","index":1,"name":"Drilled Tubesheet","addl_files":[],']))
     ok &= _check("nothing salvageable yields nothing", len(r2.products) == 0)
-    ok &= _check("and still says why", any("truncat" in e for e in r2.parse_errors),
+    ok &= _check("and points at the stop reason", any("stop=max_tokens" in e for e in r2.parse_errors),
                  str(r2.parse_errors))
     return ok
 
@@ -709,12 +709,16 @@ def test_truncation_names_the_lost_line() -> bool:
              '"variant_count":42,"quantity"')
 
     r = parse_product_extraction(text)
-    truncation = [e for e in r.parse_errors if "truncated" in e]
+    truncation = [e for e in r.parse_errors if "stops mid-object" in e]
 
     ok = _check("eight complete lines still parse", len(r.products) == 8, str(len(r.products)))
-    ok &= _check("truncation is reported", bool(truncation), str(r.parse_errors))
+    ok &= _check("the cut-off is reported", bool(truncation), str(r.parse_errors))
     ok &= _check("the lost line is named", "line 9" in (truncation[0] if truncation else ""))
     ok &= _check("its name is named", "Pipe Supports" in (truncation[0] if truncation else ""))
+    msg = truncation[0] if truncation else ""
+    ok &= _check("no unproven cause is asserted",
+                 "Cause is not determined here" in msg and "truncated at the token cap" not in msg, msg[:120])
+    ok &= _check("both causes are offered", "stop=max_tokens" in msg and "cut short in transit" in msg, msg[:160])
     ok &= _check("count mismatch surfaces too",
                  r.reconciliation_note() == "line_count_expected=9 but 8 product line(s) parsed")
     # A half-specified row is worse than a missing one: nothing partial is emitted.

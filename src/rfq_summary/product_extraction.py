@@ -441,14 +441,19 @@ def parse_product_extraction(model_text: str) -> ProductExtractionResult:
         parse_errors=errors,
         raw_model_output=model_text or "",
     )
-    # Truncation is the one failure that silently costs a whole line item: the
-    # product object is unterminated, so it never becomes a row. Name it plainly.
+    # A cut-off object silently costs a whole line item: it is unterminated, so
+    # it never becomes a row. Report the fact; do NOT claim to know the cause.
+    # This detects only THAT the text stops mid-object. Whether the token cap was
+    # reached, or a stream ended early, is decided by stop_reason on the call —
+    # see the "[INFO] llm | ... stop=" line for the same run.
     if _looks_truncated(model_text, errors):
         lost = _describe_lost_object(model_text)
         result.parse_errors.append(
-            f"model output was truncated at the token cap and {lost or 'the last object'} was lost — "
-            f"raise PRODUCT_EXTRACTION_MAX_TOKENS, or have the prompt carry large annexures by "
-            f"reference instead of inline"
+            f"model output stops mid-object and {lost or 'the last object'} was lost. "
+            f"Cause is not determined here — check the '[INFO] llm |' line for this run: "
+            f"stop=max_tokens means the budget ran out (raise PRODUCT_EXTRACTION_MAX_TOKENS, "
+            f"or lower ANTHROPIC_EFFORT so thinking leaves room for the answer); any other "
+            f"stop reason means the reply was cut short in transit, and a bigger budget will not help"
         )
 
     result.validation_warnings = _validate(result)
