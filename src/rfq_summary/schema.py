@@ -725,6 +725,27 @@ class RfqRegenerateTriageInputPayload(BaseModel):
             data["rfq_id"] = data.get("rfqId")
         if "version" not in data and "Version" in data:
             data["version"] = data.get("Version")
+
+        # Glide's webhook actions can wrap what should be a single value in a
+        # one-element (or more) list — observed directly: previous_response
+        # arrived as ['<triage>...</triage>'] instead of the plain string the
+        # field expects, and Pydantic does not coerce a list into a str, so
+        # this 422'd before the handler ever ran. Apply the same unwrap to
+        # every plain-string field on this payload, not just the one that
+        # happened to break first — the same wrapping can hit any of them.
+        def _unwrap_scalar(value: Any) -> Any:
+            if not isinstance(value, list):
+                return value
+            parts = [str(v) for v in value if v is not None and str(v).strip()]
+            if not parts:
+                return ""
+            return parts[0] if len(parts) == 1 else "\n\n".join(parts)
+
+        for key in ("rfq_id", "instruction", "previous_response", "requested_time",
+                    "requested_by", "version"):
+            if key in data:
+                data[key] = _unwrap_scalar(data[key])
+
         if data.get("version") is not None:
             data["version"] = str(data.get("version"))
         if "previous_instructions" not in data and "previousInstructions" in data:

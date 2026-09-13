@@ -751,6 +751,62 @@ def test_empty_reply_retries_before_giving_up() -> bool:
     return ok
 
 
+def test_regenerate_unwraps_list_wrapped_scalar_fields() -> bool:
+    """The actual production 422: previous_response arrived as
+    ['<triage>...</triage>'] — a one-element list — instead of the plain
+    string the field declares. Pydantic does not coerce a list into a str,
+    so this rejected the request outright before the handler ever ran.
+    Reproduced directly against the exact payload from the log and fixed
+    by unwrapping every plain-string field on this schema the same way,
+    since the same Glide wrapping can hit any of them, not only this one.
+    """
+    from rfq_summary.schema import RfqRegenerateTriageInputPayload as P
+
+    # The exact real payload that 422'd in production.
+    real_payload = {
+        "rfq_id": "j9s13EzPR-Sag3LT4dkvHQ",
+        "google_attachment_ids": "1FOVB2BxuovcqZ6zDQYvPQ66m8Zh1tzTS,1d6TQQr9dHZO9WkUtF7rfSbCO0IIcWw8k",
+        "requested_by": "ayush@wootz.work",
+        "version": 11,
+        "previous_instructions": ["each line item has a casting drawing..."],
+        "shared_members": "anuj@wootz.work,",
+        "previous_response": ["<triage>\n**Five aluminium castings...**\n</triage>"],
+    }
+    r = P.model_validate(real_payload)
+    ok = _check("the exact production payload now validates",
+                r.previous_response.startswith("<triage>"), r.previous_response[:40])
+    ok &= _check("version normalised to a string", r.version == "11", repr(r.version))
+    ok &= _check("requested_by passed through untouched", r.requested_by == "ayush@wootz.work")
+
+    # A plain, unwrapped string — the normal, already-working case — must
+    # be completely unaffected by the new unwrapping logic.
+    r2 = P.model_validate({"rfq_id": "R1", "previous_response": "plain string"})
+    ok &= _check("a normal plain string is unaffected", r2.previous_response == "plain string")
+
+    # An empty list must become an empty string, not crash or become "[]".
+    r3 = P.model_validate({"rfq_id": "R1", "previous_response": []})
+    ok &= _check("an empty list becomes an empty string", r3.previous_response == "")
+
+    # More than one element must be joined, not silently truncated to the first.
+    r4 = P.model_validate({"rfq_id": "R1", "previous_response": ["part one", "part two"]})
+    ok &= _check("multiple elements are joined, none dropped",
+                 "part one" in r4.previous_response and "part two" in r4.previous_response,
+                 r4.previous_response)
+
+    # The rfqId alias must still resolve correctly even when ALSO list-wrapped.
+    r5 = P.model_validate({"rfqId": ["R-aliased"]})
+    ok &= _check("aliasing and unwrapping compose correctly", r5.rfq_id == "R-aliased", repr(r5.rfq_id))
+
+    # A list-wrapped version (an int inside a list) must still normalise.
+    r6 = P.model_validate({"rfq_id": "R1", "version": [11]})
+    ok &= _check("a list-wrapped version still normalises to a string", r6.version == "11", repr(r6.version))
+
+    # Absent fields keep their ordinary defaults.
+    r7 = P.model_validate({"rfq_id": "R1"})
+    ok &= _check("a missing field keeps its default", r7.previous_response == "")
+    return ok
+
+
 def test_regenerate_accepts_json_stringified_rfq_and_products() -> bool:
     """A 422 on /query/regenerate-triage means the body failed Pydantic
     validation before the handler ever saw it — the response's own `detail`
@@ -1231,6 +1287,7 @@ if __name__ == "__main__":
             test_name_describes_the_part_not_the_order(),
             test_usage_is_reported(),
             test_empty_reply_retries_before_giving_up(),
+            test_regenerate_unwraps_list_wrapped_scalar_fields(),
             test_regenerate_accepts_json_stringified_rfq_and_products(),
             test_effort_can_be_scoped_to_one_call(),
             test_llm_log_lines_are_correlatable_to_a_run(),
