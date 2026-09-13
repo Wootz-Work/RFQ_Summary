@@ -725,6 +725,27 @@ class RfqRegenerateTriageInputPayload(BaseModel):
             data["rfq_id"] = data.get("rfqId")
         if "version" not in data and "Version" in data:
             data["version"] = data.get("Version")
+
+        # Glide's webhook actions can wrap what should be a single value in a
+        # one-element (or more) list — observed directly: previous_response
+        # arrived as ['<triage>...</triage>'] instead of the plain string the
+        # field expects, and Pydantic does not coerce a list into a str, so
+        # this 422'd before the handler ever ran. Apply the same unwrap to
+        # every plain-string field on this payload, not just the one that
+        # happened to break first — the same wrapping can hit any of them.
+        def _unwrap_scalar(value: Any) -> Any:
+            if not isinstance(value, list):
+                return value
+            parts = [str(v) for v in value if v is not None and str(v).strip()]
+            if not parts:
+                return ""
+            return parts[0] if len(parts) == 1 else "\n\n".join(parts)
+
+        for key in ("rfq_id", "instruction", "previous_response", "requested_time",
+                    "requested_by", "version"):
+            if key in data:
+                data[key] = _unwrap_scalar(data[key])
+
         if data.get("version") is not None:
             data["version"] = str(data.get("version"))
         if "previous_instructions" not in data and "previousInstructions" in data:
@@ -748,8 +769,34 @@ class RfqRegenerateTriageInputPayload(BaseModel):
         elif isinstance(val, list):
             data["google_attachment_ids"] = [str(u).strip() for u in val if str(u).strip()]
 
-        if isinstance(data.get("products"), dict):
-            data["products"] = [data["products"]]
+        # rfq and products are declared as a dict / a list of dicts, but a
+        # no-code webhook action (Glide, Zapier, Make) commonly templates a
+        # nested value as a JSON STRING rather than a native object or array
+        # — there is no first-class nested-JSON column type on that side, so
+        # the value comes through as text that happens to look like JSON.
+        # Without this, that arrives here as a plain string and fails
+        # validation with a 422 before the handler ever sees it.
+        rfq_val = data.get("rfq")
+        if isinstance(rfq_val, str) and rfq_val.strip():
+            try:
+                parsed = json.loads(rfq_val)
+                if isinstance(parsed, dict):
+                    data["rfq"] = parsed
+            except json.JSONDecodeError:
+                pass
+
+        products_val = data.get("products")
+        if isinstance(products_val, str) and products_val.strip():
+            try:
+                parsed = json.loads(products_val)
+                if isinstance(parsed, dict):
+                    parsed = [parsed]
+                if isinstance(parsed, list):
+                    data["products"] = parsed
+            except json.JSONDecodeError:
+                pass
+        elif isinstance(products_val, dict):
+            data["products"] = [products_val]
         return data
 
 

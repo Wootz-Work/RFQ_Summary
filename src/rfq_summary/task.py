@@ -214,6 +214,7 @@ def _generate_text_with_timing(
     thinking: Optional[bool] = None,
     run_id: str = "",
     label: str = "",
+    effort: Optional[str] = None,
 ) -> Tuple[str, int]:
     t_llm0 = time.perf_counter()
     model_text = generate_text(
@@ -222,6 +223,7 @@ def _generate_text_with_timing(
         user_prompt=user_prompt,
         max_tokens=max_tokens,
         thinking=thinking,
+        effort=effort,
         run_id=run_id,
         label=label,
     )
@@ -853,6 +855,12 @@ def run_query_triage(settings: Settings, payload: QueryPayload, run_id: Optional
                 None,
                 run_id,
                 "products",
+                # Scoped independently of ANTHROPIC_EFFORT: this is the one
+                # call that has shown thinking crowd out the answer on a
+                # large input. Empty (the default) means "follow the global
+                # setting" — nothing changes here until PRODUCT_EXTRACTION_EFFORT
+                # is actually set.
+                settings.product_extraction_effort or None,
             )
         model_text, triage_llm_ms = triage_future.result()
         costing_model_text, costing_llm_ms = costing_future.result()

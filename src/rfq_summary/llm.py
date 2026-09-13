@@ -134,7 +134,10 @@ def describe_empty_reply(resp: object) -> str:
         return (
             f"the model refused the request (category={category}"
             + (f": {explanation}" if explanation else "")
-            + ") — no budget or retry fixes a refusal; the prompt or its input needs to change"
+            + ") — a bigger budget never fixes this, but a retry is not hopeless: on borderline "
+            + "content a refusal is not fully reproducible, and an identical resubmission can "
+            + "succeed. A retry that keeps failing means the content itself needs to change, "
+            + "not just the attempt"
         )
 
     thinking_blocks = 0
@@ -176,6 +179,7 @@ def generate_text(
     user_prompt: str,
     max_tokens: int | None = None,
     thinking: bool | None = None,
+    effort: str | None = None,
     run_id: str = "",
     label: str = "",
 ) -> str:
@@ -184,6 +188,16 @@ def generate_text(
     False for long structured output: thinking shares the max_tokens budget with
     the answer, so on a big extraction it can spend the lot reasoning and return
     nothing. Leave it None to follow the setting.
+
+    `effort` overrides ANTHROPIC_EFFORT for this one call — the only lever
+    Anthropic gives for how much of the shared thinking+answer budget goes to
+    reasoning, now that budget_tokens (which used to fence thinking off with
+    its own separate cap) is removed on Opus 5 / Opus 4.8 / Sonnet 5. There is
+    no way to give thinking and the answer independent token budgets on this
+    model family; "low"/"medium" effort is the closest available substitute —
+    it leaves proportionally more of the shared budget for the answer. Pass
+    None to follow the global setting, "" to force the API default regardless
+    of what ANTHROPIC_EFFORT says.
 
     `run_id` and `label` name every diagnostic line this call prints, purely
     so it can be grepped back to a specific request afterwards. Without them
@@ -208,6 +222,7 @@ def generate_text(
     last_err: Exception | None = None
 
     want_thinking = settings.anthropic_adaptive_thinking if thinking is None else bool(thinking)
+    effort_to_use = (settings.anthropic_effort if effort is None else effort or "").strip().lower()
     budget = 8000 if max_tokens is None else max(1000, int(max_tokens))
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
 
@@ -218,9 +233,8 @@ def generate_text(
             # Effort is the only lever on how deep adaptive thinking goes
             # (budget_tokens is gone on these models). Left unset it is the API
             # default; dial it down if thinking keeps crowding out the answer.
-            effort = (settings.anthropic_effort or "").strip().lower()
-            if effort:
-                kwargs["output_config"] = {"effort": effort}
+            if effort_to_use:
+                kwargs["output_config"] = {"effort": effort_to_use}
         # A large max_tokens on a non-streaming request risks an HTTP timeout
         # long before the model is done. Streaming removes that ceiling, and
         # LangChain still returns one aggregated message from .invoke().
@@ -234,16 +248,38 @@ def generate_text(
         )
         return llm.invoke(messages)
 
+    empty_retries = max(0, int(settings.anthropic_empty_reply_retries))
+
     for model in models:
         try:
             resp = _ask(model, want_thinking)
             _log_usage(model, resp, budget, tag)
             text = response_text(resp.content)
 
-            # A successful call that yields no text is not a silent zero. If
-            # thinking consumed the whole budget, retry once with it off so the
-            # budget goes to the answer. Last resort only — thinking earns its
-            # keep on this task, so the real fix is a budget that fits both.
+            # An empty reply is not always reproducible. Thinking depth varies
+            # call to call even with identical settings, and on borderline
+            # content a refusal classifier is not guaranteed to land the same
+            # way twice — an identical resubmission of the same input has
+            # been observed to succeed where an earlier attempt returned
+            # nothing at all. Try again, unchanged, before reaching for a
+            # different configuration (thinking off) or a different model.
+            attempt = 0
+            while not text and attempt < empty_retries:
+                attempt += 1
+                reason = describe_empty_reply(resp)
+                print(f"[WARN] llm | {tag} {model} returned no text: {reason}".strip())
+                print(
+                    f"[WARN] llm | {tag} retrying {model} unchanged "
+                    f"(attempt {attempt}/{empty_retries})".strip()
+                )
+                resp = _ask(model, want_thinking)
+                _log_usage(model, resp, budget, tag)
+                text = response_text(resp.content)
+
+            # Still nothing after any identical retries. If thinking consumed
+            # the whole budget, retry once with it off so the budget goes to
+            # the answer. Last resort only — thinking earns its keep on this
+            # task, so the real fix is a budget that fits both.
             if not text:
                 reason = describe_empty_reply(resp)
                 print(f"[WARN] llm | {tag} {model} returned no text: {reason}".strip())

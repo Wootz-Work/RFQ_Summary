@@ -22,10 +22,28 @@ class Settings(BaseSettings):
     # Adaptive thinking: recommended on Opus 4.6 and the default on Opus 5. Set false
     # to turn it off without a code change.
     anthropic_adaptive_thinking: bool = Field(default=True, alias="ANTHROPIC_ADAPTIVE_THINKING")
+    # Extra identical attempts when a call comes back with no text at all,
+    # before trying a different configuration (thinking off) or the next
+    # fallback model. An empty reply is not always reproducible — thinking
+    # depth varies call to call, and a refusal on borderline content is not
+    # guaranteed to repeat — so retrying unchanged has a real, observed
+    # chance of succeeding. 0 disables this and preserves the old behaviour.
+    # Each retry costs a full call again (streaming, on a large extraction,
+    # can run 100-200+ seconds), so raise PRODUCT_EXTRACTION_TIMEOUT_SEC and
+    # JOB_TIMEOUT_SEC alongside this if you increase it — the existing
+    # timeout is the backstop either way, so this only improves the odds of
+    # recovering before that backstop fires, it does not remove the backstop.
+    anthropic_empty_reply_retries: int = Field(default=1, alias="ANTHROPIC_EMPTY_REPLY_RETRIES")
     # How deep adaptive thinking goes: low | medium | high | xhigh | max.
     # Empty means the API default. Thinking and the answer share max_tokens, so
     # this is the lever when reasoning crowds the answer out of the budget.
     anthropic_effort: str = Field(default="", alias="ANTHROPIC_EFFORT")
+    # Scoped override for the product-extraction call specifically — the one
+    # call that has shown thinking crowd out the answer on a large input.
+    # Empty means "follow ANTHROPIC_EFFORT", same as every other call; set
+    # this without touching the global so triage/costing/classification,
+    # which have never had this problem, keep running at full effort.
+    product_extraction_effort: str = Field(default="", alias="PRODUCT_EXTRACTION_EFFORT")
     # Prompts (two endpoints)
     prompt_pricing_file: str = Field(default="prompts/pricing_estimate.md", alias="PROMPT_PRICING_FILE")
     prompt_summary_file: str = Field(default="prompts/rfq_summary.md", alias="PROMPT_SUMMARY_FILE")

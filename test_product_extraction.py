@@ -514,7 +514,9 @@ def test_refusal_is_named_not_folded_into_budget_exhaustion() -> bool:
                 "refused" in why and "used the whole max_tokens budget" not in why, why)
     ok &= _check("category surfaced", "reasoning_extraction" in why, why)
     ok &= _check("explanation surfaced", "declined" in why, why)
-    ok &= _check("says a retry will not help", "no budget or retry fixes" in why, why)
+    ok &= _check("says a bigger budget never fixes a refusal", "budget never fixes this" in why, why)
+    ok &= _check("but does not claim a retry is hopeless",
+                 "not fully reproducible" in why and "can succeed" in why, why)
 
     # category/explanation can legitimately be absent — must not crash.
     why = describe_empty_reply(Resp([], {
@@ -666,6 +668,235 @@ def test_usage_is_reported() -> bool:
     ok &= _check("effort is configurable",
                  Settings(GLIDE_API_KEY="k", GLIDE_APP_ID="app",
                           ANTHROPIC_EFFORT="medium").anthropic_effort == "medium")
+    return ok
+
+
+def test_empty_reply_retries_before_giving_up() -> bool:
+    """An empty reply is not always reproducible — retry the identical call
+    before reaching for a different configuration or a different model.
+
+    This is the exact recovery pattern seen in production: a run returned
+    nothing, and a second, completely unchanged resubmission of the same
+    RFQ succeeded. Rather than requiring someone to notice and resubmit by
+    hand, the call retries itself.
+    """
+    import io, contextlib
+    from unittest.mock import patch
+    from rfq_summary import llm
+    from rfq_summary.config import Settings
+
+    class Resp:
+        def __init__(self, content, meta):
+            self.content, self.response_metadata = content, meta
+
+    def run(settings, invoke_fn):
+        buf = io.StringIO()
+        with patch("langchain_anthropic.ChatAnthropic.invoke", invoke_fn):
+            with contextlib.redirect_stdout(buf):
+                try:
+                    text = llm.generate_text(settings, "sys", "user", max_tokens=64000,
+                                              run_id="rr", label="products")
+                    return text, buf.getvalue(), None
+                except RuntimeError as e:
+                    return "", buf.getvalue(), e
+
+    base = Settings(GLIDE_API_KEY="k", GLIDE_APP_ID="app", ANTHROPIC_API_KEY="sk-test")
+
+    # Empty (refusal) on the first call, succeeds unchanged on the retry.
+    calls = {"n": 0}
+    def flaky(self, messages, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return Resp([], {"stop_reason": "refusal",
+                             "stop_details": {"type": "refusal", "category": "general_harms"}})
+        return Resp("recovered text", {"stop_reason": "end_turn",
+                    "usage": {"input_tokens": 5, "output_tokens": 5}})
+
+    text, log, err = run(base, flaky)
+    ok = _check("default retry count is 1", base.anthropic_empty_reply_retries == 1)
+    ok &= _check("recovers on the retry", text == "recovered text", text)
+    ok &= _check("exactly one retry attempted", calls["n"] == 2, str(calls["n"]))
+    ok &= _check("the retry is logged as unchanged", "retrying claude-opus-5 unchanged" in log, log)
+
+    # retries=0 must reproduce the OLD behaviour exactly: no plain retry at
+    # all, straight through to the existing thinking-off fallback.
+    calls["n"] = 0
+    off = Settings(GLIDE_API_KEY="k", GLIDE_APP_ID="app", ANTHROPIC_API_KEY="sk-test",
+                   ANTHROPIC_EMPTY_REPLY_RETRIES="0")
+    text, log, err = run(off, flaky)
+    ok &= _check("retries=0 skips the plain retry entirely", "unchanged" not in log, log)
+    # With retries off, the first (refusal) response goes straight to the
+    # thinking-off fallback rather than a same-settings retry.
+    ok &= _check("retries=0 still falls through to thinking-off", "with thinking off" in log, log)
+
+    # A cause that repeats through every retry still ends in a clear failure,
+    # not silently swallowed.
+    def always_refuses(self, messages, **kw):
+        return Resp([], {"stop_reason": "refusal",
+                         "stop_details": {"type": "refusal", "category": "bio", "explanation": "x"}})
+    settings_2 = Settings(GLIDE_API_KEY="k", GLIDE_APP_ID="app", ANTHROPIC_API_KEY="sk-test",
+                          ANTHROPIC_EMPTY_REPLY_RETRIES="2",
+                          ANTHROPIC_MODEL_FALLBACKS="")  # one model only, to keep this fast
+    text, log, err = run(settings_2, always_refuses)
+    ok &= _check("a genuine repeat failure still raises", text == "" and err is not None)
+    ok &= _check("both retries were attempted before giving up",
+                 log.count("retrying claude-opus-5 unchanged") == 2, log)
+
+    # The refusal message itself must not overclaim that retrying is
+    # pointless — that was wrong, and directly contradicted by the case above.
+    ok &= _check("the refusal message no longer claims retry never helps",
+                 "no budget or retry fixes a refusal" not in log, log)
+    ok &= _check("it instead says retry has a real chance on borderline content",
+                 "not fully reproducible" in log, log)
+    return ok
+
+
+def test_regenerate_unwraps_list_wrapped_scalar_fields() -> bool:
+    """The actual production 422: previous_response arrived as
+    ['<triage>...</triage>'] — a one-element list — instead of the plain
+    string the field declares. Pydantic does not coerce a list into a str,
+    so this rejected the request outright before the handler ever ran.
+    Reproduced directly against the exact payload from the log and fixed
+    by unwrapping every plain-string field on this schema the same way,
+    since the same Glide wrapping can hit any of them, not only this one.
+    """
+    from rfq_summary.schema import RfqRegenerateTriageInputPayload as P
+
+    # The exact real payload that 422'd in production.
+    real_payload = {
+        "rfq_id": "j9s13EzPR-Sag3LT4dkvHQ",
+        "google_attachment_ids": "1FOVB2BxuovcqZ6zDQYvPQ66m8Zh1tzTS,1d6TQQr9dHZO9WkUtF7rfSbCO0IIcWw8k",
+        "requested_by": "ayush@wootz.work",
+        "version": 11,
+        "previous_instructions": ["each line item has a casting drawing..."],
+        "shared_members": "anuj@wootz.work,",
+        "previous_response": ["<triage>\n**Five aluminium castings...**\n</triage>"],
+    }
+    r = P.model_validate(real_payload)
+    ok = _check("the exact production payload now validates",
+                r.previous_response.startswith("<triage>"), r.previous_response[:40])
+    ok &= _check("version normalised to a string", r.version == "11", repr(r.version))
+    ok &= _check("requested_by passed through untouched", r.requested_by == "ayush@wootz.work")
+
+    # A plain, unwrapped string — the normal, already-working case — must
+    # be completely unaffected by the new unwrapping logic.
+    r2 = P.model_validate({"rfq_id": "R1", "previous_response": "plain string"})
+    ok &= _check("a normal plain string is unaffected", r2.previous_response == "plain string")
+
+    # An empty list must become an empty string, not crash or become "[]".
+    r3 = P.model_validate({"rfq_id": "R1", "previous_response": []})
+    ok &= _check("an empty list becomes an empty string", r3.previous_response == "")
+
+    # More than one element must be joined, not silently truncated to the first.
+    r4 = P.model_validate({"rfq_id": "R1", "previous_response": ["part one", "part two"]})
+    ok &= _check("multiple elements are joined, none dropped",
+                 "part one" in r4.previous_response and "part two" in r4.previous_response,
+                 r4.previous_response)
+
+    # The rfqId alias must still resolve correctly even when ALSO list-wrapped.
+    r5 = P.model_validate({"rfqId": ["R-aliased"]})
+    ok &= _check("aliasing and unwrapping compose correctly", r5.rfq_id == "R-aliased", repr(r5.rfq_id))
+
+    # A list-wrapped version (an int inside a list) must still normalise.
+    r6 = P.model_validate({"rfq_id": "R1", "version": [11]})
+    ok &= _check("a list-wrapped version still normalises to a string", r6.version == "11", repr(r6.version))
+
+    # Absent fields keep their ordinary defaults.
+    r7 = P.model_validate({"rfq_id": "R1"})
+    ok &= _check("a missing field keeps its default", r7.previous_response == "")
+    return ok
+
+
+def test_regenerate_accepts_json_stringified_rfq_and_products() -> bool:
+    """A 422 on /query/regenerate-triage means the body failed Pydantic
+    validation before the handler ever saw it — the response's own `detail`
+    names the exact field. rfq and products are declared as a dict and a
+    list of dicts, but a no-code webhook action (Glide, Zapier, Make) has no
+    first-class nested-JSON column, so it commonly templates a nested value
+    as a JSON STRING instead. previous_instructions and google_attachment_ids
+    already tolerated that; rfq and products did not, and would 422 outright.
+    """
+    from rfq_summary.schema import RfqRegenerateTriageInputPayload as P
+
+    r = P.model_validate({"rfq_id": "R1", "rfq": '{"title": "X"}', "products": '[{"name": "a"}]'})
+    ok = _check("stringified rfq is parsed into a dict", r.rfq == {"title": "X"}, str(r.rfq))
+    ok &= _check("stringified products is parsed into a list", r.products == [{"name": "a"}], str(r.products))
+
+    # Native objects — the normal, already-working shape — must be unaffected.
+    r2 = P.model_validate({"rfq_id": "R1", "rfq": {"title": "X"}, "products": [{"name": "a"}]})
+    ok &= _check("native rfq still works", r2.rfq == {"title": "X"})
+    ok &= _check("native products still works", r2.products == [{"name": "a"}])
+
+    # A single product object, not wrapped in a list, whether native or a string.
+    r3 = P.model_validate({"rfq_id": "R1", "products": {"name": "solo"}})
+    ok &= _check("a lone native product dict is wrapped in a list", r3.products == [{"name": "solo"}])
+    r4 = P.model_validate({"rfq_id": "R1", "products": '{"name": "solo"}'})
+    ok &= _check("a lone stringified product dict is parsed and wrapped",
+                 r4.products == [{"name": "solo"}], str(r4.products))
+
+    # Absent fields keep their defaults; a garbage string is left for
+    # Pydantic's own type check to reject with the normal 422, not swallowed.
+    r5 = P.model_validate({"rfq_id": "R1"})
+    ok &= _check("missing rfq/products keep their defaults", r5.rfq == {} and r5.products == [])
+
+    still_rejects_garbage = False
+    try:
+        P.model_validate({"rfq_id": "R1", "rfq": "not json at all"})
+    except Exception:
+        still_rejects_garbage = True
+    ok &= _check("a non-JSON rfq string still fails validation (real 422, not silently accepted)",
+                 still_rejects_garbage)
+    return ok
+
+
+def test_effort_can_be_scoped_to_one_call() -> bool:
+    """There is no way to give thinking and the answer independent token
+    budgets on Opus 5 / Opus 4.8 / Sonnet 5 — budget_tokens (which used to
+    fence thinking off with its own cap) is removed on these models, and
+    max_tokens is one shared ceiling. effort is the closest substitute, and
+    it needed a per-call override so it can be dialed down for product
+    extraction specifically without touching triage/costing/classification,
+    none of which have ever shown thinking crowd out the answer.
+    """
+    import inspect
+    from pathlib import Path
+    from rfq_summary import llm
+    from rfq_summary.config import Settings
+
+    sig = inspect.signature(llm.generate_text)
+    ok = _check("generate_text takes a per-call effort override", "effort" in sig.parameters)
+    ok &= _check("it defaults to None (follow the global setting)",
+                 sig.parameters["effort"].default is None)
+
+    st = Settings(GLIDE_API_KEY="k", GLIDE_APP_ID="app")
+    ok &= _check("product-extraction effort is a distinct setting",
+                 hasattr(st, "product_extraction_effort"))
+    ok &= _check("empty by default — no behaviour change until set",
+                 st.product_extraction_effort == "")
+    ok &= _check("settable independently of the global effort",
+                 Settings(GLIDE_API_KEY="k", GLIDE_APP_ID="app", ANTHROPIC_EFFORT="high",
+                          PRODUCT_EXTRACTION_EFFORT="medium").product_extraction_effort == "medium")
+
+    # The resolution rule generate_text actually uses: None follows the
+    # global setting; a real string overrides it; "" forces the API default
+    # even when the global setting says otherwise.
+    def resolve(global_effort, override):
+        class S:
+            anthropic_effort = global_effort
+        return (S.anthropic_effort if override is None else override or "").strip().lower()
+
+    ok &= _check("no override follows the global setting", resolve("high", None) == "high")
+    ok &= _check("an override wins over the global setting", resolve("high", "medium") == "medium")
+    ok &= _check("an explicit empty string forces the API default",
+                 resolve("high", "") == "")
+
+    # The products call site must actually pass this through — reading
+    # task.py as text, since importing it needs fitz, not installed here.
+    src = Path("src/rfq_summary/task.py").read_text(encoding="utf-8")
+    idx = src.find("settings.product_extraction_max_tokens")
+    ok &= _check("product extraction call found", idx > 0)
+    ok &= _check("it passes product_extraction_effort through",
+                 "product_extraction_effort" in src[idx:idx + 800], src[idx:idx + 300])
     return ok
 
 
@@ -1055,6 +1286,10 @@ if __name__ == "__main__":
             test_budget_fits_thinking_plus_answer(),
             test_name_describes_the_part_not_the_order(),
             test_usage_is_reported(),
+            test_empty_reply_retries_before_giving_up(),
+            test_regenerate_unwraps_list_wrapped_scalar_fields(),
+            test_regenerate_accepts_json_stringified_rfq_and_products(),
+            test_effort_can_be_scoped_to_one_call(),
             test_llm_log_lines_are_correlatable_to_a_run(),
             test_complete_lines_survive_truncation(),
             test_mismatch_is_reported(),
