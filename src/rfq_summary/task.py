@@ -347,6 +347,19 @@ def _compose_rfq_title(client_name: str, title: str) -> str:
     return title
 
 
+def _rfq_title(rfq: Dict[str, Any]) -> str:
+    """
+    The RFQ's own title, from the `rfq` payload — never the rfq_id. Tries a
+    couple of casings since callers have sent both; an rfq_id-shaped ID is
+    not a title and must never stand in for one.
+    """
+    for key in ("title", "Title", "rfq_title", "Rfq Title", "RFQ Title"):
+        val = (rfq or {}).get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return ""
+
+
 def _products_for_prompt(payload: InputPayload) -> List[dict]:
     out: List[dict] = []
     products = getattr(payload, "products", None)
@@ -972,32 +985,82 @@ def run_rfq_classification(
     )
 
 
-def _describe_what_changed(
+def _render_diff_value(v: Any) -> str:
+    if v is None or v == "":
+        return "(empty)"
+    s = json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else str(v)
+    return s if len(s) <= 200 else s[:200] + "…"
+
+
+def _diff_input_json(prev: Any, curr: Any, _prefix: str = "") -> List[str]:
+    """
+    Ground-truth, code-computed field diff between the previous rfq JSON and
+    the current one. This is the only thing the annotate prompt is allowed to
+    call a cause — it is never asked to guess what changed in the input,
+    only to explain the consequence of a change we have already proven
+    happened. Recurses into nested dicts; a list is compared as a whole
+    value (line-item diffing belongs to product extraction, not here).
+    """
+    if not isinstance(prev, dict) or not isinstance(curr, dict):
+        return []
+    lines: List[str] = []
+    for key in sorted(set(prev.keys()) | set(curr.keys())):
+        path = f"{_prefix}{key}"
+        has_prev, has_curr = key in prev, key in curr
+        pv, cv = prev.get(key), curr.get(key)
+        if has_prev and not has_curr:
+            lines.append(f"- removed: {path} (was {_render_diff_value(pv)})")
+        elif has_curr and not has_prev:
+            lines.append(f"+ added: {path} = {_render_diff_value(cv)}")
+        elif isinstance(pv, dict) and isinstance(cv, dict):
+            lines.extend(_diff_input_json(pv, cv, _prefix=f"{path}."))
+        elif pv != cv:
+            lines.append(f"~ changed: {path}: {_render_diff_value(pv)} -> {_render_diff_value(cv)}")
+    return lines
+
+
+def _diff_attachment_ids(prev_ids: List[str], curr_ids: List[str]) -> List[str]:
+    prev_set, curr_set = set(prev_ids or []), set(curr_ids or [])
+    added, removed = curr_set - prev_set, prev_set - curr_set
+    lines: List[str] = []
+    if added:
+        lines.append(f"+ {len(added)} attachment(s) added since last version")
+    if removed:
+        lines.append(f"- {len(removed)} attachment(s) removed since last version")
+    return lines
+
+
+def _annotate_new_info(
     settings: Settings,
     run_id: str,
     payload: RfqRegenerateTriageInputPayload,
     new_triage_text: str,
-) -> Tuple[str, str, int]:
+) -> Tuple[str, str, int, bool]:
     """
-    Compare this regeneration against the previous one and return the note a
-    reader needs, or "" when nothing material moved.
+    Mark, in place, the spans of new_triage_text that are new or materially
+    different from the previous version — no separate "what changed" block
+    at the top. The regenerated summary reads exactly as it always did, with
+    the new/changed parts underlined so a reader who already knows the old
+    version can spot what to re-examine without re-reading the whole thing.
 
-    Scope is the triage summary, and deliberately only that. Regenerating does
-    not touch products or queries, so there is nothing about them for a diff to
-    find. Widening this to the product table would mean re-extracting on every
-    regeneration — a different feature, with its own question of whether that
-    updates existing rows or appends duplicates. Do not widen it here.
+    Grounded in two facts, never a guess:
+      - the previous version's own text — a conclusion that already appears
+        there, reworded, is not a change;
+      - a code-computed diff of prev_json vs rfq (plus an attachment-id
+        set diff), when the caller sends prev_json — the model may only
+        attribute a marked span to new input when that input change
+        actually appears in this list. This is what closes the fabrication
+        hole: previously the model compared two paragraphs and guessed
+        what moved in the input; now it is only ever allowed to explain the
+        consequence of a change we have already proven happened in code.
 
-    Runs as its own call, after the regeneration, so the previous answer is
-    never in the regeneration's own context — a model handed its last answer
-    edits it instead of re-deriving, and a regeneration that only edits is not
-    a regeneration. Nothing here can fail the run: no baseline, a missing
-    prompt or a failed call all return "" and the regeneration stands.
+    Nothing here can fail the run: no baseline, a missing prompt, or a
+    failed call all fall back to returning new_triage_text unmodified.
 
-    Returns (changed_text, raw_model_output, elapsed_ms).
+    Returns (annotated_text, raw_model_output, elapsed_ms, changed).
     """
     if not settings.enable_regenerate_diff:
-        return "", "", 0
+        return new_triage_text, "", 0, False
 
     previous = (payload.previous_response or "").strip()
     source = "payload"
@@ -1008,46 +1071,56 @@ def _describe_what_changed(
             source = "glide"
         except Exception as e:
             print(f"[WARN] run_id={run_id} | previous response lookup failed: {type(e).__name__}: {e}")
-            return "", "", 0
+            return new_triage_text, "", 0, False
 
     if not previous:
         print(f"[INFO] run_id={run_id} | no previous version to compare against — first regeneration")
-        return "", "", 0
+        return new_triage_text, "", 0, False
 
     try:
         template = load_prompt_file(settings.prompt_query_regenerate_diff_file)
     except Exception as e:
         print(f"[WARN] run_id={run_id} | diff prompt unavailable: {type(e).__name__}: {e}")
-        return "", "", 0
+        return new_triage_text, "", 0, False
+
+    diff_lines = list(_diff_input_json(payload.prev_json or {}, payload.rfq or {}))
+    diff_lines.extend(_diff_attachment_ids(
+        getattr(payload, "prev_google_attachment_ids", None) or [],
+        payload.google_attachment_ids or [],
+    ))
+    input_diff = "\n".join(diff_lines) if diff_lines else "(no prior input snapshot was sent — none available)"
 
     prompt = (
         template
         .replace("{{previous_response}}", previous)
         .replace("{{current_response}}", new_triage_text or "")
+        .replace("{{input_diff}}", input_diff)
         .replace("{{current_instruction}}", (payload.instruction or "").strip())
     )
     print(
-        f"[INFO] run_id={run_id} | diffing against previous version from {source} "
-        f"({len(previous):,} chars); diff prompt {len(prompt):,} chars"
+        f"[INFO] run_id={run_id} | annotating against previous version from {source} "
+        f"({len(previous):,} chars), {len(diff_lines)} input-diff fact(s); prompt {len(prompt):,} chars"
     )
 
     t0 = time.perf_counter()
     try:
         raw, _ = _generate_text_with_timing(settings, prompt, run_id=run_id, label="regenerate_diff")
     except Exception as e:
-        print(f"[WARN] run_id={run_id} | diff call failed, regeneration unaffected: {type(e).__name__}: {e}")
-        return "", "", int((time.perf_counter() - t0) * 1000)
+        print(f"[WARN] run_id={run_id} | annotate call failed, regeneration unaffected: {type(e).__name__}: {e}")
+        return new_triage_text, "", int((time.perf_counter() - t0) * 1000), False
     elapsed = int((time.perf_counter() - t0) * 1000)
 
-    changed = _unwrap_tagged_output(raw, "changed").strip()
-    # An empty <changed> tag is the expected answer most of the time. Treat a
-    # tag holding only punctuation or a "no changes" sentence as empty too.
-    if not changed or len(changed) < 12 or re.match(r"^(no|none|nothing)\b", changed, re.I):
-        print(f"[INFO] run_id={run_id} | nothing material changed ({elapsed} ms)")
-        return "", raw or "", elapsed
+    annotated = _unwrap_tagged_output(raw, "annotated").strip()
+    if not annotated:
+        print(f"[WARN] run_id={run_id} | annotate call returned nothing usable, keeping plain text ({elapsed} ms)")
+        return new_triage_text, raw or "", elapsed, False
 
-    print(f"[INFO] run_id={run_id} | reported {changed.count(chr(10) + '-') + changed.count('- ')} change(s) ({elapsed} ms)")
-    return changed, raw or "", elapsed
+    changed = bool(re.search(r"__.+?__", annotated, flags=re.DOTALL))
+    print(
+        f"[INFO] run_id={run_id} | "
+        + (f"marked new/changed info inline ({elapsed} ms)" if changed else f"nothing material changed ({elapsed} ms)")
+    )
+    return annotated, raw or "", elapsed, changed
 
 
 def run_regenerate_triage(
@@ -1112,25 +1185,21 @@ def run_regenerate_triage(
     costing_estimate_reason_text = _unwrap_tagged_output(costing_model_text, "reason")
 
     triage_text = _wrap_tagged_output(model_text, "triage")
-    changed_text, raw_diff_text, diff_ms = _describe_what_changed(
+    triage_text, raw_diff_text, diff_ms, changed = _annotate_new_info(
         settings, run_id, payload, triage_text
     )
     notified = 0
-    if changed_text:
-        # Prepend, so a reader meets the delta before re-reading the summary.
-        triage_text = f"{changed_text}\n\n{triage_text}"
+    if changed:
         # Mail the shared members — only on a real change. An unchanged
         # regeneration generating mail is how a notification stops being read.
         try:
             notified = send_change_notification(
                 settings,
                 rfq_id=payload.rfq_id,
-                rfq_title=str((payload.rfq or {}).get("title") or ""),
-                changed_text=changed_text,
+                rfq_title=_rfq_title(payload.rfq or {}),
+                changed_text="new or changed information marked inline",
                 shared_members=payload.shared_members,
                 requested_by=payload.requested_by or "",
-                # triage_text already has the change note prepended, so the mail
-                # leads with what moved and carries the full summary underneath.
                 summary_text=triage_text,
             )
         except Exception as e:
@@ -1143,7 +1212,7 @@ def run_regenerate_triage(
         run_id=run_id,
         rfq_id=payload.rfq_id,
         instruction=payload.instruction or "",
-        changed_text=changed_text,
+        changed=changed,
         raw_diff_model_output=raw_diff_text,
         triage_text=triage_text,
         costing_estimate_text=costing_estimate_text,
@@ -1162,7 +1231,7 @@ def run_regenerate_triage(
         structured={
             "attachments_count": len(attachment_findings or []),
             "products_count": len(payload.products or []),
-            "changed_reported": bool(changed_text),
+            "changed_reported": changed,
             "members_notified": notified,
         },
     )
