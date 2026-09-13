@@ -748,8 +748,34 @@ class RfqRegenerateTriageInputPayload(BaseModel):
         elif isinstance(val, list):
             data["google_attachment_ids"] = [str(u).strip() for u in val if str(u).strip()]
 
-        if isinstance(data.get("products"), dict):
-            data["products"] = [data["products"]]
+        # rfq and products are declared as a dict / a list of dicts, but a
+        # no-code webhook action (Glide, Zapier, Make) commonly templates a
+        # nested value as a JSON STRING rather than a native object or array
+        # — there is no first-class nested-JSON column type on that side, so
+        # the value comes through as text that happens to look like JSON.
+        # Without this, that arrives here as a plain string and fails
+        # validation with a 422 before the handler ever sees it.
+        rfq_val = data.get("rfq")
+        if isinstance(rfq_val, str) and rfq_val.strip():
+            try:
+                parsed = json.loads(rfq_val)
+                if isinstance(parsed, dict):
+                    data["rfq"] = parsed
+            except json.JSONDecodeError:
+                pass
+
+        products_val = data.get("products")
+        if isinstance(products_val, str) and products_val.strip():
+            try:
+                parsed = json.loads(products_val)
+                if isinstance(parsed, dict):
+                    parsed = [parsed]
+                if isinstance(parsed, list):
+                    data["products"] = parsed
+            except json.JSONDecodeError:
+                pass
+        elif isinstance(products_val, dict):
+            data["products"] = [products_val]
         return data
 
 

@@ -751,6 +751,48 @@ def test_empty_reply_retries_before_giving_up() -> bool:
     return ok
 
 
+def test_regenerate_accepts_json_stringified_rfq_and_products() -> bool:
+    """A 422 on /query/regenerate-triage means the body failed Pydantic
+    validation before the handler ever saw it — the response's own `detail`
+    names the exact field. rfq and products are declared as a dict and a
+    list of dicts, but a no-code webhook action (Glide, Zapier, Make) has no
+    first-class nested-JSON column, so it commonly templates a nested value
+    as a JSON STRING instead. previous_instructions and google_attachment_ids
+    already tolerated that; rfq and products did not, and would 422 outright.
+    """
+    from rfq_summary.schema import RfqRegenerateTriageInputPayload as P
+
+    r = P.model_validate({"rfq_id": "R1", "rfq": '{"title": "X"}', "products": '[{"name": "a"}]'})
+    ok = _check("stringified rfq is parsed into a dict", r.rfq == {"title": "X"}, str(r.rfq))
+    ok &= _check("stringified products is parsed into a list", r.products == [{"name": "a"}], str(r.products))
+
+    # Native objects — the normal, already-working shape — must be unaffected.
+    r2 = P.model_validate({"rfq_id": "R1", "rfq": {"title": "X"}, "products": [{"name": "a"}]})
+    ok &= _check("native rfq still works", r2.rfq == {"title": "X"})
+    ok &= _check("native products still works", r2.products == [{"name": "a"}])
+
+    # A single product object, not wrapped in a list, whether native or a string.
+    r3 = P.model_validate({"rfq_id": "R1", "products": {"name": "solo"}})
+    ok &= _check("a lone native product dict is wrapped in a list", r3.products == [{"name": "solo"}])
+    r4 = P.model_validate({"rfq_id": "R1", "products": '{"name": "solo"}'})
+    ok &= _check("a lone stringified product dict is parsed and wrapped",
+                 r4.products == [{"name": "solo"}], str(r4.products))
+
+    # Absent fields keep their defaults; a garbage string is left for
+    # Pydantic's own type check to reject with the normal 422, not swallowed.
+    r5 = P.model_validate({"rfq_id": "R1"})
+    ok &= _check("missing rfq/products keep their defaults", r5.rfq == {} and r5.products == [])
+
+    still_rejects_garbage = False
+    try:
+        P.model_validate({"rfq_id": "R1", "rfq": "not json at all"})
+    except Exception:
+        still_rejects_garbage = True
+    ok &= _check("a non-JSON rfq string still fails validation (real 422, not silently accepted)",
+                 still_rejects_garbage)
+    return ok
+
+
 def test_effort_can_be_scoped_to_one_call() -> bool:
     """There is no way to give thinking and the answer independent token
     budgets on Opus 5 / Opus 4.8 / Sonnet 5 — budget_tokens (which used to
@@ -1189,6 +1231,7 @@ if __name__ == "__main__":
             test_name_describes_the_part_not_the_order(),
             test_usage_is_reported(),
             test_empty_reply_retries_before_giving_up(),
+            test_regenerate_accepts_json_stringified_rfq_and_products(),
             test_effort_can_be_scoped_to_one_call(),
             test_llm_log_lines_are_correlatable_to_a_run(),
             test_complete_lines_survive_truncation(),
