@@ -829,6 +829,10 @@ class RfqRegenerateTriageOutputPayload(BaseModel):
     raw_costing_model_output: str = ""
     raw_diff_model_output: str = ""
     changed: bool = False
+    # True only when there was a previous version to compare against and the
+    # comparison actually completed — the fact write_regenerated_triage needs
+    # to tell "confirmed nothing changed" apart from "couldn't check."
+    compared: bool = False
     attachment_findings: List[AttachmentFinding] = Field(default_factory=list)
     timings: Dict[str, Any] = Field(default_factory=dict)
     structured: Dict[str, Any] = Field(default_factory=dict)

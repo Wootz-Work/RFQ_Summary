@@ -421,7 +421,16 @@ def write_regenerated_triage(
     generated_at = datetime.now(timezone.utc).isoformat()
     requested_at = inp.requested_time or generated_at
 
-    if settings.enable_triage_writeback:
+    # Skip the Glide write only when we actually compared against a real
+    # previous version and confirmed nothing material moved. A first-ever
+    # regeneration (nothing to compare against) or a failed/skipped
+    # comparison still writes — "couldn't check" must never be treated as
+    # "confirmed unchanged."
+    skip_write = out.compared and not out.changed
+    if skip_write:
+        print(f"[INFO] run_id={out.run_id} | response unchanged from previous version — Glide write skipped")
+
+    if settings.enable_triage_writeback and not skip_write:
         required = {
             "GLIDE_COL_ZAI_REGENERATE_RFQ_ID": settings.glide_col_zai_regenerate_rfq_id,
             "GLIDE_COL_ZAI_REGENERATE_RESPONSE": settings.glide_col_zai_regenerate_response,

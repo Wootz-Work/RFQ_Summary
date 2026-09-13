@@ -79,28 +79,30 @@ def test_diff_attachment_ids():
 # ---- the annotate pass ------------------------------------------------------
 
 def test_annotates_a_real_change():
-    txt, raw, ms, changed = run(
+    txt, raw, ms, changed, compared = run(
         P(rfq_id="R1", previous_response="old summary"),
         gen=lambda s, p, **k: ("<annotated>\nnew summary, __was zinc, now zinc flake__\n</annotated>", 120),
     )
     check("marked span is carried through", "__was zinc, now zinc flake__" in txt, txt)
     check("tag is unwrapped", "<annotated>" not in txt)
     check("flagged as changed", changed is True)
+    check("flagged as compared", compared is True)
 
 
 def test_unmodified_copy_means_no_change():
-    txt, raw, ms, changed = run(
+    txt, raw, ms, changed, compared = run(
         P(rfq_id="R1", previous_response="old"),
         gen=lambda s, p, **k: (f"<annotated>\n{NEW}\n</annotated>", 90),
     )
     check("text is returned as-is, no markers", txt == NEW, txt)
     check("not flagged as changed", changed is False)
+    check("flagged as compared — this is a confirmed no-change", compared is True)
     check("raw is still kept for the log", bool(raw))
 
 
 def test_no_baseline_means_no_call():
     called = []
-    txt, raw, ms, changed = run(
+    txt, raw, ms, changed, compared = run(
         P(rfq_id="R1"),
         gen=lambda s, p, **k: (called.append(1), ("x", 1))[1],
         fetch=lambda s, r: "",
@@ -108,16 +110,18 @@ def test_no_baseline_means_no_call():
     check("plain text is returned unchanged", txt == NEW, txt)
     check("no LLM call is made", not called)
     check("not flagged as changed", changed is False)
+    check("not flagged as compared — nothing to compare against yet", compared is False)
 
 
 def test_fetches_baseline_from_glide():
-    txt, raw, ms, changed = run(
+    txt, raw, ms, changed, compared = run(
         P(rfq_id="R1"),
         gen=lambda s, p, **k: ("<annotated>\n" + NEW + " __Lead time was 7 weeks, now 10__\n</annotated>", 100),
         fetch=lambda s, r: "previous version text",
     )
     check("fetches baseline from Glide and annotates", "__Lead time was 7 weeks, now 10__" in txt, txt)
     check("flagged as changed", changed is True)
+    check("flagged as compared", compared is True)
 
 
 def test_input_diff_reaches_the_prompt():
@@ -143,27 +147,34 @@ def test_input_diff_reaches_the_prompt():
 
 
 def test_failure_modes_leave_the_regeneration_standing():
+    """Every failure mode must be uncompared, not just unchanged — a caller
+    gating a Glide write on "confirmed no change" must never skip a write
+    just because the check itself broke."""
     def boom(*a, **k): raise RuntimeError("model down")
-    txt, _, _, changed = run(P(rfq_id="R1", previous_response="old"), gen=boom)
+    txt, _, _, changed, compared = run(P(rfq_id="R1", previous_response="old"), gen=boom)
     check("diff call failure returns plain text", txt == NEW)
     check("and is not flagged as changed", changed is False)
+    check("and is not flagged as compared", compared is False)
 
     def boom_fetch(*a, **k): raise RuntimeError("glide down")
-    txt, _, _, changed = run(P(rfq_id="R1"), fetch=boom_fetch)
+    txt, _, _, changed, compared = run(P(rfq_id="R1"), fetch=boom_fetch)
     check("glide failure returns plain text", txt == NEW)
+    check("glide failure is not flagged as compared", compared is False)
 
     missing = Settings(GLIDE_API_KEY="k", GLIDE_APP_ID="a", PROMPT_QUERY_REGENERATE_DIFF_FILE="prompts/nope.md")
-    txt, _, _, changed = run(P(rfq_id="R1", previous_response="old"), settings=missing)
+    txt, _, _, changed, compared = run(P(rfq_id="R1", previous_response="old"), settings=missing)
     check("missing prompt file returns plain text", txt == NEW)
+    check("missing prompt file is not flagged as compared", compared is False)
 
     off = Settings(GLIDE_API_KEY="k", GLIDE_APP_ID="a", ENABLE_REGENERATE_DIFF="false")
-    txt, _, _, changed = run(
+    txt, _, _, changed, compared = run(
         P(rfq_id="R1", previous_response="old"),
         gen=lambda s, p, **k: ("<annotated>__x__</annotated>", 1),
         settings=off,
     )
     check("kill switch returns plain text untouched", txt == NEW)
     check("kill switch is never flagged as changed", changed is False)
+    check("kill switch is never flagged as compared", compared is False)
 
 
 test_diff_input_json()

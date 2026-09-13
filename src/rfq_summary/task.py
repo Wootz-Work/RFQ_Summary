@@ -1057,10 +1057,16 @@ def _annotate_new_info(
     Nothing here can fail the run: no baseline, a missing prompt, or a
     failed call all fall back to returning new_triage_text unmodified.
 
-    Returns (annotated_text, raw_model_output, elapsed_ms, changed).
+    Returns (annotated_text, raw_model_output, elapsed_ms, changed, compared).
+    `compared` is True only when a previous version actually existed and the
+    call came back with a usable verdict — i.e. "nothing changed" is a fact
+    we can act on. Every other case (kill switch, no baseline yet, missing
+    prompt, failed call) returns compared=False, so a caller deciding
+    whether to skip a Glide write never treats "we couldn't check" the same
+    as "we checked and nothing moved."
     """
     if not settings.enable_regenerate_diff:
-        return new_triage_text, "", 0, False
+        return new_triage_text, "", 0, False, False
 
     previous = (payload.previous_response or "").strip()
     source = "payload"
@@ -1071,17 +1077,17 @@ def _annotate_new_info(
             source = "glide"
         except Exception as e:
             print(f"[WARN] run_id={run_id} | previous response lookup failed: {type(e).__name__}: {e}")
-            return new_triage_text, "", 0, False
+            return new_triage_text, "", 0, False, False
 
     if not previous:
         print(f"[INFO] run_id={run_id} | no previous version to compare against — first regeneration")
-        return new_triage_text, "", 0, False
+        return new_triage_text, "", 0, False, False
 
     try:
         template = load_prompt_file(settings.prompt_query_regenerate_diff_file)
     except Exception as e:
         print(f"[WARN] run_id={run_id} | diff prompt unavailable: {type(e).__name__}: {e}")
-        return new_triage_text, "", 0, False
+        return new_triage_text, "", 0, False, False
 
     diff_lines = list(_diff_input_json(payload.prev_json or {}, payload.rfq or {}))
     diff_lines.extend(_diff_attachment_ids(
@@ -1107,20 +1113,20 @@ def _annotate_new_info(
         raw, _ = _generate_text_with_timing(settings, prompt, run_id=run_id, label="regenerate_diff")
     except Exception as e:
         print(f"[WARN] run_id={run_id} | annotate call failed, regeneration unaffected: {type(e).__name__}: {e}")
-        return new_triage_text, "", int((time.perf_counter() - t0) * 1000), False
+        return new_triage_text, "", int((time.perf_counter() - t0) * 1000), False, False
     elapsed = int((time.perf_counter() - t0) * 1000)
 
     annotated = _unwrap_tagged_output(raw, "annotated").strip()
     if not annotated:
         print(f"[WARN] run_id={run_id} | annotate call returned nothing usable, keeping plain text ({elapsed} ms)")
-        return new_triage_text, raw or "", elapsed, False
+        return new_triage_text, raw or "", elapsed, False, False
 
     changed = bool(re.search(r"__.+?__", annotated, flags=re.DOTALL))
     print(
         f"[INFO] run_id={run_id} | "
         + (f"marked new/changed info inline ({elapsed} ms)" if changed else f"nothing material changed ({elapsed} ms)")
     )
-    return annotated, raw or "", elapsed, changed
+    return annotated, raw or "", elapsed, changed, True
 
 
 def run_regenerate_triage(
@@ -1185,7 +1191,7 @@ def run_regenerate_triage(
     costing_estimate_reason_text = _unwrap_tagged_output(costing_model_text, "reason")
 
     triage_text = _wrap_tagged_output(model_text, "triage")
-    triage_text, raw_diff_text, diff_ms, changed = _annotate_new_info(
+    triage_text, raw_diff_text, diff_ms, changed, compared = _annotate_new_info(
         settings, run_id, payload, triage_text
     )
     notified = 0
@@ -1213,6 +1219,7 @@ def run_regenerate_triage(
         rfq_id=payload.rfq_id,
         instruction=payload.instruction or "",
         changed=changed,
+        compared=compared,
         raw_diff_model_output=raw_diff_text,
         triage_text=triage_text,
         costing_estimate_text=costing_estimate_text,
@@ -1232,6 +1239,7 @@ def run_regenerate_triage(
             "attachments_count": len(attachment_findings or []),
             "products_count": len(payload.products or []),
             "changed_reported": changed,
+            "compared_against_previous": compared,
             "members_notified": notified,
         },
     )
