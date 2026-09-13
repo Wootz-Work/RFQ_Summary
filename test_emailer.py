@@ -164,10 +164,9 @@ def test_token_is_cached_and_refreshed():
 def test_message_shape():
     s = _settings(EMAIL_REPLY_TO="rfq@wootz.work")
     summary = (
-        "#### What changed since the last version\n"
-        "- **Coating** — was zinc, now zinc flake. Reprice the finish.\n\n"
         "<triage>\n"
         "**Duplex tubesheet package. Drilling hours dominate.**\n\n"
+        "- __Coating is now zinc flake, not zinc__\n\n"
         "| Description | Value | Sensitivity |\n"
         "|---|---|---|\n"
         "| **Cost** | $xx,xxx | 371 holes assumed |\n"
@@ -176,7 +175,7 @@ def test_message_shape():
     payload = _build_graph_message(s, ["a@wootz.work", "b@wootz.work"], "R1", "FRUITLAND 46", summary)
     msg = payload["message"]
 
-    ok = _check("subject is the agreed line", msg["subject"] == "Zai updated summary - FRUITLAND 46",
+    ok = _check("subject is the agreed line", msg["subject"] == "Summary updated - FRUITLAND 46",
                 msg["subject"])
     ok &= _check("body content type is HTML", msg["body"]["contentType"] == "HTML")
     ok &= _check("recipients are addressed correctly",
@@ -188,14 +187,22 @@ def test_message_shape():
 
     html_body = msg["body"]["content"]
     ok &= _check("greeting is the agreed line",
-                 "Hi folks, Zai summary updated based on the recent changes in the RFQ FRUITLAND 46"
-                 in html_body, html_body[:160])
-    ok &= _check("the change note is carried", "Coating" in html_body)
+                 "the updated Zai summary for FRUITLAND 46" in html_body,
+                 html_body[:160])
+    ok &= _check("greeting points at the highlighting", "highlighted below" in html_body)
+    ok &= _check("no separate change-note block at the top", "What changed since" not in html_body)
     ok &= _check("the full summary is carried", "Drilling hours dominate" in html_body)
     ok &= _check("the triage tag never reaches the reader", "<triage>" not in html_body)
     ok &= _check("the triage table renders as a table", "<table" in html_body and "<th" in html_body)
     ok &= _check("bold renders", "<strong>Cost</strong>" in html_body)
     ok &= _check("bullets render", "<li" in html_body)
+
+    # New/changed spans, marked inline by the annotate pass with __..__.
+    marked = _build_graph_message(s, ["a@b.com"], "R1", "T", "- __Coating__ is now zinc flake")
+    mhtml = marked["message"]["body"]["content"]
+    ok &= _check("underlined span renders as a highlighted span",
+                 "text-decoration:underline" in mhtml and ">Coating<" in mhtml, mhtml)
+    ok &= _check("the marker itself never reaches the reader", "__" not in mhtml)
 
     # Model output and customer titles must not be able to inject markup.
     evil = _build_graph_message(s, ["a@b.com"], "R1", "<script>alert(1)</script>",
@@ -205,8 +212,10 @@ def test_message_shape():
     ok &= _check("summary is escaped", "<img src=x" not in ehtml)
 
     bare = _build_graph_message(s, ["a@b.com"], "RFQ-77", "", "- something")
-    ok &= _check("id stands in for a missing title", "RFQ-77" in bare["message"]["subject"],
-                 bare["message"]["subject"])
+    ok &= _check("a missing title never falls back to the internal rfq id",
+                 "RFQ-77" not in bare["message"]["subject"], bare["message"]["subject"])
+    ok &= _check("a generic phrase stands in for a missing title",
+                 "this RFQ" in bare["message"]["subject"], bare["message"]["subject"])
     return ok
 
 

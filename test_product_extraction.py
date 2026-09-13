@@ -849,6 +849,31 @@ def test_regenerate_accepts_json_stringified_rfq_and_products() -> bool:
     return ok
 
 
+def test_regenerate_prev_json_matches_rfq_tolerance() -> bool:
+    """prev_json is the ground-truth baseline for the input-diff annotate
+    pass and must accept exactly what rfq accepts: a native dict, a
+    JSON-stringified one (the common no-code webhook shape), or absence."""
+    from rfq_summary.schema import RfqRegenerateTriageInputPayload as P
+
+    r = P.model_validate({"rfq_id": "R1", "prev_json": '{"material": "SS304"}'})
+    ok = _check("stringified prev_json is parsed into a dict",
+                r.prev_json == {"material": "SS304"}, str(r.prev_json))
+
+    r2 = P.model_validate({"rfq_id": "R1", "prev_json": {"material": "SS304"}})
+    ok &= _check("native prev_json still works", r2.prev_json == {"material": "SS304"})
+
+    r3 = P.model_validate({"rfq_id": "R1"})
+    ok &= _check("missing prev_json defaults to empty dict", r3.prev_json == {})
+
+    r4 = P.model_validate({
+        "rfq_id": "R1",
+        "prev_google_attachment_ids": "a, b, c",
+    })
+    ok &= _check("comma-separated prev_google_attachment_ids is split",
+                 r4.prev_google_attachment_ids == ["a", "b", "c"], str(r4.prev_google_attachment_ids))
+    return ok
+
+
 def test_effort_can_be_scoped_to_one_call() -> bool:
     """There is no way to give thinking and the answer independent token
     budgets on Opus 5 / Opus 4.8 / Sonnet 5 — budget_tokens (which used to
@@ -1289,6 +1314,7 @@ if __name__ == "__main__":
             test_empty_reply_retries_before_giving_up(),
             test_regenerate_unwraps_list_wrapped_scalar_fields(),
             test_regenerate_accepts_json_stringified_rfq_and_products(),
+            test_regenerate_prev_json_matches_rfq_tolerance(),
             test_effort_can_be_scoped_to_one_call(),
             test_llm_log_lines_are_correlatable_to_a_run(),
             test_complete_lines_survive_truncation(),

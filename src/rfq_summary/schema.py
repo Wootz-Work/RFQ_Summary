@@ -711,7 +711,14 @@ class RfqRegenerateTriageInputPayload(BaseModel):
     shared_members: Any = ""
     rfq: Dict[str, Any] = Field(default_factory=dict)
     products: List[Dict[str, Any]] = Field(default_factory=list)
+    # Last version's `rfq`, same shape — the ground truth for what actually
+    # changed in the input. Optional: when absent, the diff falls back to
+    # comparing previous_response/current output text only.
+    prev_json: Dict[str, Any] = Field(default_factory=dict)
     google_attachment_ids: List[str] = Field(default_factory=list)
+    # Last version's attachment ids, for a cheap added/removed comparison —
+    # not a re-fetch or re-OCR of old attachment content.
+    prev_google_attachment_ids: List[str] = Field(default_factory=list)
     requested_time: str = ""
     requested_by: str = ""
     version: str = ""
@@ -763,11 +770,12 @@ class RfqRegenerateTriageInputPayload(BaseModel):
             except json.JSONDecodeError:
                 data["previous_instructions"] = prev
 
-        val = data.get("google_attachment_ids")
-        if isinstance(val, str):
-            data["google_attachment_ids"] = [u.strip() for u in val.split(",") if u.strip()]
-        elif isinstance(val, list):
-            data["google_attachment_ids"] = [str(u).strip() for u in val if str(u).strip()]
+        for field in ("google_attachment_ids", "prev_google_attachment_ids"):
+            val = data.get(field)
+            if isinstance(val, str):
+                data[field] = [u.strip() for u in val.split(",") if u.strip()]
+            elif isinstance(val, list):
+                data[field] = [str(u).strip() for u in val if str(u).strip()]
 
         # rfq and products are declared as a dict / a list of dicts, but a
         # no-code webhook action (Glide, Zapier, Make) commonly templates a
@@ -782,6 +790,15 @@ class RfqRegenerateTriageInputPayload(BaseModel):
                 parsed = json.loads(rfq_val)
                 if isinstance(parsed, dict):
                     data["rfq"] = parsed
+            except json.JSONDecodeError:
+                pass
+
+        prev_json_val = data.get("prev_json")
+        if isinstance(prev_json_val, str) and prev_json_val.strip():
+            try:
+                parsed = json.loads(prev_json_val)
+                if isinstance(parsed, dict):
+                    data["prev_json"] = parsed
             except json.JSONDecodeError:
                 pass
 
@@ -810,6 +827,12 @@ class RfqRegenerateTriageOutputPayload(BaseModel):
     costing_estimate_reason_text: str = ""
     raw_model_output: str = ""
     raw_costing_model_output: str = ""
+    raw_diff_model_output: str = ""
+    changed: bool = False
+    # True only when there was a previous version to compare against and the
+    # comparison actually completed — the fact write_regenerated_triage needs
+    # to tell "confirmed nothing changed" apart from "couldn't check."
+    compared: bool = False
     attachment_findings: List[AttachmentFinding] = Field(default_factory=list)
     timings: Dict[str, Any] = Field(default_factory=dict)
     structured: Dict[str, Any] = Field(default_factory=dict)

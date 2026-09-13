@@ -1,26 +1,40 @@
-You are comparing two versions of the same RFQ triage summary, written at different times for the same enquiry.
+You are marking up the current version of an RFQ triage summary to show a reader what is new or materially different since the previous version — in place, inline, with no separate summary section.
 
-Your only job is to tell a busy reader **what is materially different this time, and why it matters.** Someone who read the previous version should be able to read your output alone and know what to re-examine.
+Someone who already read the previous version should be able to skim the current version and, from the underlining alone, know exactly what to re-examine.
 
 ---
 
 ## Input
 
-- **Previous version:**
+- **Previous version** (for comparison only — never edit or reference its wording):
 ```
 {{previous_response}}
 ```
 
-- **Current version:**
+- **Current version** (this is what you return, marked up):
 ```
 {{current_response}}
+```
+
+- **Input diff** — a code-computed, exact list of what actually changed between the previous request and this one. This is ground truth. It may be empty (`(no prior input snapshot was sent — none available)`), which means you have no evidence of what moved in the input and must rely only on comparing the two versions' conclusions:
+```
+{{input_diff}}
 ```
 
 - **Instruction that triggered this regeneration** (may be empty): `{{current_instruction}}`
 
 ---
 
-## What counts as material
+## Your only two moves
+
+1. **Copy the current version exactly.** Every word, number, heading, bullet, table cell and line break stays exactly as given. You are not rewriting, summarising, correcting, reordering or improving anything.
+2. **Wrap spans that are new or materially different in `__double underscores__`**, using the material/not-material rules below to decide which ones qualify. That is the only change you are allowed to make to the text.
+
+The output is a byte-for-byte copy of the current version except for inserted `__..__` pairs. If you cannot produce that, you have gone wrong.
+
+---
+
+## What counts as material — same bar as always
 
 A change is material when it would alter what someone does next — how they price it, who they route it to, what they ask the customer, or whether they can commit to a date.
 
@@ -35,7 +49,7 @@ Material:
 - A risk or feasibility flag raised or withdrawn
 - A quantity, or the basis a quantity was read on
 
-**Not material — never report these:**
+**Not material — never underline these:**
 
 - Rewording, reordering, tightening or lengthening that leaves the substance intact
 - Formatting, punctuation, heading or table-layout changes
@@ -45,52 +59,39 @@ Material:
 
 ---
 
+## Never invent a cause — this is the rule that matters most
+
+You may mark a span as new/changed only when one of these is true:
+
+1. **The input diff names it.** The span reflects an entry in the input diff above — a field that was added, removed, or changed. This is the strong case: you have proof.
+2. **The reading moved with no input diff to blame.** The input diff is empty or does not explain this span, but the same conclusion, fact or number genuinely does not appear anywhere in the previous version — this version noticed something the last one missed (a standard that governs, a conflict between sources, a cost driver that was overlooked). You may underline this, but never claim it came from new information you cannot point to in the input diff.
+
+If a sentence merely restates something already present in the previous version in different words, it is not new — do not underline it, no matter how different the phrasing looks.
+
+If you are not sure whether something changed versus was just reworded, do not underline it. Under-marking is the safe failure; inventing a change is not.
+
+---
+
 ## Silence is the normal answer
 
-**Most regenerations change nothing material, and the correct output then is empty.** A reader who sees a "what changed" note on a run where nothing moved learns to ignore the note on every future run, including the one that mattered.
-
-Do not manufacture a difference to fill the section. Do not report that the wording is tighter. Do not describe the regeneration itself. If the two versions reach the same conclusions by different sentences, output the empty form and stop.
+**Most regenerations change nothing material.** When nothing in the current version qualifies under the rule above, return the current version completely unmodified — no `__` markers anywhere. Do not manufacture a difference to justify the pass. Do not underline something because the instruction touched that area of the document if the actual conclusion did not move.
 
 You are not being judged on finding something.
 
 ---
 
-## Two kinds of change, both worth reporting
-
-1. **The input moved.** New or revised information reached this version — an attachment that was not there before, a revision that superseded one, a number the customer corrected — and it changed a conclusion. Say what the new information was and what it moved.
-
-2. **The reading moved.** The inputs are substantially the same, but this version recognises something the previous one did not — a standard that turns out to govern, a conflict between two sources, a cost driver that was missed. Say what was noticed and what follows from it.
-
-Both are useful. The second is often more useful, because nobody else was going to catch it.
-
----
-
 ## Output
 
-Return everything inside a single `<changed>` tag. Clean Markdown for Glide Rich Text.
+Return the entire marked-up document inside a single `<annotated>` tag, and nothing else — no preamble, no explanation, no note about what you changed.
 
-When nothing material changed, return exactly this and nothing else:
-
-<changed>
-</changed>
-
-When something material changed:
-
-<changed>
-
-#### What changed since the last version
-
-- **[The thing that changed]** — was [previous position], now [current position]. [What this means for pricing, routing, a query or a date — one clause.]
-
-</changed>
+<annotated>
+[the current version, verbatim, with __..__ added around qualifying spans — or completely unchanged if nothing qualifies]
+</annotated>
 
 Rules:
 
-1. **One bullet per change.** Never merge two changes into one bullet, and never split one change across two.
-2. **Lead with the subject, bolded** — the material, the lead time, the query. Not "The summary now states that..."
-3. **Always give both sides.** "Was X, now Y." A change with no before is not a change, it is a statement.
-4. **Close with the consequence**, in one clause. A reader should know whether to act.
-5. **At most five bullets.** If more than five things genuinely moved, the two versions are not comparable — report the four or five that matter most and add a final bullet saying the versions differ broadly.
-6. **Never mention the previous version's wording, structure or length.** Only its substance.
-7. **Never invent a cause.** If you can see that a conclusion changed but not why, say what changed and stop. Do not guess at which attachment did it.
-8. No preamble, no "I compared the two versions", no closing summary. Bullets only.
+1. **Underline the specific fact, not the whole paragraph or bullet it sits in.** `__was zinc, now zinc flake__` inside a longer sentence, not the entire sentence.
+2. **Every underlined span must make sense read alone** — a reader scanning only the underlined text should get the gist of what moved.
+3. **Do not add "was X, now Y" commentary that is not already in the current version's own wording.** You are marking existing text, not writing new sentences. If the current version does not already state the before/after, underline the fact as written and let the input diff or the reader's own memory supply the contrast.
+4. **Never touch the previous version.** It is reference only.
+5. **Never emit `__` for any reason other than marking a qualifying change** — not for emphasis, not for anything the model would normally bold.

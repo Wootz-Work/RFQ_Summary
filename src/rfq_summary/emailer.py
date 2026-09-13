@@ -89,6 +89,14 @@ def _markdown_to_html(text: str) -> str:
         safe = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", safe)
         safe = re.sub(r"(?<!\*)\*([^*]+?)\*(?!\*)", r"<em>\1</em>", safe)
         safe = re.sub(r"`(.+?)`", r"<code>\1</code>", safe)
+        # New/changed info, marked inline by the regenerate-diff pass — not a
+        # separate "what changed" section, just highlighted where it sits.
+        safe = re.sub(
+            r"__(.+?)__",
+            r'<span style="background:#fff3b0; text-decoration:underline; '
+            r'text-decoration-color:#b7860b; text-underline-offset:2px;">\1</span>',
+            safe,
+        )
         return safe
 
     # The triage body arrives inside its tag; the tag is plumbing, not content.
@@ -182,10 +190,15 @@ def _build_graph_message(
     unlike SMTP's multipart/alternative there is no separate plain-text part,
     so the HTML rendering is what every recipient sees, in every client.
     """
-    title = (rfq_title or "").strip() or rfq_id or "this RFQ"
-    subject = f"Zai updated summary - {title}"[:255]
+    # The RFQ's own title, never the internal rfq_id — an id is not a title,
+    # and showing it to a reader who never sees ids elsewhere is confusing.
+    title = (rfq_title or "").strip() or "this RFQ"
+    subject = f"Summary updated - {title}"[:255]
 
-    greeting = f"Hi folks, Zai summary updated based on the recent changes in the RFQ {title}"
+    greeting = (
+        f"Hi folks, here's the updated Zai summary for {title}. "
+        "New or changed information is highlighted below."
+    )
     body = re.sub(r"</?triage>", "", summary_text or "", flags=re.I).strip()
 
     html_body = f"""<div style="font-family:Arial,Helvetica,sans-serif; background:#f6f7f8; padding:24px;">
@@ -296,9 +309,8 @@ def send_change_notification(
         )
         return 0
 
-    # changed_text decides WHETHER to send; summary_text is WHAT is sent. The
-    # summary already carries the change note at its top, so a reader gets the
-    # delta first and the full picture underneath.
+    # changed_text decides WHETHER to send; summary_text is WHAT is sent — the
+    # regenerated summary as-is, with new/changed spans already marked inline.
     payload = _build_graph_message(settings, recipients, rfq_id, rfq_title,
                                     (summary_text or "").strip() or changed)
 
