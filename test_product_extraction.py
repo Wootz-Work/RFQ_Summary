@@ -514,7 +514,9 @@ def test_refusal_is_named_not_folded_into_budget_exhaustion() -> bool:
                 "refused" in why and "used the whole max_tokens budget" not in why, why)
     ok &= _check("category surfaced", "reasoning_extraction" in why, why)
     ok &= _check("explanation surfaced", "declined" in why, why)
-    ok &= _check("says a retry will not help", "no budget or retry fixes" in why, why)
+    ok &= _check("says a bigger budget never fixes a refusal", "budget never fixes this" in why, why)
+    ok &= _check("but does not claim a retry is hopeless",
+                 "not fully reproducible" in why and "can succeed" in why, why)
 
     # category/explanation can legitimately be absent — must not crash.
     why = describe_empty_reply(Resp([], {
@@ -666,6 +668,86 @@ def test_usage_is_reported() -> bool:
     ok &= _check("effort is configurable",
                  Settings(GLIDE_API_KEY="k", GLIDE_APP_ID="app",
                           ANTHROPIC_EFFORT="medium").anthropic_effort == "medium")
+    return ok
+
+
+def test_empty_reply_retries_before_giving_up() -> bool:
+    """An empty reply is not always reproducible — retry the identical call
+    before reaching for a different configuration or a different model.
+
+    This is the exact recovery pattern seen in production: a run returned
+    nothing, and a second, completely unchanged resubmission of the same
+    RFQ succeeded. Rather than requiring someone to notice and resubmit by
+    hand, the call retries itself.
+    """
+    import io, contextlib
+    from unittest.mock import patch
+    from rfq_summary import llm
+    from rfq_summary.config import Settings
+
+    class Resp:
+        def __init__(self, content, meta):
+            self.content, self.response_metadata = content, meta
+
+    def run(settings, invoke_fn):
+        buf = io.StringIO()
+        with patch("langchain_anthropic.ChatAnthropic.invoke", invoke_fn):
+            with contextlib.redirect_stdout(buf):
+                try:
+                    text = llm.generate_text(settings, "sys", "user", max_tokens=64000,
+                                              run_id="rr", label="products")
+                    return text, buf.getvalue(), None
+                except RuntimeError as e:
+                    return "", buf.getvalue(), e
+
+    base = Settings(GLIDE_API_KEY="k", GLIDE_APP_ID="app", ANTHROPIC_API_KEY="sk-test")
+
+    # Empty (refusal) on the first call, succeeds unchanged on the retry.
+    calls = {"n": 0}
+    def flaky(self, messages, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return Resp([], {"stop_reason": "refusal",
+                             "stop_details": {"type": "refusal", "category": "general_harms"}})
+        return Resp("recovered text", {"stop_reason": "end_turn",
+                    "usage": {"input_tokens": 5, "output_tokens": 5}})
+
+    text, log, err = run(base, flaky)
+    ok = _check("default retry count is 1", base.anthropic_empty_reply_retries == 1)
+    ok &= _check("recovers on the retry", text == "recovered text", text)
+    ok &= _check("exactly one retry attempted", calls["n"] == 2, str(calls["n"]))
+    ok &= _check("the retry is logged as unchanged", "retrying claude-opus-5 unchanged" in log, log)
+
+    # retries=0 must reproduce the OLD behaviour exactly: no plain retry at
+    # all, straight through to the existing thinking-off fallback.
+    calls["n"] = 0
+    off = Settings(GLIDE_API_KEY="k", GLIDE_APP_ID="app", ANTHROPIC_API_KEY="sk-test",
+                   ANTHROPIC_EMPTY_REPLY_RETRIES="0")
+    text, log, err = run(off, flaky)
+    ok &= _check("retries=0 skips the plain retry entirely", "unchanged" not in log, log)
+    # With retries off, the first (refusal) response goes straight to the
+    # thinking-off fallback rather than a same-settings retry.
+    ok &= _check("retries=0 still falls through to thinking-off", "with thinking off" in log, log)
+
+    # A cause that repeats through every retry still ends in a clear failure,
+    # not silently swallowed.
+    def always_refuses(self, messages, **kw):
+        return Resp([], {"stop_reason": "refusal",
+                         "stop_details": {"type": "refusal", "category": "bio", "explanation": "x"}})
+    settings_2 = Settings(GLIDE_API_KEY="k", GLIDE_APP_ID="app", ANTHROPIC_API_KEY="sk-test",
+                          ANTHROPIC_EMPTY_REPLY_RETRIES="2",
+                          ANTHROPIC_MODEL_FALLBACKS="")  # one model only, to keep this fast
+    text, log, err = run(settings_2, always_refuses)
+    ok &= _check("a genuine repeat failure still raises", text == "" and err is not None)
+    ok &= _check("both retries were attempted before giving up",
+                 log.count("retrying claude-opus-5 unchanged") == 2, log)
+
+    # The refusal message itself must not overclaim that retrying is
+    # pointless — that was wrong, and directly contradicted by the case above.
+    ok &= _check("the refusal message no longer claims retry never helps",
+                 "no budget or retry fixes a refusal" not in log, log)
+    ok &= _check("it instead says retry has a real chance on borderline content",
+                 "not fully reproducible" in log, log)
     return ok
 
 
@@ -1106,6 +1188,7 @@ if __name__ == "__main__":
             test_budget_fits_thinking_plus_answer(),
             test_name_describes_the_part_not_the_order(),
             test_usage_is_reported(),
+            test_empty_reply_retries_before_giving_up(),
             test_effort_can_be_scoped_to_one_call(),
             test_llm_log_lines_are_correlatable_to_a_run(),
             test_complete_lines_survive_truncation(),

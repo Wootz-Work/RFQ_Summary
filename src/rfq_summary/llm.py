@@ -134,7 +134,10 @@ def describe_empty_reply(resp: object) -> str:
         return (
             f"the model refused the request (category={category}"
             + (f": {explanation}" if explanation else "")
-            + ") — no budget or retry fixes a refusal; the prompt or its input needs to change"
+            + ") — a bigger budget never fixes this, but a retry is not hopeless: on borderline "
+            + "content a refusal is not fully reproducible, and an identical resubmission can "
+            + "succeed. A retry that keeps failing means the content itself needs to change, "
+            + "not just the attempt"
         )
 
     thinking_blocks = 0
@@ -245,16 +248,38 @@ def generate_text(
         )
         return llm.invoke(messages)
 
+    empty_retries = max(0, int(settings.anthropic_empty_reply_retries))
+
     for model in models:
         try:
             resp = _ask(model, want_thinking)
             _log_usage(model, resp, budget, tag)
             text = response_text(resp.content)
 
-            # A successful call that yields no text is not a silent zero. If
-            # thinking consumed the whole budget, retry once with it off so the
-            # budget goes to the answer. Last resort only — thinking earns its
-            # keep on this task, so the real fix is a budget that fits both.
+            # An empty reply is not always reproducible. Thinking depth varies
+            # call to call even with identical settings, and on borderline
+            # content a refusal classifier is not guaranteed to land the same
+            # way twice — an identical resubmission of the same input has
+            # been observed to succeed where an earlier attempt returned
+            # nothing at all. Try again, unchanged, before reaching for a
+            # different configuration (thinking off) or a different model.
+            attempt = 0
+            while not text and attempt < empty_retries:
+                attempt += 1
+                reason = describe_empty_reply(resp)
+                print(f"[WARN] llm | {tag} {model} returned no text: {reason}".strip())
+                print(
+                    f"[WARN] llm | {tag} retrying {model} unchanged "
+                    f"(attempt {attempt}/{empty_retries})".strip()
+                )
+                resp = _ask(model, want_thinking)
+                _log_usage(model, resp, budget, tag)
+                text = response_text(resp.content)
+
+            # Still nothing after any identical retries. If thinking consumed
+            # the whole budget, retry once with it off so the budget goes to
+            # the answer. Last resort only — thinking earns its keep on this
+            # task, so the real fix is a budget that fits both.
             if not text:
                 reason = describe_empty_reply(resp)
                 print(f"[WARN] llm | {tag} {model} returned no text: {reason}".strip())
