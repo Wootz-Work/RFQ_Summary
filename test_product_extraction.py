@@ -486,6 +486,58 @@ def test_empty_reply_is_explained() -> bool:
     return ok
 
 
+def test_refusal_is_named_not_folded_into_budget_exhaustion() -> bool:
+    """A safety refusal is a different cause from budget exhaustion, and the
+    two need different fixes — a refusal can never be solved by a bigger
+    max_tokens or a retry, so conflating them wastes a round of "raise the
+    budget again" on a problem raising the budget cannot touch.
+
+    stop_details' shape here (type/category/explanation, category one of a
+    fixed set) is taken from the installed anthropic SDK's own
+    RefusalStopDetails model, not assumed — see anthropic.types.refusal_stop_details.
+    """
+    from rfq_summary.llm import describe_empty_reply
+
+    class Resp:
+        def __init__(self, content, meta=None):
+            self.content = content
+            self.response_metadata = meta or {}
+
+    # dict-shaped stop_details: what actually reaches this code, since
+    # langchain_anthropic merges llm_output (a model_dump()) into
+    # response_metadata before .invoke() returns it.
+    why = describe_empty_reply(Resp([], {
+        "stop_reason": "refusal",
+        "stop_details": {"type": "refusal", "category": "reasoning_extraction", "explanation": "declined"},
+    }))
+    ok = _check("refusal named, not called budget exhaustion",
+                "refused" in why and "used the whole max_tokens budget" not in why, why)
+    ok &= _check("category surfaced", "reasoning_extraction" in why, why)
+    ok &= _check("explanation surfaced", "declined" in why, why)
+    ok &= _check("says a retry will not help", "no budget or retry fixes" in why, why)
+
+    # category/explanation can legitimately be absent — must not crash.
+    why = describe_empty_reply(Resp([], {
+        "stop_reason": "refusal",
+        "stop_details": {"type": "refusal", "category": None, "explanation": None},
+    }))
+    ok &= _check("missing category degrades gracefully", "unspecified" in why, why)
+
+    # No stop_details at all (an older SDK, or a stubbed test double).
+    why = describe_empty_reply(Resp([], {"stop_reason": "refusal"}))
+    ok &= _check("refusal with no stop_details still identified", "refused" in why, why)
+
+    # Thinking blocks present alongside a refusal must still read as a
+    # refusal, not get misread as budget exhaustion just because both can
+    # carry a thinking block.
+    why = describe_empty_reply(Resp([{"type": "thinking", "thinking": "x"}], {
+        "stop_reason": "refusal",
+        "stop_details": {"type": "refusal", "category": "bio", "explanation": ""},
+    }))
+    ok &= _check("refusal wins over thinking-block heuristics", "refused" in why and "bio" in why, why)
+    return ok
+
+
 def test_budget_fits_thinking_plus_answer() -> bool:
     """Thinking and output share max_tokens, so the budget has to hold both.
 
@@ -928,6 +980,7 @@ if __name__ == "__main__":
             test_adaptive_thinking_gating(),
             test_response_text_handles_thinking_blocks(),
             test_empty_reply_is_explained(),
+            test_refusal_is_named_not_folded_into_budget_exhaustion(),
             test_budget_fits_thinking_plus_answer(),
             test_name_describes_the_part_not_the_order(),
             test_usage_is_reported(),

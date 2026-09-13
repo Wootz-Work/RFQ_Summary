@@ -82,6 +82,8 @@ def _log_usage(model: str, resp: object, budget: int) -> None:
         return
     pct = int(round(100 * out / budget)) if budget else 0
     flag = "  <<< HIT THE CAP" if stop == "max_tokens" else ""
+    if stop == "refusal":
+        flag = "  <<< REFUSED"
     print(
         f"[INFO] llm | {model} in={usage.get('input_tokens', '?')} "
         f"out={out}/{budget} ({pct}% of budget, thinking included) stop={stop}{flag}"
@@ -92,15 +94,40 @@ def describe_empty_reply(resp: object) -> str:
     """
     Say why an otherwise-successful call produced no text.
 
-    The expensive case: thinking and output share one max_tokens budget, so on a
-    hard prompt the model can spend the entire budget reasoning and stop before
-    writing any answer. That returns HTTP 200 with thinking blocks and no text
-    block, which is indistinguishable from "the model said nothing" unless we
-    look. Silently reporting that as an empty output cost a 214-second run.
+    Three real causes, in the order they are checked:
+
+    1. A safety refusal. stop_reason == "refusal" carries a stop_details
+       object (category + explanation) — verified against the installed
+       anthropic SDK's Message model, not assumed. This is the one cause a
+       bigger budget or a retry can never fix: the model declined the
+       request outright. Worth knowing immediately rather than after
+       raising the token budget for the second time running.
+    2. Thinking used the whole max_tokens budget before writing an answer.
+       Thinking and output share one budget, so on a hard prompt the
+       reasoning alone can exhaust it. HTTP 200, thinking blocks, no text
+       block — indistinguishable from "the model said nothing" unless we
+       look at stop_reason.
+    3. Genuinely empty content with no thinking blocks either — worth
+       reporting as its own case rather than folding into (2), since a
+       repeat of this on a retry with thinking OFF means neither of the
+       above explains it and the cause is still open.
     """
     content = getattr(resp, "content", None)
     meta = getattr(resp, "response_metadata", None) or {}
     stop = meta.get("stop_reason") or meta.get("finish_reason") or "unknown"
+
+    if stop == "refusal":
+        details = meta.get("stop_details") or {}
+        # stop_details may arrive as a dict (already model_dump()'d) or as
+        # the SDK's RefusalStopDetails object — handle both without assuming.
+        get = details.get if isinstance(details, dict) else lambda k, d=None: getattr(details, k, d)
+        category = get("category") or "unspecified"
+        explanation = (get("explanation") or "").strip()
+        return (
+            f"the model refused the request (category={category}"
+            + (f": {explanation}" if explanation else "")
+            + ") — no budget or retry fixes a refusal; the prompt or its input needs to change"
+        )
 
     thinking_blocks = 0
     other_types = []
@@ -122,7 +149,7 @@ def describe_empty_reply(resp: object) -> str:
         return f"reply carried {thinking_blocks} thinking block(s) but no text (stop_reason={stop})"
     if other_types:
         return f"reply carried only {', '.join(sorted(set(other_types)))} blocks (stop_reason={stop})"
-    return f"model returned nothing at all (stop_reason={stop})"
+    return f"model returned nothing at all, no thinking blocks either (stop_reason={stop})"
 
 
 def _models(settings: Settings) -> List[str]:
