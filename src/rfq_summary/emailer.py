@@ -216,6 +216,19 @@ def _build_graph_message(
         "body": {"contentType": "HTML", "content": html_body},
         "toRecipients": [{"emailAddress": {"address": addr}} for addr in recipients],
     }
+    sender_address = (settings.email_from_address or "").strip()
+    if sender_address:
+        sender_email: dict = {"address": sender_address}
+        sender_name = (settings.email_from_name or "").strip()
+        if sender_name:
+            sender_email["name"] = sender_name
+        # Sets the friendly display name for external recipients. For a
+        # recipient in the same tenant, Outlook resolves the sender against
+        # the directory and shows that mailbox's own display name instead —
+        # this can only be fixed by renaming the technology@wootz.work
+        # mailbox/user object itself in the Microsoft 365 admin center /
+        # Entra ID, not from here.
+        message["from"] = {"emailAddress": sender_email}
     if settings.email_reply_to:
         message["replyTo"] = [{"emailAddress": {"address": settings.email_reply_to}}]
 
