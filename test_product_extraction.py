@@ -486,6 +486,58 @@ def test_empty_reply_is_explained() -> bool:
     return ok
 
 
+def test_refusal_is_named_not_folded_into_budget_exhaustion() -> bool:
+    """A safety refusal is a different cause from budget exhaustion, and the
+    two need different fixes — a refusal can never be solved by a bigger
+    max_tokens or a retry, so conflating them wastes a round of "raise the
+    budget again" on a problem raising the budget cannot touch.
+
+    stop_details' shape here (type/category/explanation, category one of a
+    fixed set) is taken from the installed anthropic SDK's own
+    RefusalStopDetails model, not assumed — see anthropic.types.refusal_stop_details.
+    """
+    from rfq_summary.llm import describe_empty_reply
+
+    class Resp:
+        def __init__(self, content, meta=None):
+            self.content = content
+            self.response_metadata = meta or {}
+
+    # dict-shaped stop_details: what actually reaches this code, since
+    # langchain_anthropic merges llm_output (a model_dump()) into
+    # response_metadata before .invoke() returns it.
+    why = describe_empty_reply(Resp([], {
+        "stop_reason": "refusal",
+        "stop_details": {"type": "refusal", "category": "reasoning_extraction", "explanation": "declined"},
+    }))
+    ok = _check("refusal named, not called budget exhaustion",
+                "refused" in why and "used the whole max_tokens budget" not in why, why)
+    ok &= _check("category surfaced", "reasoning_extraction" in why, why)
+    ok &= _check("explanation surfaced", "declined" in why, why)
+    ok &= _check("says a retry will not help", "no budget or retry fixes" in why, why)
+
+    # category/explanation can legitimately be absent — must not crash.
+    why = describe_empty_reply(Resp([], {
+        "stop_reason": "refusal",
+        "stop_details": {"type": "refusal", "category": None, "explanation": None},
+    }))
+    ok &= _check("missing category degrades gracefully", "unspecified" in why, why)
+
+    # No stop_details at all (an older SDK, or a stubbed test double).
+    why = describe_empty_reply(Resp([], {"stop_reason": "refusal"}))
+    ok &= _check("refusal with no stop_details still identified", "refused" in why, why)
+
+    # Thinking blocks present alongside a refusal must still read as a
+    # refusal, not get misread as budget exhaustion just because both can
+    # carry a thinking block.
+    why = describe_empty_reply(Resp([{"type": "thinking", "thinking": "x"}], {
+        "stop_reason": "refusal",
+        "stop_details": {"type": "refusal", "category": "bio", "explanation": ""},
+    }))
+    ok &= _check("refusal wins over thinking-block heuristics", "refused" in why and "bio" in why, why)
+    return ok
+
+
 def test_budget_fits_thinking_plus_answer() -> bool:
     """Thinking and output share max_tokens, so the budget has to hold both.
 
@@ -604,11 +656,82 @@ def test_usage_is_reported() -> bool:
     ok &= _check("absent usage survives", "no usage reported" in log({"stop_reason": "end_turn"}))
     ok &= _check("absent metadata survives", bool(log(None)))
 
+    # A refusal has no usage to report, but it must still say so plainly —
+    # this is the one no-usage case that is not just "nothing to see here".
+    ok &= _check("a refusal is flagged even with no usage",
+                 "REFUSED" in log({"stop_reason": "refusal"}))
+
     st = Settings(GLIDE_API_KEY="k", GLIDE_APP_ID="app")
     ok &= _check("effort defaults to the API default", st.anthropic_effort == "")
     ok &= _check("effort is configurable",
                  Settings(GLIDE_API_KEY="k", GLIDE_APP_ID="app",
                           ANTHROPIC_EFFORT="medium").anthropic_effort == "medium")
+    return ok
+
+
+def test_llm_log_lines_are_correlatable_to_a_run() -> bool:
+    """Every [INFO] llm | / [WARN] llm | line has to be traceable back to the
+    request that produced it.
+
+    A production run took 204 seconds, and the only way to find out why was
+    to grep the log for its run_id — which found nothing, because none of
+    llm.py's own diagnostic prints ever named the run_id or which of the
+    parallel calls (triage vs costing vs products) they belonged to. They
+    only ever named the model. A line that took 204 seconds to produce and
+    cannot be found by grepping for the request that caused it is not a
+    working diagnostic.
+    """
+    import io, contextlib, inspect
+    from pathlib import Path
+    from rfq_summary import llm
+
+    class Resp:
+        def __init__(self, content, meta):
+            self.content, self.response_metadata = content, meta
+
+    def log(model, resp, budget, tag):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            llm._log_usage(model, resp, budget, tag)
+        return buf.getvalue()
+
+    out = log("claude-opus-5", Resp([], {"stop_reason": "end_turn", "usage": {"output_tokens": 10}}),
+               64000, "run_id=abc123 label=products")
+    ok = _check("the tag appears verbatim in the usage line", "run_id=abc123 label=products" in out, out.strip())
+
+    out_untagged = log("claude-opus-5", Resp([], {"stop_reason": "end_turn", "usage": {"output_tokens": 10}}),
+                        64000, "")
+    ok &= _check("an empty tag adds nothing (backward compatible)",
+                 "run_id=" not in out_untagged, out_untagged.strip())
+
+    # generate_text itself must accept and use run_id/label — not just _log_usage.
+    sig = inspect.signature(llm.generate_text)
+    ok &= _check("generate_text takes run_id", "run_id" in sig.parameters)
+    ok &= _check("generate_text takes label", "label" in sig.parameters)
+    ok &= _check("both default to empty, so no caller breaks",
+                 sig.parameters["run_id"].default == "" and sig.parameters["label"].default == "")
+
+    # Every call site in task.py has to pass run_id — reading the source
+    # directly, since importing task.py needs fitz, which is not installed
+    # here. This is the regression guard: a tenth call site added later
+    # without run_id= reintroduces the exact gap that made this run
+    # undiagnosable.
+    src = Path("src/rfq_summary/task.py").read_text(encoding="utf-8")
+    import re as _re
+    calls = list(_re.finditer(r"\b(?:generate_text|_generate_text_with_timing)\(", src))
+    ok &= _check("generate_text is actually called somewhere in task.py", len(calls) >= 8, str(len(calls)))
+    missing = []
+    for m in calls:
+        # Look at a window of source following the call for "run_id" — covers
+        # both keyword form (run_id=run_id) and the positional executor.submit
+        # form used for the parallel triage/costing/products dispatch.
+        window = src[m.start():m.start() + 400]
+        close = window.find(")\n")
+        call_text = window[:close + 2] if close != -1 else window
+        if "run_id" not in call_text:
+            line_no = src.count("\n", 0, m.start()) + 1
+            missing.append(line_no)
+    ok &= _check("every call site passes run_id", not missing, f"missing at lines {missing}")
     return ok
 
 
@@ -928,9 +1051,11 @@ if __name__ == "__main__":
             test_adaptive_thinking_gating(),
             test_response_text_handles_thinking_blocks(),
             test_empty_reply_is_explained(),
+            test_refusal_is_named_not_folded_into_budget_exhaustion(),
             test_budget_fits_thinking_plus_answer(),
             test_name_describes_the_part_not_the_order(),
             test_usage_is_reported(),
+            test_llm_log_lines_are_correlatable_to_a_run(),
             test_complete_lines_survive_truncation(),
             test_mismatch_is_reported(),
             test_garbage_is_not_fatal(),

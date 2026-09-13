@@ -67,23 +67,33 @@ def response_text(content: object) -> str:
     return str(content).strip()
 
 
-def _log_usage(model: str, resp: object, budget: int) -> None:
+def _log_usage(model: str, resp: object, budget: int, tag: str = "") -> None:
     """
     Print what the call actually spent. output_tokens covers thinking AND the
     answer, so this line is what tells you whether thinking crowded the answer
     out, rather than having to infer it from how short the JSON looks.
+
+    `tag` identifies the call (run_id and which of the parallel calls this
+    is — triage/costing/products/etc). Without it, this line cannot be
+    grepped back to a specific run: a call that took 204 seconds and printed
+    this exact line was once undiscoverable because nothing here named which
+    request it belonged to.
     """
+    prefix = f"{tag} " if tag else ""
     meta = getattr(resp, "response_metadata", None) or {}
     usage = meta.get("usage") or {}
     out = usage.get("output_tokens")
     stop = meta.get("stop_reason", "?")
     if out is None:
-        print(f"[INFO] llm | {model} stop_reason={stop} (no usage reported)")
+        flag = "  <<< REFUSED" if stop == "refusal" else ""
+        print(f"[INFO] llm | {prefix}{model} stop_reason={stop} (no usage reported){flag}")
         return
     pct = int(round(100 * out / budget)) if budget else 0
     flag = "  <<< HIT THE CAP" if stop == "max_tokens" else ""
+    if stop == "refusal":
+        flag = "  <<< REFUSED"
     print(
-        f"[INFO] llm | {model} in={usage.get('input_tokens', '?')} "
+        f"[INFO] llm | {prefix}{model} in={usage.get('input_tokens', '?')} "
         f"out={out}/{budget} ({pct}% of budget, thinking included) stop={stop}{flag}"
     )
 
@@ -92,15 +102,40 @@ def describe_empty_reply(resp: object) -> str:
     """
     Say why an otherwise-successful call produced no text.
 
-    The expensive case: thinking and output share one max_tokens budget, so on a
-    hard prompt the model can spend the entire budget reasoning and stop before
-    writing any answer. That returns HTTP 200 with thinking blocks and no text
-    block, which is indistinguishable from "the model said nothing" unless we
-    look. Silently reporting that as an empty output cost a 214-second run.
+    Three real causes, in the order they are checked:
+
+    1. A safety refusal. stop_reason == "refusal" carries a stop_details
+       object (category + explanation) — verified against the installed
+       anthropic SDK's Message model, not assumed. This is the one cause a
+       bigger budget or a retry can never fix: the model declined the
+       request outright. Worth knowing immediately rather than after
+       raising the token budget for the second time running.
+    2. Thinking used the whole max_tokens budget before writing an answer.
+       Thinking and output share one budget, so on a hard prompt the
+       reasoning alone can exhaust it. HTTP 200, thinking blocks, no text
+       block — indistinguishable from "the model said nothing" unless we
+       look at stop_reason.
+    3. Genuinely empty content with no thinking blocks either — worth
+       reporting as its own case rather than folding into (2), since a
+       repeat of this on a retry with thinking OFF means neither of the
+       above explains it and the cause is still open.
     """
     content = getattr(resp, "content", None)
     meta = getattr(resp, "response_metadata", None) or {}
     stop = meta.get("stop_reason") or meta.get("finish_reason") or "unknown"
+
+    if stop == "refusal":
+        details = meta.get("stop_details") or {}
+        # stop_details may arrive as a dict (already model_dump()'d) or as
+        # the SDK's RefusalStopDetails object — handle both without assuming.
+        get = details.get if isinstance(details, dict) else lambda k, d=None: getattr(details, k, d)
+        category = get("category") or "unspecified"
+        explanation = (get("explanation") or "").strip()
+        return (
+            f"the model refused the request (category={category}"
+            + (f": {explanation}" if explanation else "")
+            + ") — no budget or retry fixes a refusal; the prompt or its input needs to change"
+        )
 
     thinking_blocks = 0
     other_types = []
@@ -122,7 +157,7 @@ def describe_empty_reply(resp: object) -> str:
         return f"reply carried {thinking_blocks} thinking block(s) but no text (stop_reason={stop})"
     if other_types:
         return f"reply carried only {', '.join(sorted(set(other_types)))} blocks (stop_reason={stop})"
-    return f"model returned nothing at all (stop_reason={stop})"
+    return f"model returned nothing at all, no thinking blocks either (stop_reason={stop})"
 
 
 def _models(settings: Settings) -> List[str]:
@@ -141,18 +176,30 @@ def generate_text(
     user_prompt: str,
     max_tokens: int | None = None,
     thinking: bool | None = None,
+    run_id: str = "",
+    label: str = "",
 ) -> str:
     """
     `thinking` overrides ANTHROPIC_ADAPTIVE_THINKING for this one call. Pass
     False for long structured output: thinking shares the max_tokens budget with
     the answer, so on a big extraction it can spend the lot reasoning and return
     nothing. Leave it None to follow the setting.
+
+    `run_id` and `label` name every diagnostic line this call prints, purely
+    so it can be grepped back to a specific request afterwards. Without them
+    a call that took 204 seconds and hit a refusal was indistinguishable in
+    the log from any other call to this function — every print here used to
+    name only the model, never which request it belonged to. Both optional
+    and both default to "" so nothing breaks for a caller that omits them,
+    but every call site in this codebase has run_id sitting in scope and
+    should pass it.
     """
     if not (settings.anthropic_api_key or "").strip():
         raise RuntimeError("Missing ANTHROPIC_API_KEY")
 
     models = _models(settings)
     primary = models[0] if models else ""
+    tag = " ".join(p for p in (f"run_id={run_id}" if run_id else "", f"label={label}" if label else "") if p)
 
     # Opus 5, Opus 4.8/4.7 and Sonnet 5 reject `temperature` with a 400, so it is
     # not sent at all. Adaptive thinking is the replacement lever, but only on the
@@ -190,7 +237,7 @@ def generate_text(
     for model in models:
         try:
             resp = _ask(model, want_thinking)
-            _log_usage(model, resp, budget)
+            _log_usage(model, resp, budget, tag)
             text = response_text(resp.content)
 
             # A successful call that yields no text is not a silent zero. If
@@ -199,10 +246,11 @@ def generate_text(
             # keep on this task, so the real fix is a budget that fits both.
             if not text:
                 reason = describe_empty_reply(resp)
-                print(f"[WARN] llm | {model} returned no text: {reason}")
+                print(f"[WARN] llm | {tag} {model} returned no text: {reason}".strip())
                 if want_thinking and _supports_adaptive_thinking(model):
-                    print(f"[WARN] llm | retrying {model} with thinking off")
+                    print(f"[WARN] llm | {tag} retrying {model} with thinking off".strip())
                     resp = _ask(model, False)
+                    _log_usage(model, resp, budget, tag)
                     text = response_text(resp.content)
                     if not text:
                         raise RuntimeError(
@@ -214,13 +262,14 @@ def generate_text(
             # Only now is the answer actually in hand — announcing the fallback
             # before this point claimed success for a call that then threw.
             if model != primary:
-                print(f"[WARN] llm | {primary} failed, answered by fallback {model}. Earlier: {'; '.join(failures)}")
+                print(f"[WARN] llm | {tag} {primary} failed, answered by fallback {model}. "
+                      f"Earlier: {'; '.join(failures)}".strip())
             return text
         except Exception as e:
             last_err = e
             detail = f"{model}: {type(e).__name__}: {e}"
             failures.append(detail)
-            print(f"[WARN] llm | model {detail}")
+            print(f"[WARN] llm | {tag} model {detail}".strip())
 
     # Every model's error, not just the last. A retired model at the end of the
     # chain always 404s, and reporting only that hides why the primary failed.
@@ -232,6 +281,7 @@ def generate_text(
             f" NOTE: {names} returned not_found — the model id does not exist or is retired. "
             f"Fix ANTHROPIC_MODEL / ANTHROPIC_MODEL_FALLBACKS rather than reading this as an outage."
         )
+    tag_prefix = f"{tag}: " if tag else ""
     raise RuntimeError(
-        f"All {len(models)} Claude models failed. Each failure: {' | '.join(failures)}.{hint}"
+        f"{tag_prefix}All {len(models)} Claude models failed. Each failure: {' | '.join(failures)}.{hint}"
     ) from last_err
