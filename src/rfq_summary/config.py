@@ -58,19 +58,28 @@ class Settings(BaseSettings):
     # The "what changed" note is additive; off switches it off entirely.
     enable_regenerate_diff: bool = Field(default=True, alias="ENABLE_REGENERATE_DIFF")
 
-    # --- Outbound notification mail -------------------------------------
+    # --- Outbound notification mail (Microsoft Graph, not SMTP) ---------
     # Fires only when the regenerate diff found something material. Inert
-    # until SMTP_HOST and EMAIL_FROM_ADDRESS are set, so deploying this does
-    # not start mailing anyone before it is configured on purpose.
+    # until the Graph app credentials and EMAIL_FROM_ADDRESS are all set, so
+    # deploying this does not start mailing anyone before it is configured
+    # on purpose.
     enable_regenerate_email: bool = Field(default=True, alias="ENABLE_REGENERATE_EMAIL")
-    smtp_host: str = Field(default="smtp.office365.com", alias="SMTP_HOST")
-    smtp_port: int = Field(default=587, alias="SMTP_PORT")
-    smtp_user: str = Field(default="", alias="SMTP_USER")
-    smtp_password: str = Field(default="", alias="SMTP_PASSWORD")
-    smtp_use_tls: bool = Field(default=True, alias="SMTP_USE_TLS")
-    smtp_use_ssl: bool = Field(default=False, alias="SMTP_USE_SSL")
-    smtp_timeout_sec: int = Field(default=20, alias="SMTP_TIMEOUT_SEC")
+    # Microsoft Graph app-only auth (client credentials). The tenant blocks
+    # basic-auth SMTP, so mail goes out through Graph's /sendMail instead.
+    # App registration needs the *Application* permission Mail.Send, with
+    # admin consent granted — the delegated version does not work here,
+    # there is no signed-in user.
+    ms_graph_tenant_id: str = Field(default="", alias="MS_GRAPH_TENANT_ID")
+    ms_graph_client_id: str = Field(default="", alias="MS_GRAPH_CLIENT_ID")
+    ms_graph_client_secret: str = Field(default="", alias="MS_GRAPH_CLIENT_SECRET")
+    ms_graph_timeout_sec: int = Field(default=20, alias="MS_GRAPH_TIMEOUT_SEC")
+    # Whether Graph should also file the sent mail in the sender mailbox's
+    # Sent Items folder.
+    ms_graph_save_to_sent_items: bool = Field(default=True, alias="MS_GRAPH_SAVE_TO_SENT_ITEMS")
     email_from_name: str = Field(default="Wootz.Strike", alias="EMAIL_FROM_NAME")
+    # The mailbox Graph sends as — must be a real mailbox the app is allowed
+    # to send from (Mail.Send with no application access policy covers any
+    # mailbox in the tenant; a policy can restrict it to just this one).
     email_from_address: str = Field(default="technology@wootz.work", alias="EMAIL_FROM_ADDRESS")
     email_reply_to: str = Field(default="", alias="EMAIL_REPLY_TO")
     prompt_query_regenerate_costing_file: str = Field(
