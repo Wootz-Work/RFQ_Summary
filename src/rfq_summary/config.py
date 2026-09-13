@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     # Empty means the API default. Thinking and the answer share max_tokens, so
     # this is the lever when reasoning crowds the answer out of the budget.
     anthropic_effort: str = Field(default="", alias="ANTHROPIC_EFFORT")
+    # Scoped override for the product-extraction call specifically — the one
+    # call that has shown thinking crowd out the answer on a large input.
+    # Empty means "follow ANTHROPIC_EFFORT", same as every other call; set
+    # this without touching the global so triage/costing/classification,
+    # which have never had this problem, keep running at full effort.
+    product_extraction_effort: str = Field(default="", alias="PRODUCT_EXTRACTION_EFFORT")
     # Prompts (two endpoints)
     prompt_pricing_file: str = Field(default="prompts/pricing_estimate.md", alias="PROMPT_PRICING_FILE")
     prompt_summary_file: str = Field(default="prompts/rfq_summary.md", alias="PROMPT_SUMMARY_FILE")

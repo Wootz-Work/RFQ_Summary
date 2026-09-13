@@ -176,6 +176,7 @@ def generate_text(
     user_prompt: str,
     max_tokens: int | None = None,
     thinking: bool | None = None,
+    effort: str | None = None,
     run_id: str = "",
     label: str = "",
 ) -> str:
@@ -184,6 +185,16 @@ def generate_text(
     False for long structured output: thinking shares the max_tokens budget with
     the answer, so on a big extraction it can spend the lot reasoning and return
     nothing. Leave it None to follow the setting.
+
+    `effort` overrides ANTHROPIC_EFFORT for this one call — the only lever
+    Anthropic gives for how much of the shared thinking+answer budget goes to
+    reasoning, now that budget_tokens (which used to fence thinking off with
+    its own separate cap) is removed on Opus 5 / Opus 4.8 / Sonnet 5. There is
+    no way to give thinking and the answer independent token budgets on this
+    model family; "low"/"medium" effort is the closest available substitute —
+    it leaves proportionally more of the shared budget for the answer. Pass
+    None to follow the global setting, "" to force the API default regardless
+    of what ANTHROPIC_EFFORT says.
 
     `run_id` and `label` name every diagnostic line this call prints, purely
     so it can be grepped back to a specific request afterwards. Without them
@@ -208,6 +219,7 @@ def generate_text(
     last_err: Exception | None = None
 
     want_thinking = settings.anthropic_adaptive_thinking if thinking is None else bool(thinking)
+    effort_to_use = (settings.anthropic_effort if effort is None else effort or "").strip().lower()
     budget = 8000 if max_tokens is None else max(1000, int(max_tokens))
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
 
@@ -218,9 +230,8 @@ def generate_text(
             # Effort is the only lever on how deep adaptive thinking goes
             # (budget_tokens is gone on these models). Left unset it is the API
             # default; dial it down if thinking keeps crowding out the answer.
-            effort = (settings.anthropic_effort or "").strip().lower()
-            if effort:
-                kwargs["output_config"] = {"effort": effort}
+            if effort_to_use:
+                kwargs["output_config"] = {"effort": effort_to_use}
         # A large max_tokens on a non-streaming request risks an HTTP timeout
         # long before the model is done. Streaming removes that ceiling, and
         # LangChain still returns one aggregated message from .invoke().

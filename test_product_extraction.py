@@ -669,6 +669,57 @@ def test_usage_is_reported() -> bool:
     return ok
 
 
+def test_effort_can_be_scoped_to_one_call() -> bool:
+    """There is no way to give thinking and the answer independent token
+    budgets on Opus 5 / Opus 4.8 / Sonnet 5 — budget_tokens (which used to
+    fence thinking off with its own cap) is removed on these models, and
+    max_tokens is one shared ceiling. effort is the closest substitute, and
+    it needed a per-call override so it can be dialed down for product
+    extraction specifically without touching triage/costing/classification,
+    none of which have ever shown thinking crowd out the answer.
+    """
+    import inspect
+    from pathlib import Path
+    from rfq_summary import llm
+    from rfq_summary.config import Settings
+
+    sig = inspect.signature(llm.generate_text)
+    ok = _check("generate_text takes a per-call effort override", "effort" in sig.parameters)
+    ok &= _check("it defaults to None (follow the global setting)",
+                 sig.parameters["effort"].default is None)
+
+    st = Settings(GLIDE_API_KEY="k", GLIDE_APP_ID="app")
+    ok &= _check("product-extraction effort is a distinct setting",
+                 hasattr(st, "product_extraction_effort"))
+    ok &= _check("empty by default — no behaviour change until set",
+                 st.product_extraction_effort == "")
+    ok &= _check("settable independently of the global effort",
+                 Settings(GLIDE_API_KEY="k", GLIDE_APP_ID="app", ANTHROPIC_EFFORT="high",
+                          PRODUCT_EXTRACTION_EFFORT="medium").product_extraction_effort == "medium")
+
+    # The resolution rule generate_text actually uses: None follows the
+    # global setting; a real string overrides it; "" forces the API default
+    # even when the global setting says otherwise.
+    def resolve(global_effort, override):
+        class S:
+            anthropic_effort = global_effort
+        return (S.anthropic_effort if override is None else override or "").strip().lower()
+
+    ok &= _check("no override follows the global setting", resolve("high", None) == "high")
+    ok &= _check("an override wins over the global setting", resolve("high", "medium") == "medium")
+    ok &= _check("an explicit empty string forces the API default",
+                 resolve("high", "") == "")
+
+    # The products call site must actually pass this through — reading
+    # task.py as text, since importing it needs fitz, not installed here.
+    src = Path("src/rfq_summary/task.py").read_text(encoding="utf-8")
+    idx = src.find("settings.product_extraction_max_tokens")
+    ok &= _check("product extraction call found", idx > 0)
+    ok &= _check("it passes product_extraction_effort through",
+                 "product_extraction_effort" in src[idx:idx + 800], src[idx:idx + 300])
+    return ok
+
+
 def test_llm_log_lines_are_correlatable_to_a_run() -> bool:
     """Every [INFO] llm | / [WARN] llm | line has to be traceable back to the
     request that produced it.
@@ -1055,6 +1106,7 @@ if __name__ == "__main__":
             test_budget_fits_thinking_plus_answer(),
             test_name_describes_the_part_not_the_order(),
             test_usage_is_reported(),
+            test_effort_can_be_scoped_to_one_call(),
             test_llm_log_lines_are_correlatable_to_a_run(),
             test_complete_lines_survive_truncation(),
             test_mismatch_is_reported(),
