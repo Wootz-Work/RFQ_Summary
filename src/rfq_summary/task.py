@@ -212,6 +212,8 @@ def _generate_text_with_timing(
     user_prompt: str,
     max_tokens: Optional[int] = None,
     thinking: Optional[bool] = None,
+    run_id: str = "",
+    label: str = "",
 ) -> Tuple[str, int]:
     t_llm0 = time.perf_counter()
     model_text = generate_text(
@@ -220,6 +222,8 @@ def _generate_text_with_timing(
         user_prompt=user_prompt,
         max_tokens=max_tokens,
         thinking=thinking,
+        run_id=run_id,
+        label=label,
     )
     llm_ms = int((time.perf_counter() - t_llm0) * 1000)
     return model_text, llm_ms
@@ -498,6 +502,8 @@ def run_pricing(settings: Settings, payload: InputPayload, run_id: Optional[str]
         settings,
         system_prompt="You must follow the user instructions exactly.",
         user_prompt=user_prompt,
+        run_id=run_id,
+        label="pricing",
     )
     llm_ms = int((time.perf_counter() - t_llm0) * 1000)
     out1, out2 = _parse_two_outputs(model_text)
@@ -560,6 +566,8 @@ def run_summary(settings: Settings, payload: InputPayload, run_id: Optional[str]
         settings,
         system_prompt="You must follow the user instructions exactly.",
         user_prompt=user_prompt,
+        run_id=run_id,
+        label="summary",
     )
     llm_ms = int((time.perf_counter() - t_llm0) * 1000)
 
@@ -636,6 +644,8 @@ def run_all(settings: Settings, payload: InputPayload, run_id: Optional[str] = N
         settings,
         system_prompt="You must follow the user instructions exactly.",
         user_prompt=pricing_user_prompt,
+        run_id=run_id,
+        label="pricing",
     )
     out1, out2 = _parse_two_outputs(pricing_model_text)
 
@@ -657,6 +667,8 @@ def run_all(settings: Settings, payload: InputPayload, run_id: Optional[str] = N
         settings,
         system_prompt="You must follow the user instructions exactly.",
         user_prompt=summary_user_prompt,
+        run_id=run_id,
+        label="summary",
     )
     sections = _parse_xml_sections(summary_model_text)
 
@@ -828,14 +840,19 @@ def run_query_triage(settings: Settings, payload: QueryPayload, run_id: Optional
     )
     products_future = None
     try:
-        triage_future = executor.submit(_generate_text_with_timing, settings, triage_user_prompt)
-        costing_future = executor.submit(_generate_text_with_timing, settings, costing_user_prompt)
+        triage_future = executor.submit(_generate_text_with_timing, settings, triage_user_prompt,
+                                         None, None, run_id, "triage")
+        costing_future = executor.submit(_generate_text_with_timing, settings, costing_user_prompt,
+                                          None, None, run_id, "costing")
         if products_user_prompt:
             products_future = executor.submit(
                 _generate_text_with_timing,
                 settings,
                 products_user_prompt,
                 settings.product_extraction_max_tokens,
+                None,
+                run_id,
+                "products",
             )
         model_text, triage_llm_ms = triage_future.result()
         costing_model_text, costing_llm_ms = costing_future.result()
@@ -917,6 +934,8 @@ def run_rfq_classification(
         settings,
         system_prompt="You must return valid JSON only.",
         user_prompt=user_prompt,
+        run_id=run_id,
+        label="classify",
     )
     parsed = _parse_json_object(raw_model_output)
 
@@ -1006,7 +1025,7 @@ def _describe_what_changed(
 
     t0 = time.perf_counter()
     try:
-        raw, _ = _generate_text_with_timing(settings, prompt)
+        raw, _ = _generate_text_with_timing(settings, prompt, run_id=run_id, label="regenerate_diff")
     except Exception as e:
         print(f"[WARN] run_id={run_id} | diff call failed, regeneration unaffected: {type(e).__name__}: {e}")
         return "", "", int((time.perf_counter() - t0) * 1000)
@@ -1074,8 +1093,10 @@ def run_regenerate_triage(
     costing_user_prompt = _build_query_triage_prompt(costing_prompt_template, query_payload, extracted_text)
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        triage_future = executor.submit(_generate_text_with_timing, settings, triage_user_prompt)
-        costing_future = executor.submit(_generate_text_with_timing, settings, costing_user_prompt)
+        triage_future = executor.submit(_generate_text_with_timing, settings, triage_user_prompt,
+                                         None, None, run_id, "regenerate_triage")
+        costing_future = executor.submit(_generate_text_with_timing, settings, costing_user_prompt,
+                                          None, None, run_id, "regenerate_costing")
         model_text, triage_llm_ms = triage_future.result()
         costing_model_text, costing_llm_ms = costing_future.result()
 
@@ -1171,6 +1192,8 @@ def run_regenerate_query(
         settings,
         system_prompt="You must follow the user instructions exactly.",
         user_prompt=user_prompt,
+        run_id=run_id,
+        label="regenerate_query",
     )
     query_llm_ms = int((time.perf_counter() - t_llm0) * 1000)
     total_ms = int((time.perf_counter() - t0) * 1000)
