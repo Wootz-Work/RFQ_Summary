@@ -184,6 +184,17 @@ def test_message_shape():
     ok &= _check("reply-to honoured",
                  msg["replyTo"][0]["emailAddress"]["address"] == "rfq@wootz.work")
     ok &= _check("saveToSentItems defaults true", payload["saveToSentItems"] is True)
+    ok &= _check("from address is the configured mailbox",
+                 msg["from"]["emailAddress"]["address"] == "technology@wootz.work",
+                 str(msg.get("from")))
+    ok &= _check("from name is the configured display name, not the mailbox's own",
+                 msg["from"]["emailAddress"]["name"] == "Wootz.Strike",
+                 str(msg.get("from")))
+
+    no_name = _build_graph_message(_settings(EMAIL_FROM_NAME=""), ["a@b.com"], "R1", "T", "- x")
+    ok &= _check("an unset display name omits the name field, not an empty one",
+                 "name" not in no_name["message"]["from"]["emailAddress"],
+                 str(no_name["message"].get("from")))
 
     html_body = msg["body"]["content"]
     ok &= _check("greeting is the agreed line",
