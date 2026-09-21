@@ -70,6 +70,8 @@ def _guess_kind(url: str, content_type: str | None) -> str:
 
     if _is_probably_ms_folder_link(u):
         return "folder"
+    if u.endswith(".zip") or ct in ("application/zip", "application/x-zip-compressed", "multipart/x-zip"):
+        return "zip"
     if u.endswith(".pdf") or ct.startswith("application/pdf"):
         return "pdf"
     if u.endswith(".xlsx") or u.endswith(".xlsm") or "spreadsheet" in ct:
@@ -143,13 +145,144 @@ def _parse_attachment_input(raw: str) -> List[str]:
     return [u.strip() for u in raw.split(",") if u.strip()]
 
 
-def _dispatch_finding(settings: Settings, u: str, data: bytes, ctype: Optional[str]) -> AttachmentFinding:
+def _is_archive_noise(name: str) -> bool:
+    """Packaging junk every zip from a Mac or Windows carries."""
+    parts = name.replace("\\", "/").split("/")
+    if any(p in ("__MACOSX", ".git", "node_modules") for p in parts):
+        return True
+    leaf = parts[-1]
+    return leaf.startswith("._") or leaf in (".DS_Store", "Thumbs.db", "desktop.ini")
+
+
+def _analyze_zip_bytes(
+    settings: Settings, u: str, data: bytes, ctype: Optional[str], depth: int
+) -> AttachmentFinding:
+    """
+    Read the files inside a zip, at any folder nesting, and parse each one
+    through the same dispatcher the archive itself came through — so a PDF
+    three folders deep is read exactly like a PDF sent on its own, and a zip
+    inside a zip recurses until zip_max_depth.
+
+    Returns one finding for the archive whose extracted_text is every member's
+    text, each under the path it sits at. One finding rather than one per
+    member keeps the caller's "attachments the customer sent" count honest and
+    leaves the downstream join untouched.
+
+    A zip is untrusted input: a few hundred KB can expand to gigabytes, so
+    member count, total uncompressed size and nesting depth are all capped,
+    and exceeding any of them stops the walk and is reported rather than
+    raised — a bad archive must not take the run down.
+    """
+    import io
+    import zipfile
+
+    fname = _safe_filename_from_url(u) if u.startswith("http") else f"drive_{u}"
+    blocks: List[str] = []
+    manifest: List[dict] = []
+    notes: List[str] = []
+    read = skipped = 0
+    total_uncompressed = 0
+
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+    except Exception as e:
+        logger.debug("[ZIP] %s is not a readable archive: %s", fname, e)
+        return AttachmentFinding(
+            url=u,
+            kind="unknown",
+            summary=f"'{fname}' could not be opened as a zip ({type(e).__name__}). Nothing inside was read.",
+            data={"filename": fname, "content_type": ctype or "", "error": str(e)[:200]},
+        )
+
+    with zf:
+        members = [i for i in zf.infolist() if not i.is_dir() and not _is_archive_noise(i.filename)]
+        if len(members) > settings.zip_max_members:
+            notes.append(
+                f"archive holds {len(members)} files; only the first {settings.zip_max_members} were read"
+            )
+            members = members[: settings.zip_max_members]
+
+        for info in members:
+            member_path = info.filename.replace("\\", "/")
+
+            if total_uncompressed + info.file_size > settings.zip_max_total_uncompressed_bytes:
+                notes.append(
+                    f"stopped at '{member_path}' — archive expands past the "
+                    f"{settings.zip_max_total_uncompressed_bytes // (1024 * 1024)} MB limit"
+                )
+                skipped += len(members) - read
+                break
+
+            member_kind = _guess_kind(member_path, None)
+            if member_kind == "zip" and depth >= settings.zip_max_depth:
+                notes.append(f"'{member_path}' is a nested zip beyond the depth limit — not read")
+                skipped += 1
+                continue
+
+            try:
+                member_bytes = zf.read(info)
+            except Exception as e:
+                notes.append(f"'{member_path}' could not be extracted ({type(e).__name__})")
+                skipped += 1
+                continue
+
+            total_uncompressed += len(member_bytes)
+            try:
+                finding = _dispatch_finding(settings, member_path, member_bytes, None, depth=depth + 1)
+            except Exception as e:
+                # One unreadable drawing must not cost us the other forty-nine.
+                logger.debug("[ZIP] member %s failed to parse: %s", member_path, e)
+                notes.append(f"'{member_path}' could not be parsed ({type(e).__name__})")
+                skipped += 1
+                continue
+            read += 1
+
+            text = ""
+            try:
+                text = (finding.data or {}).get("extracted_text", "") or ""
+            except Exception:
+                text = ""
+            blocks.append(f"=== {member_path} ===\n{(text.strip() or finding.summary).strip()}")
+            manifest.append({"path": member_path, "kind": finding.kind, "bytes": len(member_bytes)})
+
+    note_text = f" ({'; '.join(notes)})" if notes else ""
+    summary = (
+        f"Archive '{fname}': {read} file(s) read"
+        + (f", {skipped} skipped" if skipped else "")
+        + note_text
+        + "."
+    )
+    logger.debug("[ZIP] %s — read=%d skipped=%d depth=%d", fname, read, skipped, depth)
+    print(f"[ATTACHMENTS] {summary}")
+
+    return AttachmentFinding(
+        url=u,
+        kind="zip",
+        summary=summary,
+        data={
+            "filename": fname,
+            "content_type": ctype or "",
+            "members": manifest,
+            "members_read": read,
+            "members_skipped": skipped,
+            "notes": notes,
+            "extracted_text": "\n\n".join(blocks).strip(),
+        },
+    )
+
+
+def _dispatch_finding(
+    settings: Settings, u: str, data: bytes, ctype: Optional[str], depth: int = 0
+) -> AttachmentFinding:
     """Route bytes to the correct parser based on kind."""
     kind = _guess_kind(u, ctype)
     fname = _safe_filename_from_url(u) if u.startswith("http") else f"drive_{u}"
     logger.debug("[DISPATCH] ref=%s kind=%s bytes=%d content-type=%s", u, kind, len(data), ctype)
 
-    if kind == "pdf":
+    if kind == "zip":
+        logger.debug("[DISPATCH] Routing to _analyze_zip_bytes")
+        return _analyze_zip_bytes(settings, u, data, ctype, depth)
+    elif kind == "pdf":
         logger.debug("[DISPATCH] Routing to analyze_pdf_bytes")
         return analyze_pdf_bytes(settings, u, data)
     elif kind == "excel":
