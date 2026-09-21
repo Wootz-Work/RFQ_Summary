@@ -286,30 +286,15 @@ Additional note:
 
 `Applicable standards` is **not** a section here. Standards are more use to the team routing the line than to the reader quoting it, so they live under `Applicable standards:` in AI Internal notes (§5.4). Where a standard's *requirement* matters to make the part right, state the requirement in Specification and let the designation sit in the internal notes.
 
-**Label every line inside Specification and Scope.** One attribute per line, `**Label:**` in bold at the start, value after it. A reader scanning for the grade finds it on the line that says `**Material:**` — they do not read a paragraph to locate it.
+**Bullet every point inside Specification and Scope.** One fact per `- ` bullet. A reader scanning for the grade runs down a list and finds it; they do not read a paragraph to locate it. No labels and no bold prefixes — the bullet is the structure.
 
-Two kinds of line may sit unlabelled, and only at the *top* of Specification, before the first label: the customer's verbatim descriptor string in backticks, and a handling caveat that governs the whole line (confidential drawings, a password needed). Everything below them is labelled.
+Two kinds of line sit above the bullets, unbulleted, and only at the *top* of Specification: the customer's verbatim descriptor string in backticks, and a handling caveat that governs the whole line (confidential drawings, a password needed). Everything below them is a bullet.
 
-These are the labels that fit most lines. Use them where they fit, in this order, and **omit any that does not apply** — an empty label is worse than a missing one.
+**Order the bullets the way the part is made.** Specification: what it is, its form and dimensions, what it is made of, what is done to it — heat treatment, finish, coating — then how it is proven, tested and marked. Scope: raw material, operations, treatment, inspection, documentation, marking, packaging, tooling, delivery. A reader goes top to bottom once and has the part.
 
-| Section | Labels, in order |
-|---|---|
-| Specification | `Dimensions:` `Material:` `Process:` `Heat treatment:` `Finish:` `Tolerances:` `Testing:` `Marking:` |
-| Scope | `Raw material:` `Operations:` `Heat treatment:` `Surface treatment:` `Inspection:` `Documentation:` `Marking:` `Packaging:` `Tooling:` `Delivery:` |
+**One fact per bullet.** `- Carbon or alloy steel, property class 8.8` — not a sentence carrying three requirements, and not a paragraph with a dash in front of it. Where one bullet genuinely needs two facts, join them with a semicolon rather than starting a second bullet.
 
-**This list is a starting point, not a closed set.** It was drawn from machined and fastener work; a moulded part, a dosing system, a casting or an electrical assembly will have attributes it does not name. When a real attribute of the part has no label that fits, **write the label it needs** — a short noun phrase naming the attribute, two or three words at most, in the same `**Label:**` form. Never drop a fact, and never force it under a label that misdescribes it, because this list did not anticipate it.
-
-Two limits on a label you invent: it names an *attribute of the part*, not a sentence or a topic heading; and where another line of the same RFQ already labels that same attribute, reuse that line's wording. Consistency across the lines of one RFQ matters more than matching this table — a reader comparing four lines should not meet `Coating:` on one and `Finish:` on the next.
-
-Do not open a new label for something that already has a home elsewhere: a standard's designation belongs in AI Internal notes, a quoting instruction in Additional note, an all-lines condition in `common_conditions`.
-
-The order is the order the part is made — its form, then what it is made of, then what is done to it, then how it is proven. A reader goes top to bottom once and has the part. A label you add sits wherever that sequence puts it.
-
-**The part is already named** in `Product name`, so Specification does not restate it with an `Item:` line. Start with the first attribute that says something the name does not.
-
-**Application and Additional note stay plain.** They are short and argumentative rather than attribute-shaped; labels there are noise. Plain lines, or `- ` bullets in Additional note where there is genuinely more than one instruction.
-
-**One line per label, and keep it a value, not a sentence.** `**Material:** Carbon or alloy steel, property class 8.8` — not `**Material:** The material shall be carbon or alloy steel conforming to property class 8.8.` Where one attribute genuinely needs two facts, separate them with a semicolon rather than starting a second line.
+**Application and Additional note stay plain.** They are short and argumentative rather than list-shaped. Plain lines, or `- ` bullets in Additional note where there is genuinely more than one instruction.
 
 **Each fact in one place only.**
 
@@ -356,7 +341,7 @@ A standard may appear in Specification only when a value inside it needs decodin
 |---|---|
 | `Heading:` on its own line, blank line after | The five section headings |
 | `<br>` on its own line, blank line either side | Separator between sections |
-| `**Label:** value` | Every line inside Specification and Scope — a label from §5.3 where one fits, otherwise one you write for that attribute |
+| `- ` | Every point inside Specification and Scope, one fact each |
 | `<mark>text</mark>` | Requirements that get a part rejected — restricted material origin, mandatory NDT, PPAP level |
 | `` `text` `` | The customer's own descriptor string, on the first line of Specification when they use one — verbatim apart from anything identifying, which is stripped (§1.4) |
 | `1.  ` | Numbered lists (subsystems, sequenced requirements) |
@@ -548,19 +533,20 @@ RFQ Details:
 ```
 Specification:
 `M10 X 1.5 X 25MM HEX GR 8.8 STEEL (ISO 4017) CAPSCREW - PER MTL5102A SPEC VDA235-104.20`
-**Dimensions:** M10 x 1.5 x 25 mm
-**Material:** Carbon or alloy steel, property class 8.8
-**Finish:** Coating per MTL5102A — see common conditions
+- Hexagon head cap screw, fully threaded, product grade A
+- M10 x 1.5 x 25 mm
+- Carbon or alloy steel, property class 8.8
+- Coating per MTL5102A — see common conditions
 <br>
 Scope:
-**Raw material:** by the manufacturer
-**Operations:** cold heading, thread rolling, heat treatment
-**Surface treatment:** Cr(VI)-free passivation
-**Inspection:** in-process and final
-**Documentation:** chemical, physical and plating certificates with every shipment
-**Packaging:** standard export packaging in cartons on pallets, labelled per line item
-**Tooling:** quoted separately if any
-**Delivery:** ex-works
+- Raw material by the manufacturer
+- Cold heading, thread rolling, heat treatment
+- Cr(VI)-free passivation
+- In-process and final inspection
+- Chemical, physical and plating certificates with every shipment
+- Standard export packaging in cartons on pallets, labelled per line item
+- Tooling, if any, quoted separately
+- Ex-works
 <br>
 Application:
 \--
@@ -605,21 +591,22 @@ RFQ Details:
 ```
 Specification:
 `M10 X 1.5 X 120MM HEX GR 10.9 STEEL (ISO 4014) CAP SCREW - PER MTL 5102B`
-**Dimensions:** M10 x 1.5 x 120 mm
-**Material:** Carbon or alloy steel, property class 10.9
-**Heat treatment:** hydrogen-embrittlement-safe process route required for class 10.9
-**Finish:** Zinc flake coating per MTL5102B — sub-state B1 or B2 to be confirmed
+- Hexagon head bolt, partially threaded, product grade A
+- M10 x 1.5 x 120 mm
+- Carbon or alloy steel, property class 10.9
+- Hydrogen-embrittlement-safe process route required for class 10.9
+- Zinc flake coating per MTL5102B — sub-state B1 or B2 to be confirmed
 \--
 <br>
 Scope:
-**Raw material:** by the manufacturer
-**Operations:** cold heading, thread rolling, heat treatment
-**Surface treatment:** zinc flake coating
-**Inspection:** in-process and final
-**Documentation:** certificates with every shipment
-**Packaging:** standard export packaging on pallets, labelled per line item
-**Tooling:** quoted separately if any
-**Delivery:** ex-works
+- Raw material by the manufacturer
+- Cold heading, thread rolling, heat treatment
+- Zinc flake coating
+- In-process and final inspection
+- Certificates with every shipment
+- Standard export packaging on pallets, labelled per line item
+- Tooling, if any, quoted separately
+- Ex-works
 <br>
 Application:
 \--
@@ -661,7 +648,7 @@ RFQ Details:
 
 ```
 Specification:
-**Subsystems:**
+Sodium hypochlorite dosing system comprising:
 1.  Pump skid — 4
 2.  Storage tank — 4
 3.  Diffuser — 4
@@ -698,12 +685,13 @@ RFQ Details (Specification excerpt):
 ```
 Specification:
 Drawings via link are confidential — not to be shared without Wootz approval. Request password if not provided.
-**Form:** Forged, welded and machined parts per individual drawings in annexure
-**Material:** Inconel 718, solution annealed. <mark>Raw material of Chinese melt and pour not permitted.</mark>
-**Process:** weld wire per AMS 5832; welding to AWS D17.1 and D2.4
-**Heat treatment:** sump — per AMS 2774 (S1750DP)
-**Tolerances:** diameters concentric within 250 µm unless drawn otherwise; edges broken 2 x 45°
-**Testing:** <mark>FPI per ASTM E1417 Type 1, Method A or D, Level 3, Class 1; acceptance MIL-STD-1907 Grade B. UT Class 1A.</mark>
+- Forged, welded and machined parts per individual drawings in annexure
+- Inconel 718, solution annealed
+- <mark>Raw material of Chinese melt and pour not permitted.</mark>
+- Weld wire per AMS 5832; welding to AWS D17.1 and D2.4
+- Sump: heat treatment per AMS 2774 (S1750DP)
+- Diameters concentric within 250 µm unless drawn otherwise; edges broken 2 x 45°
+- <mark>FPI per ASTM E1417 Type 1, Method A or D, Level 3, Class 1; acceptance MIL-STD-1907 Grade B. UT Class 1A.</mark>
 ```
 
 Scope carries the tooling clauses (quoted separately per part; stored and maintained ≥ 5 years; changes only after Wootz approval; maintenance logged), packaging suited to machined aerospace parts, and ex-works delivery. AI Internal notes carries an **Applicable standards** block (AMS 5662, AMS 5832, AMS 2774, ASTM E1417, MIL-STD-1907, AWS D17.1, AWS D2.4) and, a blank line below it, an **Attachments** block naming the confidential drawing folder link and the parts list workbook — the team attaches both.
@@ -716,7 +704,7 @@ Scope carries the tooling clauses (quoted separately per part; stored and mainta
 2. Never drop a line silently — reconcile counts.
 3. Never write anything identifying the customer anywhere — company name, contact or end-customer name, email address, phone number, website, postal address, town, plant or site. Project name, "the customer", or "the customer's location" only (§1.4).
 4. Never state a fact in two sections, or on a line when it belongs in `common_conditions`.
-5. Never add a section heading inside RFQ Details beyond the four. Inside Specification and Scope, every line carries a `**Label:**` — one from §5.3 where it fits, otherwise one you write for the attribute that has no home there. Never drop a fact, or file it under a label that misdescribes it, because the list did not name it.
+5. Never add a section heading, bold label or other sub-structure inside RFQ Details. Four headings; Specification and Scope are bullet lists, one fact per bullet.
 6. Never write reasoning, hedging or "confirmed applicable" in RFQ Details. Conclusions there; reasoning in AI Internal notes.
 7. Never restate the content of a public standard. Cite it.
 8. Never fill Application with programme description or commercial posture.
@@ -746,7 +734,7 @@ Scope carries the tooling clauses (quoted separately per part; stored and mainta
 4. Nothing identifying the customer in any field — no company, contact or end-customer name, email address, phone number, website, postal address, town, plant or site. Scan the text you are about to emit once, specifically for these, before you emit it.
 4a. Every `Customer` query is technical and about the product itself, with nothing commercial, logistical or administrative among them; every query carries a `query_type`; no question appears twice under different wording; every query passes one of the three tests in §1.2 and is technical. None asks about our file problems, a project name, or anything that reveals how the part is made; commercial terms, PPAP and quantity basis appear only as `Team` queries, never as `Customer`.
 5. No fact appears in two sections of one line; nothing on a line duplicates `common_conditions`.
-6. Four section headings present on every line; every Specification and Scope line carries a label, no Specification restates the product name under `Item:`, and where two lines of this RFQ label the same attribute they use the same wording; Scope covers packaging; no line carries a drawing or part number in its name or a value in any link field.
+6. Four section headings present on every line; Specification and Scope are bullets carrying one fact each, with no bold labels; Scope covers packaging; no line carries a drawing or part number in its name or a value in any link field.
 6a. Every AI Internal notes block label is bold and separated from the next block by a blank line, and emphasis inside the blocks is sparing enough to still mean something.
 7. Every provenance value is a single token from the allowed set.
 8. Every standard referenced is either linked or marked `(not attached)` with a query.
