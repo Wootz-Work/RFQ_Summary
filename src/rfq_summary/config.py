@@ -122,6 +122,18 @@ class Settings(BaseSettings):
     max_attachment_bytes: int = Field(default=50 * 1024 * 1024, alias="MAX_ATTACHMENT_BYTES")
     max_pdf_pages: int = Field(default=60, alias="MAX_PDF_PAGES")
 
+    # Zip archives. A customer drawing package is routinely a zip of folders, so
+    # members are read and parsed in memory. These bound what an archive can
+    # cost us — a zip is untrusted input and a small one can expand without
+    # limit, so every one of these is a stop, not a warning.
+    zip_max_members: int = Field(default=200, alias="ZIP_MAX_MEMBERS")
+    zip_max_total_uncompressed_bytes: int = Field(
+        default=200 * 1024 * 1024, alias="ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES"
+    )
+    # 1 = read a zip; 2 = read a zip nested inside it. Deeper is almost always
+    # an accident or an attack, never a drawing package.
+    zip_max_depth: int = Field(default=2, alias="ZIP_MAX_DEPTH")
+
     min_pdf_text_chars_per_page: int = Field(default=40, alias="MIN_PDF_TEXT_CHARS_PER_PAGE")
     min_ocr_chars_to_accept: int = Field(default=80, alias="MIN_OCR_CHARS_TO_ACCEPT")
 
