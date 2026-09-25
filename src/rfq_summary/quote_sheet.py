@@ -46,6 +46,28 @@ FONT = "Arial"
 # name the item, and a sheet whose rows cannot be told apart is not a sheet.
 DEFAULT_PROTECTED = ("Item code", "Description")
 
+# OneDrive/SharePoint reject these outright, and a family name routinely
+# carries several of them — "Studs — M56 x 2000 / DIN 976".
+_ILLEGAL_FILENAME = re.compile(r'[":<>?/\\|*\x00-\x1f]')
+
+
+def annexure_filename(index: int, family_name: str, extension: str = "xlsx") -> str:
+    """
+    The name a reader refers to the file by: `Annexure 2 - Hex Bolts.xlsx`.
+
+    `index` counts the annexures of one RFQ, not the product lines — a family
+    sitting on line 5 of an RFQ whose only annexure it is should be Annexure
+    1, because that is how someone will cite it.
+    """
+    name = _ILLEGAL_FILENAME.sub(" ", family_name or "")
+    name = re.sub(r"\s+", " ", name).strip(" .")
+    # Long names break some mail clients and every path limit; the annexure
+    # number carries the identity when the name has to give.
+    if len(name) > 80:
+        name = name[:80].rstrip(" .")
+    stem = f"Annexure {index} - {name}" if name else f"Annexure {index}"
+    return f"{stem}.{extension}"
+
 
 @dataclass(frozen=True)
 class QuoteColumn:
@@ -415,3 +437,64 @@ def build_quote_sheet(
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def _annexure_rows_as_dicts(annexure: Any) -> List[Dict[str, str]]:
+    """Variant rows reach us as lists (positional) or dicts, same as the log writer sees."""
+    columns = [str(c) for c in (getattr(annexure, "columns", None) or [])]
+    out: List[Dict[str, str]] = []
+    for row in getattr(annexure, "rows", None) or []:
+        if isinstance(row, dict):
+            out.append({c: str(row.get(c, "") or "") for c in columns})
+        elif isinstance(row, (list, tuple)):
+            out.append({c: (str(row[i]) if i < len(row) and row[i] is not None else "")
+                        for i, c in enumerate(columns)})
+    return out
+
+
+def build_family_annexures(
+    *,
+    rfq_ref: str,
+    products: Sequence[Any],
+    conditions: Sequence[str] = (),
+    quote_columns: Sequence[QuoteColumn] = DEFAULT_QUOTE_COLUMNS,
+    issued: Optional[date] = None,
+) -> List[Tuple[str, bytes]]:
+    """
+    Build one workbook per family line, returning [(filename, bytes), ...].
+
+    Scope is deliberately narrow, and matches where the data actually lives:
+    `annexure` hangs off a single product, so a sheet belongs to one family
+    and never to the whole RFQ. Consolidating two lines into one workbook
+    would also cross process families — studs are thread-rolled, nuts are
+    forged and tapped — which the extraction rules forbid outright.
+
+    A line that is not a family, or carries no variant rows, produces no
+    file; an RFQ of four single lines produces none at all.
+    """
+    out: List[Tuple[str, bytes]] = []
+    for product in products or []:
+        if str(getattr(product, "structure", "") or "").strip().lower() != "family":
+            continue
+        annexure = getattr(product, "annexure", None)
+        if not annexure or getattr(annexure, "by_reference", False):
+            # by_reference means the customer's own workbook travels with the
+            # RFQ; we do not replace it with one of ours.
+            continue
+        rows = _annexure_rows_as_dicts(annexure)
+        if not rows:
+            continue
+
+        name = str(getattr(product, "name", "") or "").strip()
+        filename = annexure_filename(len(out) + 1, name)
+        data = build_quote_sheet(
+            rfq_ref=rfq_ref,
+            title=name or f"Annexure {len(out) + 1}",
+            rows=rows,
+            spec_columns=[str(c) for c in (getattr(annexure, "columns", None) or [])],
+            quote_columns=quote_columns,
+            conditions=conditions,
+            issued=issued,
+        )
+        out.append((filename, data))
+    return out

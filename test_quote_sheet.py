@@ -180,5 +180,79 @@ ws = opened(data)
 check("300 SKUs all land in the grid", ws.cell(row=306, column=1).value == 300, str(ws.cell(row=306, column=1).value))
 check(f"300 SKUs build quickly ({elapsed:.2f}s, {len(data)/1024:.0f} KB)", elapsed < 5.0, f"{elapsed:.2f}s")
 
+# ---- filename --------------------------------------------------------------
+from rfq_summary.quote_sheet import annexure_filename, build_family_annexures
+
+check("named for the family, numbered for citation",
+      annexure_filename(1, "Hex Bolts") == "Annexure 1 - Hex Bolts.xlsx",
+      annexure_filename(1, "Hex Bolts"))
+check("a second annexure counts on",
+      annexure_filename(2, "Flat Washers").startswith("Annexure 2 - "))
+check("characters OneDrive rejects are stripped",
+      not set('":<>?/\\|*') & set(annexure_filename(1, 'Studs — M56 x 2000 / DIN 976 <rev B>')),
+      annexure_filename(1, 'Studs — M56 x 2000 / DIN 976 <rev B>'))
+check("the family name still survives that",
+      "Studs" in annexure_filename(1, 'Studs / DIN 976') and
+      "DIN 976" in annexure_filename(1, 'Studs / DIN 976'),
+      annexure_filename(1, 'Studs / DIN 976'))
+check("a trailing period is removed (OneDrive rejects it)",
+      not annexure_filename(1, "Bolts.").replace(".xlsx", "").endswith("."),
+      annexure_filename(1, "Bolts."))
+check("an over-long name is trimmed, keeping the number",
+      len(annexure_filename(3, "X" * 300)) < 110 and
+      annexure_filename(3, "X" * 300).startswith("Annexure 3 - "))
+check("a nameless family still yields a usable filename",
+      annexure_filename(1, "") == "Annexure 1.xlsx", annexure_filename(1, ""))
+
+
+# ---- one workbook per family, never one per RFQ ----------------------------
+class _Annexure:
+    def __init__(self, columns, rows, by_reference=False):
+        self.columns, self.rows, self.by_reference = columns, rows, by_reference
+        self.required = True
+
+
+class _Product:
+    def __init__(self, name, structure, annexure=None):
+        self.name, self.structure, self.annexure = name, structure, annexure
+
+
+COLS = ["variant_ref", "size", "finish", "quantity"]
+VROWS = [[f"V{i}", f"M{8 + i * 2}", "HDG 50 µm", str(100 + i)] for i in range(8)]
+
+built = build_family_annexures(rfq_ref="WZ-1", products=[
+    _Product("Hex Bolts (family)", "family", _Annexure(COLS, VROWS)),
+    _Product("Threaded Stud M56", "single"),                       # not a family
+    _Product("Flat Washers (family)", "family", _Annexure(COLS, VROWS)),
+    _Product("Empty Family", "family", _Annexure(COLS, [])),       # no rows
+    _Product("Their Sheet", "family", _Annexure(COLS, VROWS, by_reference=True)),
+])
+names = [n for n, _ in built]
+check("one workbook per family line", len(built) == 2, str(names))
+check("numbered in order of the families found",
+      names[0].startswith("Annexure 1 - Hex Bolts") and names[1].startswith("Annexure 2 - Flat Washers"),
+      str(names))
+check("a single line produces nothing", not any("Stud" in n for n in names), str(names))
+check("a family with no rows produces nothing", not any("Empty" in n for n in names), str(names))
+check("the customer's own workbook is not replaced by ours",
+      not any("Their Sheet" in n for n in names), str(names))
+
+ws = load_workbook(io.BytesIO(built[0][1]))["Quote Sheet"]
+check("the sheet is titled for its family",
+      "Hex Bolts" in str(ws.cell(row=1, column=1).value), str(ws.cell(row=1, column=1).value))
+check("all eight variants are rows", ws.cell(row=14, column=1).value == 8)
+
+# An RFQ of four single lines — the real Clint 7 shape — makes no file at all.
+check("an RFQ with no families generates nothing",
+      build_family_annexures(rfq_ref="WZ-2", products=[
+          _Product("M56 Stud HDG", "single"), _Product("M56 Nut HDG", "single"),
+          _Product("M56 Stud A4", "single"), _Product("M56 Nut A4", "single")]) == [])
+
+# Dict-shaped variant rows are as valid as positional ones.
+d = build_family_annexures(rfq_ref="WZ-3", products=[
+    _Product("Dict Family", "family",
+             _Annexure(COLS, [dict(zip(COLS, r)) for r in VROWS]))])
+check("dict-shaped variant rows work too", len(d) == 1 and d[0][0].startswith("Annexure 1 - Dict"))
+
 print("\nALL PASSED" if ok else "\nFAILURES ABOVE")
 raise SystemExit(0 if ok else 1)
