@@ -677,3 +677,46 @@ def glide_fetch_last_regenerate_response(settings: Settings, rfq_id: str) -> str
         return ""
     value = (rows[0] or {}).get(resp_col)
     return value.strip() if isinstance(value, str) else ""
+
+
+def glide_fetch_annexure_destination(settings: Settings, rfq_row_id: str) -> tuple[str, str]:
+    """
+    Where this RFQ's annexures go: (drive_id, folder_id) off the ALL RFQ row.
+
+    Both halves travel together because a DriveItem id is only addressable
+    inside its drive. Best-effort: anything missing returns ("", "") and the
+    caller skips the upload — an annexure that did not reach OneDrive must
+    never fail an extraction that otherwise succeeded.
+    """
+    rfq_row_id = (rfq_row_id or "").strip()
+    table = (settings.glide_all_rfq_table or "").strip()
+    drive_col = (settings.glide_col_all_rfq_annexure_drive or "").strip()
+    folder_col = (settings.glide_col_all_rfq_annexure_folder or "").strip()
+    if not (rfq_row_id and table and drive_col and folder_col):
+        return "", ""
+    if not (settings.glide_api_key and settings.glide_app_id):
+        return "", ""
+
+    sql = f'SELECT * FROM "{table}" WHERE "$rowID" = $1 LIMIT 1'
+    try:
+        with httpx.Client(timeout=60) as client:
+            r = client.post(
+                "https://api.glideapp.io/api/function/queryTables",
+                headers=_glide_headers(settings),
+                json={"appID": settings.glide_app_id, "queries": [{"sql": sql, "params": [rfq_row_id]}]},
+            )
+            r.raise_for_status()
+            rows = (r.json() or [])[0].get("rows") or []
+    except Exception as e:
+        print(f"[WARN] glide | could not fetch the annexure destination: {type(e).__name__}: {e}")
+        return "", ""
+
+    if not rows:
+        return "", ""
+    row = rows[0] or {}
+
+    def _text(col: str) -> str:
+        v = row.get(col)
+        return v.strip() if isinstance(v, str) else ""
+
+    return _text(drive_col), _text(folder_col)
