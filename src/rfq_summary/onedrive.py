@@ -20,6 +20,7 @@ a Glide cell; an exception escaping this module costs the extraction.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import quote
 
@@ -29,6 +30,21 @@ from .config import Settings
 from .emailer import _get_app_token
 
 GRAPH = "https://graph.microsoft.com/v1.0"
+
+
+@dataclass(frozen=True)
+class UploadedFile:
+    """
+    What we keep about an uploaded annexure.
+
+    The id matters more than the link: a webUrl can change when a file is
+    renamed or moved, while the DriveItem id is the handle Graph addresses
+    for reading the file back, checking whether someone has edited it, or
+    replacing it later.
+    """
+    id: str
+    url: str
+    name: str
 
 # `01ABCDEF…` — the form Graph actually addresses. A SharePoint UniqueId
 # (a bare GUID) names the same folder but cannot be used as a path segment,
@@ -58,9 +74,9 @@ def upload_annexure(
     folder_id: str,
     filename: str,
     data: bytes,
-) -> Optional[str]:
+) -> Optional[UploadedFile]:
     """
-    Put one annexure in the RFQ's folder and return the link to it.
+    Put one annexure in the RFQ's folder and return what identifies it.
 
     Returns None whenever the file did not land — not configured, no folder
     on the RFQ row, too large, or Graph refused. Every one of those is a
@@ -137,10 +153,14 @@ def upload_annexure(
         print(f"[WARN] annexure | upload of '{filename}' failed: {type(e).__name__}: {e}")
         return None
 
-    link = item.get("webUrl") or ""
-    name = item.get("name") or filename
+    link = str(item.get("webUrl") or "")
+    item_id = str(item.get("id") or "")
+    name = str(item.get("name") or filename)
     if name != filename:
         # conflictBehavior=rename landed it beside an existing file.
         print(f"[INFO] annexure | '{filename}' already existed; saved as '{name}' instead")
-    print(f"[INFO] annexure | uploaded '{name}' ({len(data) / 1024:.0f} KB)")
-    return link or None
+    if not (link or item_id):
+        print(f"[WARN] annexure | '{name}' uploaded but Graph returned neither id nor link")
+        return None
+    print(f"[INFO] annexure | uploaded '{name}' ({len(data) / 1024:.0f} KB) id={item_id or '(none)'}")
+    return UploadedFile(id=item_id, url=link, name=name)

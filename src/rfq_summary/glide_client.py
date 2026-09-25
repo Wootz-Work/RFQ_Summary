@@ -339,6 +339,7 @@ def glide_add_product_rows(
     sr_no_col = (settings.glide_col_product_sr_no or "").strip()
     accepted_col = (settings.glide_col_product_accepted or "").strip()
     annexure_url_col = (settings.glide_col_product_annexure_url or "").strip()
+    annexure_file_id_col = (settings.glide_col_product_annexure_file_id or "").strip()
 
     mutations: list[Dict[str, Any]] = []
     for position, product in enumerate(products, start=1):
@@ -385,6 +386,8 @@ def glide_add_product_rows(
         # ever has one, and an upload that did not happen leaves it empty.
         if annexure_url_col and getattr(product, "annexure_url", ""):
             column_values[annexure_url_col] = product.annexure_url
+        if annexure_file_id_col and getattr(product, "annexure_file_id", ""):
+            column_values[annexure_file_id_col] = product.annexure_file_id
 
         mutations.append(
             {

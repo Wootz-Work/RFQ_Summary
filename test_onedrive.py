@@ -17,7 +17,7 @@ import httpx
 
 from rfq_summary import emailer, onedrive
 from rfq_summary.config import Settings
-from rfq_summary.onedrive import upload_annexure, upload_configured
+from rfq_summary.onedrive import UploadedFile, upload_annexure, upload_configured
 
 ITEM = "01DDVW3I6ABM4C6R67VZDLDASFKPWZK3PY"      # a real DriveItem id shape
 DRIVE = "b!TESTDRIVE"                             # comes off the RFQ row now
@@ -71,7 +71,8 @@ class _Client:
         _Client.calls.append({"verb": "PUT", "url": url, "headers": headers, "content": content})
         if _Client.queue:
             return _Client.queue.pop(0)
-        return _Resp(201, {"name": "Annexure 1 - Hex Bolts.xlsx",
+        return _Resp(201, {"id": "01UPLOADEDFILEIDAAAAAAAAAAAAAA",
+                           "name": "Annexure 1 - Hex Bolts.xlsx",
                            "webUrl": "https://wootz-my.sharepoint.com/x/Annexure%201.xlsx"})
 
 
@@ -109,8 +110,12 @@ check("a drive on the row overrides the configured fallback",
 
 
 # ---- the happy path --------------------------------------------------------
-link = run(lambda: upload_annexure(_settings(), DRIVE, ITEM, "Annexure 1 - Hex Bolts.xlsx", XLSX))
-check("returns the link to the uploaded file", link and link.startswith("https://"), str(link))
+got = run(lambda: upload_annexure(_settings(), DRIVE, ITEM, "Annexure 1 - Hex Bolts.xlsx", XLSX))
+check("returns the link to the uploaded file", got and got.url.startswith("https://"), str(got))
+check("and the DriveItem id, which is the durable handle",
+      got and got.id == "01UPLOADEDFILEIDAAAAAAAAAAAAAA", str(got))
+check("and the name it actually landed under",
+      got and got.name == "Annexure 1 - Hex Bolts.xlsx", str(got))
 put = [c for c in _Client.calls if c["verb"] == "PUT"][0]
 check("uploads into the drive from the RFQ row", "/drives/b!TESTDRIVE/" in put["url"], put["url"])
 check("into the folder from the RFQ row", f"/items/{ITEM}:" in put["url"], put["url"])
@@ -125,9 +130,11 @@ check("bearer token attached", put["headers"]["Authorization"] == "Bearer tok")
 # ---- never overwrite someone's edits ---------------------------------------
 check("conflicts rename by default",
       "conflictBehavior=rename" in put["url"], put["url"])
-link = run(lambda: upload_annexure(_settings(), DRIVE, ITEM, "a.xlsx", XLSX),
-           queue=[_Resp(201, {"name": "a 1.xlsx", "webUrl": "https://x/a%201.xlsx"})])
-check("a renamed upload still returns its own link", link == "https://x/a%201.xlsx", str(link))
+got = run(lambda: upload_annexure(_settings(), DRIVE, ITEM, "a.xlsx", XLSX),
+          queue=[_Resp(201, {"id": "01RENAMED", "name": "a 1.xlsx", "webUrl": "https://x/a%201.xlsx"})])
+check("a renamed upload returns the link it actually landed at",
+      got and got.url == "https://x/a%201.xlsx", str(got))
+check("and the id of that renamed file", got and got.id == "01RENAMED", str(got))
 check("replace is available when explicitly chosen",
       "conflictBehavior=replace" in run(
           lambda: (upload_annexure(_settings(ANNEXURE_CONFLICT_BEHAVIOR="replace"), DRIVE, ITEM, "a.xlsx", XLSX),
@@ -181,9 +188,13 @@ try:
 finally:
     onedrive._get_app_token = real_token
 
-check("a response with no webUrl returns None",
+check("a response carrying neither id nor link returns None",
       run(lambda: upload_annexure(_settings(), DRIVE, ITEM, "a.xlsx", XLSX),
           queue=[_Resp(201, {"name": "a.xlsx"})]) is None)
+# An id with no webUrl is still useful — it is what addresses the file.
+got = run(lambda: upload_annexure(_settings(), DRIVE, ITEM, "a.xlsx", XLSX),
+          queue=[_Resp(201, {"id": "01ONLYID", "name": "a.xlsx"})])
+check("an id without a link is still returned", got and got.id == "01ONLYID", str(got))
 
 print("\nALL PASSED" if ok else "\nFAILURES ABOVE")
 raise SystemExit(0 if ok else 1)

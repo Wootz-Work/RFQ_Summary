@@ -282,6 +282,11 @@ class Settings(BaseSettings):
     glide_col_product_annexure_url: str = Field(
         default="viX2v", alias="GLIDE_COL_PRODUCT_ANNEXURE_URL"
     )
+    # The uploaded workbook's DriveItem id. Paired with the RFQ row's drive id
+    # this addresses the file in Graph, which the url alone cannot do.
+    glide_col_product_annexure_file_id: str = Field(
+        default="MVO1t", alias="GLIDE_COL_PRODUCT_ANNEXURE_FILE_ID"
+    )
     # Max product rows written per Glide mutateTables request.
     glide_product_rows_per_request: int = Field(default=20, alias="GLIDE_PRODUCT_ROWS_PER_REQUEST")
     # Queries table: one row per open question, linked to the product it blocks.

@@ -206,12 +206,13 @@ def _attach_family_annexures(settings: Settings, out, rfq_row_id: str, extractio
     uploaded = 0
     for product, (filename, data) in zip(accepted, built):
         try:
-            link = upload_annexure(settings, drive_id, folder_id, filename, data)
+            uploaded_file = upload_annexure(settings, drive_id, folder_id, filename, data)
         except Exception as e:
             print(f"[WARN] run_id={out.run_id} | annexure upload raised: {type(e).__name__}: {e}")
-            link = None
-        if link:
-            product.annexure_url = link
+            uploaded_file = None
+        if uploaded_file:
+            product.annexure_url = uploaded_file.url
+            product.annexure_file_id = uploaded_file.id
             uploaded += 1
 
     print(f"[INFO] run_id={out.run_id} | {uploaded}/{len(built)} annexure workbook(s) uploaded")

@@ -28,6 +28,7 @@ sys.modules["googleapiclient.errors"].HttpError = Exception
 
 from rfq_summary import writer
 from rfq_summary.config import Settings
+from rfq_summary.onedrive import UploadedFile
 from rfq_summary.schema import (
     ExtractedProduct, ProductAnnexure, ProductExtractionHeader,
     ProductExtractionResult, TriageOutputPayload,
@@ -81,7 +82,8 @@ def run(extraction, settings=None, dest=("b!DRIVE", "01FOLDERIDAAAAAAAAAAAAAAAAA
         calls.append({"drive": drive_id, "folder": folder_id, "name": filename, "bytes": len(data)})
         if upload is not None:
             return upload(filename)
-        return f"https://wootz-my.sharepoint.com/x/{filename}"
+        return UploadedFile(id=f"01ID-{filename}", url=f"https://wootz-my.sharepoint.com/x/{filename}",
+                            name=filename)
 
     real_dest, real_up = writer.glide_fetch_annexure_destination, writer.upload_annexure
     writer.glide_fetch_annexure_destination = lambda s, r: dest
@@ -105,6 +107,8 @@ check("sent to the drive and folder off the RFQ row",
 check("a real workbook was built", calls[0]["bytes"] > 4000, str(calls[0]["bytes"]))
 check("the link lands on the product, ready for the row write",
       fam.annexure_url.endswith("Annexure 1 - Hex Bolts.xlsx"), fam.annexure_url)
+check("the file id lands on it too — the handle Graph can address",
+      fam.annexure_file_id == "01ID-Annexure 1 - Hex Bolts.xlsx", fam.annexure_file_id)
 
 # Two families, two files, each link on its own product.
 a, b = _family("Hex Bolts"), _family("Flat Washers")
@@ -125,7 +129,8 @@ check("an RFQ of single lines uploads nothing",
       run(_extraction(_single("M56 Stud"), _single("M56 Nut"))) == [])
 
 s = _single()
-check("a single line never gets a link", s.annexure_url == "")
+check("a single line never gets a link or a file id",
+      s.annexure_url == "" and s.annexure_file_id == "")
 
 check("a by_reference family is left alone — the customer's own sheet travels",
       run(_extraction(_family(by_reference=True))) == [])
@@ -141,8 +146,9 @@ check("no folder on the RFQ row means nothing is attempted",
 
 # ---- nothing here can cost the extraction ----------------------------------
 fam = _family()
-check("an upload that returns no link is survivable",
-      run(_extraction(fam), upload=lambda n: None) and fam.annexure_url == "")
+check("an upload that returns nothing is survivable",
+      run(_extraction(fam), upload=lambda n: None) and fam.annexure_url == ""
+      and fam.annexure_file_id == "")
 
 
 def _raise(*a, **k):
@@ -156,7 +162,8 @@ try:
 except Exception:
     crashed = True
 check("an upload that raises is contained", not crashed)
-check("and the product simply has no link", fam.annexure_url == "", fam.annexure_url)
+check("and the product simply has no link or id",
+      fam.annexure_url == "" and fam.annexure_file_id == "", fam.annexure_url)
 
 real_dest = writer.glide_fetch_annexure_destination
 writer.glide_fetch_annexure_destination = _raise
