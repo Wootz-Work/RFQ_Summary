@@ -94,6 +94,17 @@ class Settings(BaseSettings):
     # Whether Graph should also file the sent mail in the sender mailbox's
     # Sent Items folder.
     ms_graph_save_to_sent_items: bool = Field(default=True, alias="MS_GRAPH_SAVE_TO_SENT_ITEMS")
+
+    # --- annexure upload ---------------------------------------------------
+    # The drive every RFQ folder lives in. A DriveItem id is only addressable
+    # inside its drive — Graph has no global /driveItems/{id} — so this is
+    # required even though the folder itself comes off the RFQ row. Starts
+    # "b!"; from GET /users/{upn}/drive or GET /sites/{site}/drives.
+    ms_graph_drive_id: str = Field(default="", alias="MS_GRAPH_DRIVE_ID")
+    enable_annexure_upload: bool = Field(default=True, alias="ENABLE_ANNEXURE_UPLOAD")
+    # rename | replace | fail. Defaults to rename: someone is editing these
+    # sheets in place, and a regeneration must never overwrite their work.
+    annexure_conflict_behavior: str = Field(default="rename", alias="ANNEXURE_CONFLICT_BEHAVIOR")
     email_from_name: str = Field(default="Wootz.Strike", alias="EMAIL_FROM_NAME")
     # The mailbox Graph sends as — must be a real mailbox the app is allowed
     # to send from (Mail.Send with no application access policy covers any
@@ -216,6 +227,11 @@ class Settings(BaseSettings):
         alias="GLIDE_ALL_RFQ_TABLE",
     )
     glide_col_all_rfq_zai_response: str = Field(default="MANCF", alias="GLIDE_COL_ALL_RFQ_ZAI_RESPONSE")
+    # The OneDrive folder this RFQ's annexures are written to — a Graph
+    # DriveItem id (the 01… form), one folder per RFQ.
+    glide_col_all_rfq_annexure_folder: str = Field(
+        default="Q7vEH", alias="GLIDE_COL_ALL_RFQ_ANNEXURE_FOLDER"
+    )
     glide_col_all_rfq_costing_order_of_magnitude: str = Field(
         default="AEa95",
         alias="GLIDE_COL_ALL_RFQ_COSTING_ORDER_OF_MAGNITUDE",
@@ -257,6 +273,10 @@ class Settings(BaseSettings):
     glide_col_product_sr_no: str = Field(default="XbErc", alias="GLIDE_COL_PRODUCT_SR_NO")
     # Boolean flag set to true on every row this service adds.
     glide_col_product_accepted: str = Field(default="117zS", alias="GLIDE_COL_PRODUCT_ACCEPTED")
+    # Link to the uploaded annexure workbook. Only a family line ever carries one.
+    glide_col_product_annexure_url: str = Field(
+        default="viX2v", alias="GLIDE_COL_PRODUCT_ANNEXURE_URL"
+    )
     # Max product rows written per Glide mutateTables request.
     glide_product_rows_per_request: int = Field(default=20, alias="GLIDE_PRODUCT_ROWS_PER_REQUEST")
     # Queries table: one row per open question, linked to the product it blocks.

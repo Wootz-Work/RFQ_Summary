@@ -465,6 +465,9 @@ class ExtractedProduct(BaseModel):
     rep_url: _OptStr = None
     addl_files: _StrOrList = Field(default_factory=list)
     annexure: Optional[ProductAnnexure] = None
+    # Filled by the pipeline after the annexure workbook is uploaded, never by
+    # the model — it cannot know where the file landed.
+    annexure_url: _LooseStr = ""
     provenance: Dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="before")

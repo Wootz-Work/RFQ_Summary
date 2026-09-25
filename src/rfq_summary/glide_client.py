@@ -338,6 +338,7 @@ def glide_add_product_rows(
     addl_files_col = (settings.glide_col_product_addl_files or "").strip()
     sr_no_col = (settings.glide_col_product_sr_no or "").strip()
     accepted_col = (settings.glide_col_product_accepted or "").strip()
+    annexure_url_col = (settings.glide_col_product_annexure_url or "").strip()
 
     mutations: list[Dict[str, Any]] = []
     for position, product in enumerate(products, start=1):
@@ -380,6 +381,10 @@ def glide_add_product_rows(
             column_values[sr_no_col] = product.index if product.index is not None else position
         if accepted_col:
             column_values[accepted_col] = True
+        # Set by the caller after the workbook is uploaded; only a family line
+        # ever has one, and an upload that did not happen leaves it empty.
+        if annexure_url_col and getattr(product, "annexure_url", ""):
+            column_values[annexure_url_col] = product.annexure_url
 
         mutations.append(
             {
