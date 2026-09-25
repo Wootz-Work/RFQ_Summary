@@ -338,6 +338,8 @@ def glide_add_product_rows(
     addl_files_col = (settings.glide_col_product_addl_files or "").strip()
     sr_no_col = (settings.glide_col_product_sr_no or "").strip()
     accepted_col = (settings.glide_col_product_accepted or "").strip()
+    annexure_url_col = (settings.glide_col_product_annexure_url or "").strip()
+    annexure_file_id_col = (settings.glide_col_product_annexure_file_id or "").strip()
 
     mutations: list[Dict[str, Any]] = []
     for position, product in enumerate(products, start=1):
@@ -380,6 +382,12 @@ def glide_add_product_rows(
             column_values[sr_no_col] = product.index if product.index is not None else position
         if accepted_col:
             column_values[accepted_col] = True
+        # Set by the caller after the workbook is uploaded; only a family line
+        # ever has one, and an upload that did not happen leaves it empty.
+        if annexure_url_col and getattr(product, "annexure_url", ""):
+            column_values[annexure_url_col] = product.annexure_url
+        if annexure_file_id_col and getattr(product, "annexure_file_id", ""):
+            column_values[annexure_file_id_col] = product.annexure_file_id
 
         mutations.append(
             {
@@ -672,3 +680,46 @@ def glide_fetch_last_regenerate_response(settings: Settings, rfq_id: str) -> str
         return ""
     value = (rows[0] or {}).get(resp_col)
     return value.strip() if isinstance(value, str) else ""
+
+
+def glide_fetch_annexure_destination(settings: Settings, rfq_row_id: str) -> tuple[str, str]:
+    """
+    Where this RFQ's annexures go: (drive_id, folder_id) off the ALL RFQ row.
+
+    Both halves travel together because a DriveItem id is only addressable
+    inside its drive. Best-effort: anything missing returns ("", "") and the
+    caller skips the upload — an annexure that did not reach OneDrive must
+    never fail an extraction that otherwise succeeded.
+    """
+    rfq_row_id = (rfq_row_id or "").strip()
+    table = (settings.glide_all_rfq_table or "").strip()
+    drive_col = (settings.glide_col_all_rfq_annexure_drive or "").strip()
+    folder_col = (settings.glide_col_all_rfq_annexure_folder or "").strip()
+    if not (rfq_row_id and table and drive_col and folder_col):
+        return "", ""
+    if not (settings.glide_api_key and settings.glide_app_id):
+        return "", ""
+
+    sql = f'SELECT * FROM "{table}" WHERE "$rowID" = $1 LIMIT 1'
+    try:
+        with httpx.Client(timeout=60) as client:
+            r = client.post(
+                "https://api.glideapp.io/api/function/queryTables",
+                headers=_glide_headers(settings),
+                json={"appID": settings.glide_app_id, "queries": [{"sql": sql, "params": [rfq_row_id]}]},
+            )
+            r.raise_for_status()
+            rows = (r.json() or [])[0].get("rows") or []
+    except Exception as e:
+        print(f"[WARN] glide | could not fetch the annexure destination: {type(e).__name__}: {e}")
+        return "", ""
+
+    if not rows:
+        return "", ""
+    row = rows[0] or {}
+
+    def _text(col: str) -> str:
+        v = row.get(col)
+        return v.strip() if isinstance(v, str) else ""
+
+    return _text(drive_col), _text(folder_col)

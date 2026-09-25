@@ -6,7 +6,9 @@ from typing import Dict, List
 
 from .config import Settings
 from .schema import InputPayload, OutputPayload, QueryPayload, TriageOutputPayload, RfqClassificationInputPayload, RfqClassificationOutputPayload, RfqRegenerateTriageInputPayload, RfqRegenerateTriageOutputPayload, RfqQueryInputPayload, RfqQueryOutputPayload
-from .glide_client import glide_upsert_zai_response_by_rfq_id, glide_update_all_rfq_triage_outputs, glide_update_prospect_rfq_classification, glide_add_zai_regenerate_row, glide_add_product_rows, glide_add_query_rows
+from .glide_client import glide_upsert_zai_response_by_rfq_id, glide_update_all_rfq_triage_outputs, glide_update_prospect_rfq_classification, glide_add_zai_regenerate_row, glide_add_product_rows, glide_add_query_rows, glide_fetch_annexure_destination
+from .onedrive import upload_annexure, upload_configured
+from .quote_sheet import build_family_annexures
 from .gsheet_logger import append_rows, build_chunked_log_rows
 
 
@@ -141,6 +143,81 @@ def write_all(settings: Settings, inp: InputPayload, out: OutputPayload) -> None
     append_rows(settings, rows)
 
 
+def _family_conditions(extraction) -> list:
+    """
+    The lines repeated at the foot of every annexure: what the customer stated
+    for the whole RFQ. Per-line facts are not included — the variance rule
+    inside the builder derives those from the rows themselves.
+    """
+    header = getattr(extraction, "header", None)
+    common = str(getattr(header, "common_conditions", "") or "").strip() if header else ""
+    if not common:
+        return []
+    return [line.strip(" -\u2022\t") for line in common.splitlines() if line.strip(" -\u2022\t")]
+
+
+def _attach_family_annexures(settings: Settings, out, rfq_row_id: str, extraction) -> None:
+    """
+    Build a quotation workbook for each family line, upload it to this RFQ's
+    OneDrive folder, and hang the link on the product so it travels out with
+    the same row write.
+
+    Every step is optional and every failure is swallowed: an RFQ with no
+    families, a row with no folder, an ungranted permission or a dead tenant
+    all leave products without a link, which is what they have today.
+    """
+    if not upload_configured(settings):
+        return
+
+    families = [p for p in extraction.products
+                if str(getattr(p, "structure", "") or "").lower() == "family"]
+    if not families:
+        return
+
+    try:
+        drive_id, folder_id = glide_fetch_annexure_destination(settings, rfq_row_id)
+    except Exception as e:
+        print(f"[WARN] run_id={out.run_id} | annexure destination lookup failed: {type(e).__name__}: {e}")
+        return
+    if not folder_id:
+        print(
+            f"[INFO] run_id={out.run_id} | {len(families)} family line(s) but no annexure folder "
+            f"on the RFQ row — no workbook uploaded"
+        )
+        return
+
+    try:
+        built = build_family_annexures(
+            rfq_ref=rfq_row_id,
+            products=extraction.products,
+            conditions=_family_conditions(extraction),
+        )
+    except Exception as e:
+        print(f"[WARN] run_id={out.run_id} | annexure build failed: {type(e).__name__}: {e}")
+        return
+
+    # build_family_annexures walks products in order and emits one entry per
+    # family it accepts, so zipping onto the same filtered list keeps the link
+    # with the product it was built from.
+    accepted = [p for p in families
+                if getattr(p, "annexure", None)
+                and not getattr(p.annexure, "by_reference", False)
+                and getattr(p.annexure, "rows", None)]
+    uploaded = 0
+    for product, (filename, data) in zip(accepted, built):
+        try:
+            uploaded_file = upload_annexure(settings, drive_id, folder_id, filename, data)
+        except Exception as e:
+            print(f"[WARN] run_id={out.run_id} | annexure upload raised: {type(e).__name__}: {e}")
+            uploaded_file = None
+        if uploaded_file:
+            product.annexure_url = uploaded_file.url
+            product.annexure_file_id = uploaded_file.id
+            uploaded += 1
+
+    print(f"[INFO] run_id={out.run_id} | {uploaded}/{len(built)} annexure workbook(s) uploaded")
+
+
 def _write_extracted_products(settings: Settings, rfq_row_id: str, out: TriageOutputPayload):
     """
     Adds the extracted product line items to the ALL Product table, then their open
@@ -165,6 +242,8 @@ def _write_extracted_products(settings: Settings, rfq_row_id: str, out: TriageOu
             f"{len(extraction.products)} product line(s) not written"
         )
         return 0, 0
+
+    _attach_family_annexures(settings, out, rfq_row_id, extraction)
 
     try:
         row_ids = glide_add_product_rows(settings, rfq_row_id, extraction.products)

@@ -465,6 +465,12 @@ class ExtractedProduct(BaseModel):
     rep_url: _OptStr = None
     addl_files: _StrOrList = Field(default_factory=list)
     annexure: Optional[ProductAnnexure] = None
+    # Filled by the pipeline after the annexure workbook is uploaded, never by
+    # the model — it cannot know where the file landed. The id is the durable
+    # handle: a url changes if the file is renamed or moved, the DriveItem id
+    # does not, and it is what Graph needs to read the file back.
+    annexure_url: _LooseStr = ""
+    annexure_file_id: _LooseStr = ""
     provenance: Dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="before")
