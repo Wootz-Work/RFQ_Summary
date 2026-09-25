@@ -9,9 +9,10 @@ scoped to the one library, or the much broader `Files.ReadWrite.All` — and
 no code change to the token path at all.
 
 Addressing: a DriveItem id (`01DDVW3I…`) is only meaningful inside a drive,
-because Graph has no global `/driveItems/{id}` endpoint. The drive is the
-same for every RFQ, so it is configuration; the folder varies per RFQ and
-comes off the RFQ row.
+because Graph has no global `/driveItems/{id}` endpoint. Both halves come
+off the RFQ row — the drive as well as the folder — so one RFQ can live in
+a different library from another without a redeploy. MS_GRAPH_DRIVE_ID is
+a fallback for a row that carries a folder but no drive.
 
 Nothing here may fail a run. An upload that does not happen costs a link in
 a Glide cell; an exception escaping this module costs the extraction.
@@ -42,17 +43,18 @@ SIMPLE_UPLOAD_LIMIT = 4 * 1024 * 1024
 
 
 def upload_configured(settings: Settings) -> bool:
+    """Graph credentials only: the drive and folder arrive per RFQ, not here."""
     return bool(
         settings.enable_annexure_upload
         and (settings.ms_graph_tenant_id or "").strip()
         and (settings.ms_graph_client_id or "").strip()
         and (settings.ms_graph_client_secret or "").strip()
-        and (settings.ms_graph_drive_id or "").strip()
     )
 
 
 def upload_annexure(
     settings: Settings,
+    drive_id: str,
     folder_id: str,
     filename: str,
     data: bytes,
@@ -70,6 +72,11 @@ def upload_annexure(
     trusting it. Clutter is recoverable; their afternoon is not.
     """
     if not upload_configured(settings):
+        return None
+
+    drive_id = (drive_id or "").strip() or (settings.ms_graph_drive_id or "").strip()
+    if not drive_id:
+        print("[WARN] annexure | no drive id on the RFQ row and no fallback configured — not uploaded")
         return None
 
     folder_id = (folder_id or "").strip()
@@ -100,7 +107,7 @@ def upload_annexure(
         return None
 
     url = (
-        f"{GRAPH}/drives/{settings.ms_graph_drive_id.strip()}/items/{folder_id}:"
+        f"{GRAPH}/drives/{drive_id}/items/{folder_id}:"
         f"/{quote(filename)}:/content"
         f"?@microsoft.graph.conflictBehavior={settings.annexure_conflict_behavior}"
     )
@@ -120,8 +127,8 @@ def upload_annexure(
                 return None
             if r.status_code == 404:
                 print(
-                    f"[WARN] annexure | drive or folder not found (404) — check MS_GRAPH_DRIVE_ID "
-                    f"and that folder {folder_id!r} lives in that drive. Not uploaded."
+                    f"[WARN] annexure | drive or folder not found (404) — check that folder "
+                    f"{folder_id!r} lives in drive {drive_id!r}. Not uploaded."
                 )
                 return None
             r.raise_for_status()

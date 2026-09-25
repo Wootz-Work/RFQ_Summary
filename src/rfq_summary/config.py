@@ -96,10 +96,9 @@ class Settings(BaseSettings):
     ms_graph_save_to_sent_items: bool = Field(default=True, alias="MS_GRAPH_SAVE_TO_SENT_ITEMS")
 
     # --- annexure upload ---------------------------------------------------
-    # The drive every RFQ folder lives in. A DriveItem id is only addressable
-    # inside its drive — Graph has no global /driveItems/{id} — so this is
-    # required even though the folder itself comes off the RFQ row. Starts
-    # "b!"; from GET /users/{upn}/drive or GET /sites/{site}/drives.
+    # Fallback drive, used only when the RFQ row carries no drive id of its
+    # own. Normally both the drive and the folder come off the RFQ row, so a
+    # different RFQ can live in a different library without redeploying.
     ms_graph_drive_id: str = Field(default="", alias="MS_GRAPH_DRIVE_ID")
     enable_annexure_upload: bool = Field(default=True, alias="ENABLE_ANNEXURE_UPLOAD")
     # rename | replace | fail. Defaults to rename: someone is editing these
@@ -227,10 +226,16 @@ class Settings(BaseSettings):
         alias="GLIDE_ALL_RFQ_TABLE",
     )
     glide_col_all_rfq_zai_response: str = Field(default="MANCF", alias="GLIDE_COL_ALL_RFQ_ZAI_RESPONSE")
-    # The OneDrive folder this RFQ's annexures are written to — a Graph
-    # DriveItem id (the 01… form), one folder per RFQ.
+    # Where this RFQ's annexures are written. Both are needed: a DriveItem id
+    # is only addressable inside its drive, since Graph has no global
+    # /driveItems/{id} endpoint.
+    #   folder -> the 01… DriveItem id of the RFQ's own folder
+    #   drive  -> the b!… id of the library that folder lives in
     glide_col_all_rfq_annexure_folder: str = Field(
-        default="Q7vEH", alias="GLIDE_COL_ALL_RFQ_ANNEXURE_FOLDER"
+        default="QZRyl", alias="GLIDE_COL_ALL_RFQ_ANNEXURE_FOLDER"
+    )
+    glide_col_all_rfq_annexure_drive: str = Field(
+        default="zm9TN", alias="GLIDE_COL_ALL_RFQ_ANNEXURE_DRIVE"
     )
     glide_col_all_rfq_costing_order_of_magnitude: str = Field(
         default="AEa95",

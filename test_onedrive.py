@@ -20,6 +20,7 @@ from rfq_summary.config import Settings
 from rfq_summary.onedrive import upload_annexure, upload_configured
 
 ITEM = "01DDVW3I6ABM4C6R67VZDLDASFKPWZK3PY"      # a real DriveItem id shape
+DRIVE = "b!TESTDRIVE"                             # comes off the RFQ row now
 GUID = "f2819368-d725-44fe-962f-07a97b0922d3"    # a SharePoint UniqueId
 XLSX = b"PK\x03\x04 pretend workbook"
 
@@ -88,20 +89,30 @@ def run(fn, queue=None):
 
 
 # ---- configuration gate ----------------------------------------------------
-check("configured when drive and graph creds are present", upload_configured(_settings()))
-check("no drive id means not configured", not upload_configured(_settings(MS_GRAPH_DRIVE_ID="")))
+check("configured on graph creds alone — drive arrives per RFQ", upload_configured(_settings()))
+check("no drive setting is fine; the RFQ row supplies it",
+      upload_configured(_settings(MS_GRAPH_DRIVE_ID="")))
 check("kill switch respected", not upload_configured(_settings(ENABLE_ANNEXURE_UPLOAD="false")))
 check("missing client secret means not configured",
       not upload_configured(_settings(MS_GRAPH_CLIENT_SECRET="")))
-check("unconfigured returns None rather than raising",
-      run(lambda: upload_annexure(_settings(MS_GRAPH_DRIVE_ID=""), ITEM, "a.xlsx", XLSX)) is None)
+check("no drive anywhere returns None rather than raising",
+      run(lambda: upload_annexure(_settings(MS_GRAPH_DRIVE_ID=""), "", ITEM, "a.xlsx", XLSX)) is None)
+check("the configured drive is used as a fallback when the row has none",
+      run(lambda: upload_annexure(_settings(MS_GRAPH_DRIVE_ID="b!FALLBACK"), "", ITEM, "a.xlsx", XLSX))
+      is not None)
+check("and the fallback drive is the one addressed",
+      "/drives/b!FALLBACK/" in [c for c in _Client.calls if c["verb"] == "PUT"][0]["url"])
+check("a drive on the row overrides the configured fallback",
+      "/drives/b!TESTDRIVE/" in run(lambda: (
+          upload_annexure(_settings(MS_GRAPH_DRIVE_ID="b!FALLBACK"), DRIVE, ITEM, "a.xlsx", XLSX),
+          [c for c in _Client.calls if c["verb"] == "PUT"][0]["url"])[1]))
 
 
 # ---- the happy path --------------------------------------------------------
-link = run(lambda: upload_annexure(_settings(), ITEM, "Annexure 1 - Hex Bolts.xlsx", XLSX))
+link = run(lambda: upload_annexure(_settings(), DRIVE, ITEM, "Annexure 1 - Hex Bolts.xlsx", XLSX))
 check("returns the link to the uploaded file", link and link.startswith("https://"), str(link))
 put = [c for c in _Client.calls if c["verb"] == "PUT"][0]
-check("uploads into the drive from config", "/drives/b!TESTDRIVE/" in put["url"], put["url"])
+check("uploads into the drive from the RFQ row", "/drives/b!TESTDRIVE/" in put["url"], put["url"])
 check("into the folder from the RFQ row", f"/items/{ITEM}:" in put["url"], put["url"])
 check("the filename is url-encoded in the path",
       "Annexure%201%20-%20Hex%20Bolts.xlsx" in put["url"], put["url"])
@@ -114,12 +125,12 @@ check("bearer token attached", put["headers"]["Authorization"] == "Bearer tok")
 # ---- never overwrite someone's edits ---------------------------------------
 check("conflicts rename by default",
       "conflictBehavior=rename" in put["url"], put["url"])
-link = run(lambda: upload_annexure(_settings(), ITEM, "a.xlsx", XLSX),
+link = run(lambda: upload_annexure(_settings(), DRIVE, ITEM, "a.xlsx", XLSX),
            queue=[_Resp(201, {"name": "a 1.xlsx", "webUrl": "https://x/a%201.xlsx"})])
 check("a renamed upload still returns its own link", link == "https://x/a%201.xlsx", str(link))
 check("replace is available when explicitly chosen",
       "conflictBehavior=replace" in run(
-          lambda: (upload_annexure(_settings(ANNEXURE_CONFLICT_BEHAVIOR="replace"), ITEM, "a.xlsx", XLSX),
+          lambda: (upload_annexure(_settings(ANNEXURE_CONFLICT_BEHAVIOR="replace"), DRIVE, ITEM, "a.xlsx", XLSX),
                    [c for c in _Client.calls if c["verb"] == "PUT"][0]["url"])[1]))
 
 
@@ -129,32 +140,32 @@ called = []
 
 def _spy():
     _Client.calls = []
-    return upload_annexure(_settings(), GUID, "a.xlsx", XLSX)
+    return upload_annexure(_settings(), DRIVE, GUID, "a.xlsx", XLSX)
 
 
 check("a SharePoint UniqueId (GUID) is refused, not sent", run(_spy) is None)
 check("and no request was attempted", not [c for c in _Client.calls if c["verb"] == "PUT"])
 check("an empty folder id is refused",
-      run(lambda: upload_annexure(_settings(), "", "a.xlsx", XLSX)) is None)
+      run(lambda: upload_annexure(_settings(), DRIVE, "", "a.xlsx", XLSX)) is None)
 check("junk is refused",
-      run(lambda: upload_annexure(_settings(), "not an id", "a.xlsx", XLSX)) is None)
+      run(lambda: upload_annexure(_settings(), DRIVE, "not an id", "a.xlsx", XLSX)) is None)
 
 
 # ---- size -------------------------------------------------------------------
 big = b"x" * (5 * 1024 * 1024)
 check("past Graph's 4 MB simple-upload limit is refused rather than truncated",
-      run(lambda: upload_annexure(_settings(), ITEM, "big.xlsx", big)) is None)
+      run(lambda: upload_annexure(_settings(), DRIVE, ITEM, "big.xlsx", big)) is None)
 
 
 # ---- nothing here can fail the run -----------------------------------------
 check("a 403 (no Files/Sites permission) returns None",
-      run(lambda: upload_annexure(_settings(), ITEM, "a.xlsx", XLSX),
+      run(lambda: upload_annexure(_settings(), DRIVE, ITEM, "a.xlsx", XLSX),
           queue=[_Resp(403, text="forbidden")]) is None)
 check("a 404 (wrong drive or folder) returns None",
-      run(lambda: upload_annexure(_settings(), ITEM, "a.xlsx", XLSX),
+      run(lambda: upload_annexure(_settings(), DRIVE, ITEM, "a.xlsx", XLSX),
           queue=[_Resp(404, text="not found")]) is None)
 check("a 500 returns None",
-      run(lambda: upload_annexure(_settings(), ITEM, "a.xlsx", XLSX),
+      run(lambda: upload_annexure(_settings(), DRIVE, ITEM, "a.xlsx", XLSX),
           queue=[_Resp(500, text="boom")]) is None)
 
 
@@ -166,12 +177,12 @@ real_token = onedrive._get_app_token
 onedrive._get_app_token = _token_fails
 try:
     check("a failed token returns None rather than raising",
-          run(lambda: upload_annexure(_settings(), ITEM, "a.xlsx", XLSX)) is None)
+          run(lambda: upload_annexure(_settings(), DRIVE, ITEM, "a.xlsx", XLSX)) is None)
 finally:
     onedrive._get_app_token = real_token
 
 check("a response with no webUrl returns None",
-      run(lambda: upload_annexure(_settings(), ITEM, "a.xlsx", XLSX),
+      run(lambda: upload_annexure(_settings(), DRIVE, ITEM, "a.xlsx", XLSX),
           queue=[_Resp(201, {"name": "a.xlsx"})]) is None)
 
 print("\nALL PASSED" if ok else "\nFAILURES ABOVE")
