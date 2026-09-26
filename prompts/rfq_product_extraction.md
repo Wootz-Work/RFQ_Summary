@@ -203,9 +203,9 @@ A bolt and washer delivered as a SEMS assembly is one line. A pump skid with tan
 
 **Family** — one line plus annexure. Use when variation holds and either the variant count is 6 or more or the customer presented them as a table. Outliers split out: thirteen zinc-plated washers and one stainless is two lines. Annexure columns, dropping any that don't apply:
 
-`variant_ref · description · standard · key_dimensions · material · finish · drawing_ref · quantity · target_price · notes`
+`part_number · description · standard · key_dimensions · material · finish · drawing_ref · quantity · target_price · notes`
 
-Preserve the customer's own row references and order. If the customer's workbook will travel with the RFQ, set `annexure.by_reference: true`, name the file, and set Qty to `As per annexure`.
+`part_number` is the customer's own part, stock or item code, and only when they gave one — never a serial number, a row count or a reference you make up to tell rows apart. With no code, leave the column out and let `description` (or the part name) identify the row. Preserve the customer's row order. If the customer's workbook will travel with the RFQ, set `annexure.by_reference: true`, name the file, and set Qty to `As per annexure`.
 
 **System** — one line plus a subsystem list in Specification, each with its own quantity:
 

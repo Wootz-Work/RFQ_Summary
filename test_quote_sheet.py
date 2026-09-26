@@ -56,6 +56,10 @@ def headers_of(ws):
     return [ws.cell(row=6, column=i).value for i in range(1, ws.max_column + 1)]
 
 
+def sheet_text(ws):
+    return "\n".join(str(c.value) for row in ws.iter_rows() for c in row if c.value is not None)
+
+
 # ---- the variance rule -----------------------------------------------------
 varying, constants = split_constant_columns(family(), SPEC)
 check("a column that varies stays a column", "Size" in varying and "Qty — annual" in varying, str(varying))
@@ -119,7 +123,7 @@ data = build_quote_sheet(
 ws = opened(data)
 hdr = headers_of(ws)
 
-check("Sr leads the sheet", hdr[0] == "Sr", str(hdr))
+check("the part code leads the sheet — no serial-number column", hdr[0] == "Item code" and "Sr" not in hdr, str(hdr))
 check("the constant column is absent from the header", "Standard" not in hdr, str(hdr))
 check("the varying columns are present", "Size" in hdr and "Qty — annual" in hdr, str(hdr))
 # Finish is identical on every row in this fixture, so it belongs in the
@@ -127,7 +131,8 @@ check("the varying columns are present", "Size" in hdr and "Qty — annual" in h
 check("a second constant column also collapses", "Finish" not in hdr, str(hdr))
 check("every supplier column is present",
       all(q.name in hdr for q in DEFAULT_QUOTE_COLUMNS), str(hdr))
-check("one grid row per SKU", ws.cell(row=12, column=1).value == 6 and ws.cell(row=13, column=1).value is None)
+check("one grid row per SKU", ws.cell(row=12, column=1).value == "STD-M32" and ws.cell(row=13, column=1).value is None,
+      str(ws.cell(row=12, column=1).value))
 
 body = "\n".join(str(c.value) for row in ws.iter_rows() for c in row if c.value)
 check("the passed condition appears once", body.count("50 µm hot dip galvanisation") == 1)
@@ -136,7 +141,7 @@ check("the constant value is not repeated down the grid", body.count("DIN 976") 
 
 check("supplier cells are left empty for them to fill",
       ws.cell(row=7, column=len(hdr)).value is None)
-check("the grid is frozen so identity stays visible", ws.freeze_panes == "D7", str(ws.freeze_panes))
+check("the grid is frozen so identity stays visible", ws.freeze_panes == "C7", str(ws.freeze_panes))
 check("the header row repeats when printed",
       str(ws.print_title_rows).replace("$", "") == "6:6", str(ws.print_title_rows))
 check("an autofilter covers the grid", ws.auto_filter.ref.startswith("A6:"), str(ws.auto_filter.ref))
@@ -177,7 +182,7 @@ data = build_quote_sheet(rfq_ref="R", title="Big Family", rows=big,
                          spec_columns=["Item code", "Description", "Size", "Finish", "Qty — annual"])
 elapsed = time.perf_counter() - t0
 ws = opened(data)
-check("300 SKUs all land in the grid", ws.cell(row=306, column=1).value == 300, str(ws.cell(row=306, column=1).value))
+check("300 SKUs all land in the grid", ws.cell(row=306, column=1).value == "P-0299", str(ws.cell(row=306, column=1).value))
 check(f"300 SKUs build quickly ({elapsed:.2f}s, {len(data)/1024:.0f} KB)", elapsed < 5.0, f"{elapsed:.2f}s")
 
 # ---- filename --------------------------------------------------------------
@@ -217,8 +222,8 @@ class _Product:
         self.name, self.structure, self.annexure = name, structure, annexure
 
 
-COLS = ["variant_ref", "size", "finish", "quantity"]
-VROWS = [[f"V{i}", f"M{8 + i * 2}", "HDG 50 µm", str(100 + i)] for i in range(8)]
+COLS = ["part_number", "size", "finish", "quantity"]
+VROWS = [[f"HB-{i:03d}", f"M{8 + i * 2}", "HDG 50 µm", str(100 + i)] for i in range(8)]
 
 built = build_family_annexures(rfq_ref="WZ-1", products=[
     _Product("Hex Bolts (family)", "family", _Annexure(COLS, VROWS)),
@@ -240,7 +245,7 @@ check("the customer's own workbook is not replaced by ours",
 ws = load_workbook(io.BytesIO(built[0][1]))["Quote Sheet"]
 check("the sheet is titled for its family",
       "Hex Bolts" in str(ws.cell(row=1, column=1).value), str(ws.cell(row=1, column=1).value))
-check("all eight variants are rows", ws.cell(row=14, column=1).value == 8)
+check("all eight variants are rows", ws.cell(row=14, column=1).value == "HB-007", str(ws.cell(row=14, column=1).value))
 
 # An RFQ of four single lines — the real Clint 7 shape — makes no file at all.
 check("an RFQ with no families generates nothing",
@@ -253,6 +258,26 @@ d = build_family_annexures(rfq_ref="WZ-3", products=[
     _Product("Dict Family", "family",
              _Annexure(COLS, [dict(zip(COLS, r)) for r in VROWS]))])
 check("dict-shaped variant rows work too", len(d) == 1 and d[0][0].startswith("Annexure 1 - Dict"))
+
+# ---- nothing a person should not read reaches the sheet ---------------------
+from rfq_summary.sheet_columns import display_header, visible_columns
+leaky = [{"variant_ref": f"V{i}", "sr_no": str(i + 1), "part_number": f"PN-{i}", "description": "Stud",
+          "target_price": "0.42", "size": f"M{10 + i}"} for i in range(4)]
+ws = opened(build_quote_sheet(rfq_ref="R", title="Leaky", rows=leaky,
+                              spec_columns=["variant_ref", "sr_no", "part_number", "description", "target_price", "size"]))
+hdr = headers_of(ws)
+check("a made-up row reference never reaches the sheet", not any("variant" in h.lower() for h in hdr), str(hdr))
+check("nor a serial number", not any(h.lower().startswith("sr") for h in hdr), str(hdr))
+check("the target price never reaches a supplier", not any("target" in h.lower() for h in hdr), str(hdr))
+check("the part number and description do, in plain words",
+      hdr[:2] == ["Part number", "Description"], str(hdr))
+check("a target price anywhere in the body is gone too", "0.42" not in sheet_text(ws))
+check("an 'Item no' that is only 1..N is dropped",
+      visible_columns(["Item no", "Size"], [{"Item no": str(i), "Size": "M8"} for i in range(1, 6)]) == ["Size"])
+check("an 'Item no' that holds real codes stays",
+      visible_columns(["Item no", "Size"], [{"Item no": f"A{i}", "Size": "M8"} for i in range(1, 6)]) == ["Item no", "Size"])
+check("snake-case keys read as words", display_header("key_dimensions") == "Key dimensions")
+check("a customer's own header is left as written", display_header("Qty — annual") == "Qty — annual")
 
 print("\nALL PASSED" if ok else "\nFAILURES ABOVE")
 raise SystemExit(0 if ok else 1)

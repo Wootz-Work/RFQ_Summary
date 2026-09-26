@@ -51,8 +51,8 @@ def _settings(**kw):
     return Settings(**base)
 
 
-COLS = ["variant_ref", "size", "finish", "quantity"]
-ROWS = [[f"V{i}", f"M{8 + i * 2}", "HDG 50 µm", str(100 + i)] for i in range(8)]
+COLS = ["part_number", "size", "finish", "quantity"]
+ROWS = [[f"HB-{i:03d}", f"M{8 + i * 2}", "HDG 50 µm", str(100 + i)] for i in range(8)]
 
 
 def _extraction(*products, common=""):
