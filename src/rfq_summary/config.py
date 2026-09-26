@@ -104,6 +104,25 @@ class Settings(BaseSettings):
     # rename | replace | fail. Defaults to rename: someone is editing these
     # sheets in place, and a regeneration must never overwrite their work.
     annexure_conflict_behavior: str = Field(default="rename", alias="ANNEXURE_CONFLICT_BEHAVIOR")
+
+    # --- internal costing workbook -------------------------------------------
+    # One workbook per RFQ, built at extraction and uploaded to the same folder
+    # as the annexures. Its template is the team's own costing workbook, read
+    # fresh on every run so an edit to the master needs no redeploy: a local
+    # path wins, otherwise the master file's drive + DriveItem id on OneDrive.
+    # With neither, the workbook is still built — generated tabs only, no
+    # Quotation.
+    enable_costing_workbook: bool = Field(default=True, alias="ENABLE_COSTING_WORKBOOK")
+    costing_template_path: str = Field(default="", alias="COSTING_TEMPLATE_PATH")
+    costing_template_drive_id: str = Field(default="", alias="COSTING_TEMPLATE_DRIVE_ID")
+    costing_template_item_id: str = Field(default="", alias="COSTING_TEMPLATE_ITEM_ID")
+    # Starting assumptions written into the legend — all red, all editable in the sheet.
+    costing_currency: str = Field(default="GBP", alias="COSTING_CURRENCY")
+    costing_fx_rate: float = Field(default=120.0, alias="COSTING_FX_RATE")
+    costing_margin: float = Field(default=0.20, alias="COSTING_MARGIN")
+    costing_packaging: float = Field(default=0.02, alias="COSTING_PACKAGING")
+    costing_pallet_capacity_kg: float = Field(default=950.0, alias="COSTING_PALLET_CAPACITY_KG")
+    costing_price_per_pallet: float = Field(default=50000.0, alias="COSTING_PRICE_PER_PALLET")
     email_from_name: str = Field(default="Wootz.Strike", alias="EMAIL_FROM_NAME")
     # The mailbox Graph sends as — must be a real mailbox the app is allowed
     # to send from (Mail.Send with no application access policy covers any
@@ -237,6 +256,9 @@ class Settings(BaseSettings):
     glide_col_all_rfq_annexure_drive: str = Field(
         default="zm9TN", alias="GLIDE_COL_ALL_RFQ_ANNEXURE_DRIVE"
     )
+    # The uploaded costing workbook: its DriveItem id (the durable handle) and its link.
+    glide_col_all_rfq_costing_file_id: str = Field(default="ttqlU", alias="GLIDE_COL_ALL_RFQ_COSTING_FILE_ID")
+    glide_col_all_rfq_costing_url: str = Field(default="Vr8gz", alias="GLIDE_COL_ALL_RFQ_COSTING_URL")
     glide_col_all_rfq_costing_order_of_magnitude: str = Field(
         default="AEa95",
         alias="GLIDE_COL_ALL_RFQ_COSTING_ORDER_OF_MAGNITUDE",
