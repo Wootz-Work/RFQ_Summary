@@ -181,7 +181,8 @@ def _as_workbook_bytes(raw: bytes):
     text = b"".join(raw.split())
     if not text:
         return None, "empty"
-    if not re.fullmatch(rb"[A-Za-z0-9+/]+={0,2}", text):
+    # Base64 of any .xlsx starts "UEsD" (that is "PK\x03\x04"): anything else is not the template.
+    if not text.startswith(b"UEsD") or not re.fullmatch(rb"[A-Za-z0-9+/]+={0,2}", text):
         return None, f"text of {len(text):,} characters that is neither an .xlsx nor base64 of one"
     if len(text) % 4:
         return None, (f"base64 text of {len(text):,} characters that stops mid-way — the paste was cut off "
