@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import httpx
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional
 from .config import Settings
 
 if TYPE_CHECKING:
@@ -702,12 +702,19 @@ def glide_fetch_last_regenerate_response(settings: Settings, rfq_id: str) -> str
     return value.strip() if isinstance(value, str) else ""
 
 
-def glide_fetch_rfq_folder(settings: Settings, rfq_row_id: str) -> tuple[str, str]:
+class RfqFolder(NamedTuple):
+    drive_id: str
+    folder_id: str
+    title: str = ""
+
+
+def glide_fetch_rfq_folder(settings: Settings, rfq_row_id: str) -> RfqFolder:
     """
-    The RFQ's own OneDrive folder: (drive_id, folder_id) off the ALL RFQ row.
+    The RFQ's own OneDrive folder — (drive_id, folder_id) — and its title, off
+    the ALL RFQ row in one query.
 
     Both halves travel together because a DriveItem id is only addressable
-    inside its drive. Best-effort: anything missing returns ("", "") and the
+    inside its drive. Best-effort: anything missing comes back empty and the
     caller skips the upload — a workbook that did not reach OneDrive must
     never fail an extraction that otherwise succeeded.
     """
@@ -715,10 +722,11 @@ def glide_fetch_rfq_folder(settings: Settings, rfq_row_id: str) -> tuple[str, st
     table = (settings.glide_all_rfq_table or "").strip()
     drive_col = (settings.glide_col_all_rfq_onedrive_drive or "").strip()
     folder_col = (settings.glide_col_all_rfq_onedrive_folder or "").strip()
+    title_col = (settings.glide_col_all_rfq_title or "").strip()
     if not (rfq_row_id and table and drive_col and folder_col):
-        return "", ""
+        return RfqFolder("", "")
     if not (settings.glide_api_key and settings.glide_app_id):
-        return "", ""
+        return RfqFolder("", "")
 
     sql = f'SELECT * FROM "{table}" WHERE "$rowID" = $1 LIMIT 1'
     try:
@@ -732,14 +740,14 @@ def glide_fetch_rfq_folder(settings: Settings, rfq_row_id: str) -> tuple[str, st
             rows = (r.json() or [])[0].get("rows") or []
     except Exception as e:
         print(f"[WARN] glide | could not fetch the RFQ folder: {type(e).__name__}: {e}")
-        return "", ""
+        return RfqFolder("", "")
 
     if not rows:
-        return "", ""
+        return RfqFolder("", "")
     row = rows[0] or {}
 
     def _text(col: str) -> str:
         v = row.get(col)
         return v.strip() if isinstance(v, str) else ""
 
-    return _text(drive_col), _text(folder_col)
+    return RfqFolder(_text(drive_col), _text(folder_col), _text(title_col) if title_col else "")

@@ -260,6 +260,8 @@ class Settings(BaseSettings):
         default="zm9TN",
         validation_alias=AliasChoices("GLIDE_COL_ALL_RFQ_ONEDRIVE_DRIVE", "GLIDE_COL_ALL_RFQ_ANNEXURE_DRIVE"),
     )
+    # The RFQ's title — names the costing workbook "Int costing (New) - <title>".
+    glide_col_all_rfq_title: str = Field(default="QdiyR", alias="GLIDE_COL_ALL_RFQ_TITLE")
     # The uploaded costing workbook: its DriveItem id (the durable handle) and its link.
     glide_col_all_rfq_costing_file_id: str = Field(default="ttqlU", alias="GLIDE_COL_ALL_RFQ_COSTING_FILE_ID")
     glide_col_all_rfq_costing_url: str = Field(default="Vr8gz", alias="GLIDE_COL_ALL_RFQ_COSTING_URL")

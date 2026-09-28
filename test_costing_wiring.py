@@ -97,7 +97,7 @@ check("weight is never set from the extraction", all(l.weight.kind == "input" fo
 
 
 # ---- the writeback step ----------------------------------------------------
-def run(settings=None, dest=("b!DRIVE", "01FOLDERIDAAAAAAAAAAAAAAAAAAAA"), upload=None, glide=None, template=None,
+def run(settings=None, dest=("b!DRIVE", "01FOLDERIDAAAAAAAAAAAAAAAAAAAA", ""), upload=None, glide=None, template=None,
         ext=None, title=""):
     calls = {"upload": [], "glide": []}
 
@@ -142,6 +142,10 @@ check("the uploaded file is the generated workbook",
       book.sheetnames == ["(Zai) Summary", "(Zai) Hex Bolts", "(Zai) Individual items"], str(book.sheetnames))
 
 c = run(title="Malabar 1 - Fasteners and Fixings Price List")
+c2 = run(dest=("b!DRIVE", "01FOLDERIDAAAAAAAAAAAAAAAAAAAA", "Malabar 1 - From Glide"),
+         title="Sent in the payload")
+check("the title on the RFQ row (QdiyR) wins over everything",
+      c2["upload"][0]["name"] == "Int costing (New) - Malabar 1 - From Glide.xlsx", c2["upload"][0]["name"])
 check("the RFQ's own title wins when it is sent",
       c["upload"][0]["name"] == "Int costing (New) - Malabar 1 - Fasteners and Fixings Price List.xlsx", c["upload"][0]["name"])
 check("a slash in a title cannot make a path",
@@ -150,7 +154,7 @@ check("a slash in a title cannot make a path",
 check("no title at all falls back to the RFQ id", writer.costing_workbook_filename("", "RFQ1") == "Int costing (New) - RFQ1.xlsx")
 check("switched off means nothing happens", run(settings=_settings(ENABLE_COSTING_WORKBOOK="false"))["upload"] == [])
 check("no graph credentials means nothing happens", run(settings=_settings(MS_GRAPH_CLIENT_SECRET=""))["upload"] == [])
-check("no folder on the RFQ row means nothing is uploaded", run(dest=("b!DRIVE", ""))["upload"] == [])
+check("no folder on the RFQ row means nothing is uploaded", run(dest=("b!DRIVE", "", ""))["upload"] == [])
 c = run(upload=lambda n: None)
 check("an upload that lands nowhere writes no link", c["glide"] == [] and c["result"] is False)
 
@@ -195,6 +199,37 @@ check("no annexure generator left", importlib.util.find_spec("rfq_summary.quote_
 check("no annexure step in the writeback", not hasattr(writer, "_attach_family_annexures"))
 check("product rows no longer carry annexure fields",
       not {"annexure_url", "annexure_file_id"} & set(ExtractedProduct.model_fields))
+
+# ---- the lookup reads the title off the same row ------------------------------
+import httpx
+from rfq_summary import glide_client
+
+
+class _Resp:
+    status_code = 200
+    def raise_for_status(self): pass
+    def json(self): return [{"rows": [{"zm9TN": "b!D", "QZRyl": "01F", "QdiyR": "  Malabar 1 - Fasteners  "}]}]
+
+
+class _Client:
+    sent = []
+    def __init__(self, *a, **k): pass
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+    def post(self, url, headers=None, json=None):
+        _Client.sent.append(json)
+        return _Resp()
+
+
+real = glide_client.httpx.Client
+glide_client.httpx.Client = _Client
+try:
+    got = glide_client.glide_fetch_rfq_folder(_settings(), "RFQ1")
+finally:
+    glide_client.httpx.Client = real
+check("drive, folder and title come back from one query",
+      tuple(got) == ("b!D", "01F", "Malabar 1 - Fasteners") and len(_Client.sent) == 1, str(got))
+check("QdiyR is the default title column", _settings().glide_col_all_rfq_title == "QdiyR")
 
 print("\nALL PASSED" if ok else "\nFAILURES ABOVE")
 raise SystemExit(0 if ok else 1)

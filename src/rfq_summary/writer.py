@@ -207,7 +207,7 @@ def _attach_costing_workbook(settings: Settings, out, rfq_row_id: str, extractio
     if not tabs:
         return False
     try:
-        drive_id, folder_id = glide_fetch_rfq_folder(settings, rfq_row_id)
+        drive_id, folder_id, row_title = glide_fetch_rfq_folder(settings, rfq_row_id)
     except Exception as e:
         print(f"[WARN] run_id={out.run_id} | costing workbook destination lookup failed: {type(e).__name__}: {e}")
         return False
@@ -235,9 +235,11 @@ def _attach_costing_workbook(settings: Settings, out, rfq_row_id: str, extractio
             print(f"[WARN] run_id={out.run_id} | costing workbook build failed: {type(e2).__name__}: {e2}")
             return False
 
-    # The RFQ's own title when the caller sent it; the extraction's title otherwise.
+    # The RFQ's own title: from its Glide row (QdiyR), else what the caller sent,
+    # else the title the extraction wrote.
     header = getattr(extraction, "header", None)
-    title = (rfq_title or "").strip() or str(getattr(header, "rfq_title", "") or getattr(header, "project", "") or "").strip()
+    title = ((row_title or "").strip() or (rfq_title or "").strip()
+             or str(getattr(header, "rfq_title", "") or getattr(header, "project", "") or "").strip())
     try:
         uploaded = upload_file(settings, drive_id, folder_id, costing_workbook_filename(title, rfq_row_id), data)
     except Exception as e:
