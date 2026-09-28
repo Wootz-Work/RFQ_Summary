@@ -193,6 +193,22 @@ check("a Render secret file is found with no env var at all",
 writer.DEFAULT_TEMPLATE_PATHS = saved_paths
 os.unlink(f.name)
 
+import base64 as _b64
+real_xlsx = io.BytesIO()
+openpyxl.Workbook().save(real_xlsx)
+with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False, mode="w") as f:
+    text = _b64.b64encode(real_xlsx.getvalue()).decode()
+    f.write("\n".join(text[i:i + 76] for i in range(0, len(text), 76)) + "\n")   # wrapped, as a paste would be
+check("a base64 secret file (text only) is decoded back to the workbook",
+      writer._costing_template(_settings(COSTING_TEMPLATE_PATH=f.name), "r1") == real_xlsx.getvalue())
+with open(f.name, "w") as g:
+    g.write("definitely not a workbook")
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    junk = writer._costing_template(_settings(COSTING_TEMPLATE_PATH=f.name), "r1")
+check("text that is not a workbook is refused, and said so", junk is None and "neither an .xlsx" in buf.getvalue())
+os.unlink(f.name)
+
 # ---- the annexure is gone ------------------------------------------------------
 import importlib.util
 check("no annexure generator left", importlib.util.find_spec("rfq_summary.quote_sheet") is None)

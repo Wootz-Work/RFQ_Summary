@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import re
 from datetime import datetime, timezone
@@ -150,6 +152,22 @@ DEFAULT_TEMPLATE_PATHS = ("/etc/secrets/costing_template.xlsx",)
 _ILLEGAL_FILENAME = re.compile(r'[":<>?/\\|*\x00-\x1f]')
 
 
+def _as_workbook_bytes(raw: bytes):
+    """
+    The template as an .xlsx, whether it arrived as the file itself or as its
+    base64 text — Render's Secret Files only take text, so the second is how
+    it gets there. Anything that is not a zip once decoded is refused.
+    """
+    raw = raw or b""
+    if raw[:2] == b"PK":
+        return raw
+    try:
+        decoded = base64.b64decode(b"".join(raw.split()), validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    return decoded if decoded[:2] == b"PK" else None
+
+
 def _costing_template(settings: Settings, run_id: str):
     """
     The team's master workbook — the tabs a generated workbook is built into
@@ -162,9 +180,10 @@ def _costing_template(settings: Settings, run_id: str):
     for path in paths:
         try:
             with open(path, "rb") as f:
-                data = f.read()
+                data = _as_workbook_bytes(f.read())
             if data:
                 return data
+            print(f"[WARN] run_id={run_id} | {path!r} is neither an .xlsx nor base64 of one — ignored")
         except FileNotFoundError:
             if path == (settings.costing_template_path or "").strip():
                 print(f"[WARN] run_id={run_id} | COSTING_TEMPLATE_PATH {path!r} does not exist")
