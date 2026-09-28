@@ -164,11 +164,10 @@ def _formula(cell, text: str, number_format: Optional[str] = None, bold: bool = 
 
 @dataclass
 class _Built:
-    """What the Quotation and the summary need to know about a built tab."""
+    """What the Quotation needs to know about a built tab."""
     title: str
     rows: List[int]
     col: Dict[str, str]
-    counts: Dict[str, int]
 
 
 def _cost_columns(currency: str) -> List[Tuple[str, int, str]]:
@@ -259,7 +258,6 @@ def _build_tab(wb, tab: Tab, commons: Commons, shared: Dict[str, str], first_tab
     cost_fmt = {h: f for h, _, f in _cost_columns(cur)}
     widths = {h: w for h, _, w in cols}
 
-    counts = {"doubt": 0, "assume": 0, "input": 0}
     rows_out: List[int] = []
     for k, line in enumerate(tab.lines):
         r = first + k
@@ -272,8 +270,6 @@ def _build_tab(wb, tab: Tab, commons: Commons, shared: Dict[str, str], first_tab
 
         def put(h: str, v: Val, fmt: Optional[str] = None):
             _paint(at(h), v, fmt)
-            if v.kind in counts:
-                counts[v.kind] += 1
 
         for h, _w in tab.columns:
             put(h, line.fields.get(h, data(None)))
@@ -409,17 +405,19 @@ def _build_tab(wb, tab: Tab, commons: Commons, shared: Dict[str, str], first_tab
         ws.add_data_validation(dv)
         dv.add(f"{col['Process 1']}{first}:{col[f'Process {PROCESS_SLOTS}']}{last + 50}")
 
-    return _Built(tab.title, rows_out, col, counts)
+    return _Built(tab.title, rows_out, col)
 
 
 # ----------------------------------------------------------------------------- summary
 
-def _build_summary(wb, tabs: List[Tab], built: List[_Built], currency: str) -> str:
-    """Tab-by-tab reconciliation against the source, then an index of every line."""
+ITEM_LIST_COLUMN = "Z"     # hidden: feeds the template's item-name dropdowns (Quotation, ExIm)
+
+
+def _build_summary(wb, tabs: List[Tab], built: List[_Built]) -> str:
+    """Tab-by-tab reconciliation against the source, and what was left out and why."""
     ws = wb.create_sheet(SUMMARY_TITLE)
-    head = ["Tab", "Type", "Source", "Lines in source", "Lines extracted", "Not extracted",
-            "Doubtful (pink)", "Assumed (red)", "To fill in (orange)", "Check"]
-    widths = [24, 12, 36, 10, 10, 10, 10, 10, 10, 34]
+    head = ["Tab", "Type", "Source", "Lines in source", "Lines extracted", "Not extracted", "Check"]
+    widths = [24, 14, 40, 11, 11, 11, 36]
 
     def header_row(r: int, labels: List[str]):
         for i, h in enumerate(labels, 1):
@@ -434,27 +432,23 @@ def _build_summary(wb, tabs: List[Tab], built: List[_Built], currency: str) -> s
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
     r = 2
-    for t, b in zip(tabs, built):
-        src = t.source_lines
-        ext = len(t.lines)
+    for t in tabs:
+        src, ext = t.source_lines, len(t.lines)
         skipped = (src - ext) if src is not None else None
         check = ("All source lines extracted" if skipped == 0 else
                  f"{skipped} line(s) not extracted — see below" if skipped else "Count the source to confirm")
-        vals = [t.title, "Family" if t.kind == "family" else "Individual items", t.source, src, ext, skipped,
-                b.counts["doubt"], b.counts["assume"], b.counts["input"], check]
+        vals = [t.title, "Family" if t.kind == "family" else "Individual items", t.source, src, ext, skipped, check]
         for i, v in enumerate(vals, 1):
             c = ws.cell(r, i, v)
             c.border = _BOX
-            c.font = _font("doubt" if (i == 10 and skipped) else "data")
+            c.font = _font("doubt" if (i == len(vals) and skipped) else "data")
         ws.cell(r, 1).hyperlink = f"#'{t.title}'!A1"
         ws.cell(r, 1).font = Font(size=10, color="1F3864", underline="single")
         r += 1
     total = ["Total", f"{sum(t.kind == 'family' for t in tabs)} families, "
                       f"{sum(len(t.lines) for t in tabs if t.kind == 'individual')} individual items", "",
              sum(t.source_lines or 0 for t in tabs), sum(len(t.lines) for t in tabs),
-             sum(((t.source_lines or len(t.lines)) - len(t.lines)) for t in tabs),
-             sum(b.counts["doubt"] for b in built), sum(b.counts["assume"] for b in built),
-             sum(b.counts["input"] for b in built), ""]
+             sum(((t.source_lines or len(t.lines)) - len(t.lines)) for t in tabs), ""]
     for i, v in enumerate(total, 1):
         c = ws.cell(r, i, v)
         c.font = Font(size=10, bold=True)
@@ -468,39 +462,27 @@ def _build_summary(wb, tabs: List[Tab], built: List[_Built], currency: str) -> s
     r += 1
     if not skipped_rows:
         ws.cell(r, 1, "Nothing — every source line is in a tab").font = Font(size=10, italic=True)
-        r += 1
     for title, s, why in skipped_rows:
         for i, v in enumerate((title, s, why), 1):
-            ws.cell(r, i, v).border = _BOX
+            c = ws.cell(r, i, v)
+            c.border = _BOX
+            c.font = _font("data")
         r += 1
 
-    r += 2
-    ws.cell(r - 1, 1, "Every extracted line").font = Font(size=11, bold=True, color="1F3864")
-    header_row(r, ["Tab", "#", "Item", "Annual qty", "Qty unit", f"DAP / pc ({currency})", "Go to row"])
-    r += 1
-    item_first = r
-    for t, b in zip(tabs, built):
-        dap = b.col[f"DAP / pc ({currency})"]
-        for k, (line, row) in enumerate(zip(t.lines, b.rows), 1):
-            sheet = f"'{t.title}'"
-            vals = [t.title, k, line.label, f"={sheet}!{b.col['Annual qty']}{row}",
-                    f"={sheet}!{b.col['Qty unit']}{row}", f'=IF({sheet}!{dap}{row}="","",{sheet}!{dap}{row})',
-                    f"Row {row}"]
-            for i, v in enumerate(vals, 1):
-                c = ws.cell(r, i, v)
-                c.border = _BOX
-                c.font = _font("calc" if isinstance(v, str) and v.startswith("=") else "data")
-            ws.cell(r, 4).number_format = "#,##0"
-            ws.cell(r, 6).number_format = "0.0000"
-            ws.cell(r, 7).hyperlink = f"#{sheet}!A{row}"
-            ws.cell(r, 7).font = Font(size=10, color="1F3864", underline="single")
-            r += 1
+    # Every item name, in a hidden column: the template's dropdowns used to list the
+    # sample Costing tab's descriptions, and now list what was extracted instead.
+    labels = [line.label for t in tabs for line in t.lines] or [""]
+    for i, label in enumerate(labels, 1):
+        ws[f"{ITEM_LIST_COLUMN}{i}"] = label
+    ws.column_dimensions[ITEM_LIST_COLUMN].hidden = True
+
     ws.freeze_panes = "A2"
     ws.page_setup.orientation = "landscape"
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.page_setup.fitToWidth, ws.page_setup.fitToHeight = 1, 0
-    items =f"'{SUMMARY_TITLE}'!$C${item_first}:$C${max(item_first, r - 1)}"
-    wb.defined_names["ZaiItems"] = DefinedName("ZaiItems", attr_text=items)
+    col = ITEM_LIST_COLUMN
+    wb.defined_names["ZaiItems"] = DefinedName(
+        "ZaiItems", attr_text=f"'{SUMMARY_TITLE}'!${col}$1:${col}${len(labels)}")
     return "ZaiItems"
 
 
@@ -732,7 +714,7 @@ def build_costing_workbook(tabs: List[Tab], *, template: Optional[bytes] = None,
 
     shared: Dict[str, str] = {}
     built = [_build_tab(wb, t, commons, shared, first_tab=(i == 0)) for i, t in enumerate(tabs)]
-    items_name = _build_summary(wb, tabs, built, commons.currency)
+    items_name = _build_summary(wb, tabs, built)
 
     order = [SUMMARY_TITLE] + [b.title for b in built]
     for pos, title in enumerate(order):
@@ -806,6 +788,19 @@ def _width(header: str, values: List[Any], cap: int = 40) -> int:
     return max(8, min(cap, max([len(str(header))] + [len(str(v or "")) for v in values]) + 2))
 
 
+def _annexure_rows_as_dicts(annexure: Any) -> List[Dict[str, str]]:
+    """Variant rows reach us as lists (positional) or dicts."""
+    columns = [str(c) for c in (getattr(annexure, "columns", None) or [])]
+    out: List[Dict[str, str]] = []
+    for row in getattr(annexure, "rows", None) or []:
+        if isinstance(row, dict):
+            out.append({c: str(row.get(c, "") or "") for c in columns})
+        elif isinstance(row, (list, tuple)):
+            out.append({c: (str(row[i]) if i < len(row) and row[i] is not None else "")
+                        for i, c in enumerate(columns)})
+    return out
+
+
 def tabs_from_extraction(extraction: Any) -> List[Tab]:
     """
     Turn a product extraction into workbook tabs: one per family, one for the rest.
@@ -815,7 +810,6 @@ def tabs_from_extraction(extraction: Any) -> List[Tab]:
     the product-level quantity turns red when the extraction marked it derived.
     Weight and rates are never set here — they are the team's to fill.
     """
-    from .quote_sheet import _annexure_rows_as_dicts
     from .sheet_columns import display_header, visible_columns
 
     tabs: List[Tab] = []

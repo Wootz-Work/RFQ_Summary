@@ -6,8 +6,6 @@ sometimes carries bookkeeping along with them: a serial number, a row index, a
 reference the model made up to keep variants apart. None of that belongs in a
 sheet a person reads. What does belong is the part number and the description
 or part name, when the customer gave them.
-
-Supplier-facing sheets drop the target price as well — whatever it is called.
 """
 from __future__ import annotations
 
@@ -21,7 +19,6 @@ _SERIAL_HEADER = re.compile(
     r"row(\s*(no\.?|id|index|ref))?|index|idx|line\s*(no\.?|index)|variant[\s_]*(ref|id|index|no))\s*$",
     re.IGNORECASE,
 )
-_TARGET_PRICE = re.compile(r"target[\s_]*(price|cost|rate)", re.IGNORECASE)
 
 _LABELS = {
     "part_number": "Part number",
@@ -59,19 +56,16 @@ def _is_running_count(values: Sequence[Any]) -> bool:
     return len(nums) >= 2 and nums == list(range(nums[0], nums[0] + len(nums))) and nums[0] in (0, 1)
 
 
-def visible_columns(columns: Sequence[Any], rows: Sequence[Dict[str, Any]] = (),
-                    supplier_facing: bool = False) -> List[str]:
+def visible_columns(columns: Sequence[Any], rows: Sequence[Dict[str, Any]] = ()) -> List[str]:
     """The columns worth showing, in their original order.
 
-    Drops serial numbers and made-up row references by name, any column whose
-    values are just 1..N, and — on anything a supplier will see — the target price.
+    Drops serial numbers and made-up row references by name, and any column
+    whose values are just 1..N.
     """
     out = []
     for c in columns:
         key = str(c)
         if _SERIAL_HEADER.match(key.replace("_", " ")):
-            continue
-        if supplier_facing and _TARGET_PRICE.search(key):
             continue
         if rows and _is_running_count([r.get(key) for r in rows]):
             continue

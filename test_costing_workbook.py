@@ -113,14 +113,32 @@ check("the process list can grow past the visible rows",
       "200" not in "" and any("ZaiProcesses" in n for n in book.defined_names))
 
 s = book[SUMMARY_TITLE]
-rows = {s.cell(r, 1).value: [s.cell(r, c).value for c in range(1, 11)] for r in range(2, 5)}
+head = [s.cell(1, c).value for c in range(1, 8)]
+check("summary columns: no pink / red / orange counts",
+      head == ["Tab", "Type", "Source", "Lines in source", "Lines extracted", "Not extracted", "Check"], str(head))
+rows = {s.cell(r, 1).value: [s.cell(r, c).value for c in range(1, 8)] for r in range(2, 5)}
 w = rows.get("(Zai) Washers")
 check("summary: source vs extracted per tab", w and w[3] == 4 and w[4] == 3 and w[5] == 1, str(w))
-check("summary: a gap is called out", w and "not extracted" in str(w[9]), str(w))
-check("summary: doubtful and to-fill counts", w and w[6] == 1 and w[8] >= 3, str(w))
-body = [s.cell(r, c).value for r in range(1, s.max_row + 1) for c in range(1, 4)]
-check("summary lists what was skipped and why", "Only a standard, no item" in body)
-check("summary indexes every line", "Cover" in body and "M10 Flat Washer" in body)
+check("summary: a gap is called out", w and "not extracted" in str(w[6]), str(w))
+visible = [s.cell(r, c).value for r in range(1, s.max_row + 1) for c in range(1, 8)]
+check("summary lists what was skipped and why", "Only a standard, no item" in visible)
+check("summary no longer lists every line", "M10 Flat Washer" not in visible and "Every extracted line" not in visible)
+check("item names kept only in a hidden column, for the dropdowns",
+      s.column_dimensions["Z"].hidden and s["Z1"].value == "M8 Flat Washer")
+
+
+# ---- column names a person reads ---------------------------------------------
+from rfq_summary.sheet_columns import display_header, visible_columns
+leaky = [{"variant_ref": f"V{i}", "sr_no": str(i + 1), "part_number": f"PN-{i}", "size": f"M{10 + i}"} for i in range(4)]
+check("made-up references and serial numbers are dropped",
+      visible_columns(["variant_ref", "sr_no", "part_number", "size"], leaky) == ["part_number", "size"])
+check("an 'Item no' that is only 1..N is dropped",
+      visible_columns(["Item no", "Size"], [{"Item no": str(i), "Size": "M8"} for i in range(1, 6)]) == ["Size"])
+check("an 'Item no' that holds real codes stays",
+      visible_columns(["Item no", "Size"], [{"Item no": f"A{i}", "Size": "M8"} for i in range(1, 6)]) == ["Item no", "Size"])
+check("snake-case keys read as words", display_header("key_dimensions") == "Key dimensions"
+      and display_header("part_number") == "Part number")
+check("a customer's own header is left as written", display_header("Qty — annual") == "Qty — annual")
 
 
 # ---- a template ------------------------------------------------------------

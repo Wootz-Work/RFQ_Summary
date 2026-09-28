@@ -7,10 +7,9 @@ from typing import Dict, List
 
 from .config import Settings
 from .schema import InputPayload, OutputPayload, QueryPayload, TriageOutputPayload, RfqClassificationInputPayload, RfqClassificationOutputPayload, RfqRegenerateTriageInputPayload, RfqRegenerateTriageOutputPayload, RfqQueryInputPayload, RfqQueryOutputPayload
-from .glide_client import glide_upsert_zai_response_by_rfq_id, glide_update_all_rfq_triage_outputs, glide_update_prospect_rfq_classification, glide_add_zai_regenerate_row, glide_add_product_rows, glide_add_query_rows, glide_fetch_annexure_destination, glide_set_all_rfq_columns
+from .glide_client import glide_upsert_zai_response_by_rfq_id, glide_update_all_rfq_triage_outputs, glide_update_prospect_rfq_classification, glide_add_zai_regenerate_row, glide_add_product_rows, glide_add_query_rows, glide_fetch_rfq_folder, glide_set_all_rfq_columns
 from .costing_workbook import Commons, build_costing_workbook, tabs_from_extraction
-from .onedrive import download_file, upload_annexure, upload_configured
-from .quote_sheet import _ILLEGAL_FILENAME, build_family_annexures
+from .onedrive import download_file, upload_file, upload_configured
 from .gsheet_logger import append_rows, build_chunked_log_rows
 
 
@@ -145,88 +144,30 @@ def write_all(settings: Settings, inp: InputPayload, out: OutputPayload) -> None
     append_rows(settings, rows)
 
 
-def _family_conditions(extraction) -> list:
-    """
-    The lines repeated at the foot of every annexure: what the customer stated
-    for the whole RFQ. Per-line facts are not included — the variance rule
-    inside the builder derives those from the rows themselves.
-    """
-    header = getattr(extraction, "header", None)
-    common = str(getattr(header, "common_conditions", "") or "").strip() if header else ""
-    if not common:
-        return []
-    return [line.strip(" -\u2022\t") for line in common.splitlines() if line.strip(" -\u2022\t")]
-
-
-def _attach_family_annexures(settings: Settings, out, rfq_row_id: str, extraction) -> None:
-    """
-    Build a quotation workbook for each family line, upload it to this RFQ's
-    OneDrive folder, and hang the link on the product so it travels out with
-    the same row write.
-
-    Every step is optional and every failure is swallowed: an RFQ with no
-    families, a row with no folder, an ungranted permission or a dead tenant
-    all leave products without a link, which is what they have today.
-    """
-    if not upload_configured(settings):
-        return
-
-    families = [p for p in extraction.products
-                if str(getattr(p, "structure", "") or "").lower() == "family"]
-    if not families:
-        return
-
-    try:
-        drive_id, folder_id = glide_fetch_annexure_destination(settings, rfq_row_id)
-    except Exception as e:
-        print(f"[WARN] run_id={out.run_id} | annexure destination lookup failed: {type(e).__name__}: {e}")
-        return
-    if not folder_id:
-        print(
-            f"[INFO] run_id={out.run_id} | {len(families)} family line(s) but no annexure folder "
-            f"on the RFQ row — no workbook uploaded"
-        )
-        return
-
-    try:
-        built = build_family_annexures(
-            rfq_ref=rfq_row_id,
-            products=extraction.products,
-            conditions=_family_conditions(extraction),
-        )
-    except Exception as e:
-        print(f"[WARN] run_id={out.run_id} | annexure build failed: {type(e).__name__}: {e}")
-        return
-
-    # build_family_annexures walks products in order and emits one entry per
-    # family it accepts, so zipping onto the same filtered list keeps the link
-    # with the product it was built from.
-    accepted = [p for p in families
-                if getattr(p, "annexure", None)
-                and not getattr(p.annexure, "by_reference", False)
-                and getattr(p.annexure, "rows", None)]
-    uploaded = 0
-    for product, (filename, data) in zip(accepted, built):
-        try:
-            uploaded_file = upload_annexure(settings, drive_id, folder_id, filename, data)
-        except Exception as e:
-            print(f"[WARN] run_id={out.run_id} | annexure upload raised: {type(e).__name__}: {e}")
-            uploaded_file = None
-        if uploaded_file:
-            product.annexure_url = uploaded_file.url
-            product.annexure_file_id = uploaded_file.id
-            uploaded += 1
-
-    print(f"[INFO] run_id={out.run_id} | {uploaded}/{len(built)} annexure workbook(s) uploaded")
+# Render "Secret Files" land here. Dropping the master template in as a secret file
+# named costing_template.xlsx is enough — no env var, and it never enters git.
+DEFAULT_TEMPLATE_PATHS = ("/etc/secrets/costing_template.xlsx",)
+_ILLEGAL_FILENAME = re.compile(r'[":<>?/\\|*\x00-\x1f]')
 
 
 def _costing_template(settings: Settings, run_id: str):
-    """The team's master workbook: a local path first, then OneDrive. None means build without it."""
-    path = (settings.costing_template_path or "").strip()
-    if path:
+    """
+    The team's master workbook — the tabs a generated workbook is built into
+    (Quotation, Back-end, insights). Looked for at the configured path, then as
+    a Render secret file, then on OneDrive. Without it the workbook carries the
+    generated tabs only, and the log says so loudly: that is the one case a
+    reader of the uploaded file would otherwise just see as "tabs missing".
+    """
+    paths = [p for p in [(settings.costing_template_path or "").strip()] if p] + list(DEFAULT_TEMPLATE_PATHS)
+    for path in paths:
         try:
             with open(path, "rb") as f:
-                return f.read()
+                data = f.read()
+            if data:
+                return data
+        except FileNotFoundError:
+            if path == (settings.costing_template_path or "").strip():
+                print(f"[WARN] run_id={run_id} | COSTING_TEMPLATE_PATH {path!r} does not exist")
         except OSError as e:
             print(f"[WARN] run_id={run_id} | costing template not readable at {path!r}: {e}")
     if (settings.costing_template_item_id or "").strip():
@@ -234,21 +175,25 @@ def _costing_template(settings: Settings, run_id: str):
                              settings.costing_template_item_id)
         if data:
             return data
-        print(f"[WARN] run_id={run_id} | costing template could not be downloaded — building without it")
+        print(f"[WARN] run_id={run_id} | costing template could not be downloaded from OneDrive")
+    print(f"[WARN] run_id={run_id} | NO COSTING TEMPLATE — the workbook will have the (Zai) tabs only, "
+          f"without Quotation / Back-end / ExIm / Volza. Add it as a Render secret file named "
+          f"costing_template.xlsx, or set COSTING_TEMPLATE_PATH or COSTING_TEMPLATE_ITEM_ID.")
     return None
 
 
 def costing_workbook_filename(title: str, rfq_row_id: str) -> str:
+    """`Int costing (New) - <RFQ title>.xlsx` — the team's naming, marked as generated."""
     name = re.sub(r"\s+", " ", _ILLEGAL_FILENAME.sub(" ", title or "")).strip(" .")[:80].rstrip(" .")
-    return f"Int Costing - {name or rfq_row_id or 'RFQ'}.xlsx"
+    return f"Int costing (New) - {name or rfq_row_id or 'RFQ'}.xlsx"
 
 
-def _attach_costing_workbook(settings: Settings, out, rfq_row_id: str, extraction) -> bool:
+def _attach_costing_workbook(settings: Settings, out, rfq_row_id: str, extraction, rfq_title: str = "") -> bool:
     """
     Build the internal costing workbook for this RFQ, upload it to the RFQ's
     folder, and put its file id and link on the ALL RFQ row.
 
-    Best-effort from end to end, like the annexures: no folder, no permission,
+    Best-effort from end to end: no folder, no permission,
     a bad template or a Glide hiccup all leave the RFQ without a workbook link
     and never cost the extraction. Returns True only when the link was written.
     """
@@ -262,7 +207,7 @@ def _attach_costing_workbook(settings: Settings, out, rfq_row_id: str, extractio
     if not tabs:
         return False
     try:
-        drive_id, folder_id = glide_fetch_annexure_destination(settings, rfq_row_id)
+        drive_id, folder_id = glide_fetch_rfq_folder(settings, rfq_row_id)
     except Exception as e:
         print(f"[WARN] run_id={out.run_id} | costing workbook destination lookup failed: {type(e).__name__}: {e}")
         return False
@@ -290,10 +235,11 @@ def _attach_costing_workbook(settings: Settings, out, rfq_row_id: str, extractio
             print(f"[WARN] run_id={out.run_id} | costing workbook build failed: {type(e2).__name__}: {e2}")
             return False
 
+    # The RFQ's own title when the caller sent it; the extraction's title otherwise.
     header = getattr(extraction, "header", None)
-    title = str(getattr(header, "rfq_title", "") or getattr(header, "project", "") or "").strip()
+    title = (rfq_title or "").strip() or str(getattr(header, "rfq_title", "") or getattr(header, "project", "") or "").strip()
     try:
-        uploaded = upload_annexure(settings, drive_id, folder_id, costing_workbook_filename(title, rfq_row_id), data)
+        uploaded = upload_file(settings, drive_id, folder_id, costing_workbook_filename(title, rfq_row_id), data)
     except Exception as e:
         print(f"[WARN] run_id={out.run_id} | costing workbook upload raised: {type(e).__name__}: {e}")
         uploaded = None
@@ -314,7 +260,7 @@ def _attach_costing_workbook(settings: Settings, out, rfq_row_id: str, extractio
     return True
 
 
-def _write_extracted_products(settings: Settings, rfq_row_id: str, out: TriageOutputPayload):
+def _write_extracted_products(settings: Settings, rfq_row_id: str, out: TriageOutputPayload, rfq_title: str = ""):
     """
     Adds the extracted product line items to the ALL Product table, then their open
     questions to the queries table, linked by the Row IDs Glide returns.
@@ -339,8 +285,7 @@ def _write_extracted_products(settings: Settings, rfq_row_id: str, out: TriageOu
         )
         return 0, 0
 
-    _attach_family_annexures(settings, out, rfq_row_id, extraction)
-    _attach_costing_workbook(settings, out, rfq_row_id, extraction)
+    _attach_costing_workbook(settings, out, rfq_row_id, extraction, rfq_title)
 
     try:
         row_ids = glide_add_product_rows(settings, rfq_row_id, extraction.products)
@@ -390,7 +335,8 @@ def write_products(settings: Settings, inp: QueryPayload, out: TriageOutputPaylo
     Runs after write_triage, so the ZAI response is already in Glide by the time
     anything here happens.
     """
-    products_written, queries_written = _write_extracted_products(settings, out.row_id, out)
+    products_written, queries_written = _write_extracted_products(settings, out.row_id, out,
+                                                                  getattr(inp, "title", "") or "")
 
     rows = build_chunked_log_rows(
         settings=settings,
