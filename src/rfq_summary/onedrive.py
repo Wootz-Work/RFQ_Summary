@@ -164,3 +164,28 @@ def upload_annexure(
         return None
     print(f"[INFO] annexure | uploaded '{name}' ({len(data) / 1024:.0f} KB) id={item_id or '(none)'}")
     return UploadedFile(id=item_id, url=link, name=name)
+
+
+def download_file(settings: Settings, drive_id: str, item_id: str) -> Optional[bytes]:
+    """
+    Read one file's bytes by DriveItem id — used for the master costing
+    template, so the team can edit it on OneDrive without a redeploy.
+    None on anything short of a clean download, never an exception.
+    """
+    if not upload_configured(settings):
+        return None
+    drive_id, item_id = (drive_id or "").strip(), (item_id or "").strip()
+    if not (drive_id and item_id):
+        return None
+    try:
+        token = _get_app_token(settings)
+        with httpx.Client(timeout=settings.ms_graph_timeout_sec, follow_redirects=True) as client:
+            r = client.get(f"{GRAPH}/drives/{drive_id}/items/{item_id}/content",
+                           headers={"Authorization": f"Bearer {token}"})
+        if r.status_code != 200:
+            print(f"[WARN] onedrive | template download returned {r.status_code}: {(r.text or '')[:200]}")
+            return None
+        return r.content or None
+    except Exception as e:
+        print(f"[WARN] onedrive | template download failed: {type(e).__name__}: {e}")
+        return None

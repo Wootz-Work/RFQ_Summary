@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from typing import Dict, List
 
 from .config import Settings
 from .schema import InputPayload, OutputPayload, QueryPayload, TriageOutputPayload, RfqClassificationInputPayload, RfqClassificationOutputPayload, RfqRegenerateTriageInputPayload, RfqRegenerateTriageOutputPayload, RfqQueryInputPayload, RfqQueryOutputPayload
-from .glide_client import glide_upsert_zai_response_by_rfq_id, glide_update_all_rfq_triage_outputs, glide_update_prospect_rfq_classification, glide_add_zai_regenerate_row, glide_add_product_rows, glide_add_query_rows, glide_fetch_annexure_destination
-from .onedrive import upload_annexure, upload_configured
-from .quote_sheet import build_family_annexures
+from .glide_client import glide_upsert_zai_response_by_rfq_id, glide_update_all_rfq_triage_outputs, glide_update_prospect_rfq_classification, glide_add_zai_regenerate_row, glide_add_product_rows, glide_add_query_rows, glide_fetch_annexure_destination, glide_set_all_rfq_columns
+from .costing_workbook import Commons, build_costing_workbook, tabs_from_extraction
+from .onedrive import download_file, upload_annexure, upload_configured
+from .quote_sheet import _ILLEGAL_FILENAME, build_family_annexures
 from .gsheet_logger import append_rows, build_chunked_log_rows
 
 
@@ -218,6 +220,100 @@ def _attach_family_annexures(settings: Settings, out, rfq_row_id: str, extractio
     print(f"[INFO] run_id={out.run_id} | {uploaded}/{len(built)} annexure workbook(s) uploaded")
 
 
+def _costing_template(settings: Settings, run_id: str):
+    """The team's master workbook: a local path first, then OneDrive. None means build without it."""
+    path = (settings.costing_template_path or "").strip()
+    if path:
+        try:
+            with open(path, "rb") as f:
+                return f.read()
+        except OSError as e:
+            print(f"[WARN] run_id={run_id} | costing template not readable at {path!r}: {e}")
+    if (settings.costing_template_item_id or "").strip():
+        data = download_file(settings, settings.costing_template_drive_id or settings.ms_graph_drive_id,
+                             settings.costing_template_item_id)
+        if data:
+            return data
+        print(f"[WARN] run_id={run_id} | costing template could not be downloaded — building without it")
+    return None
+
+
+def costing_workbook_filename(title: str, rfq_row_id: str) -> str:
+    name = re.sub(r"\s+", " ", _ILLEGAL_FILENAME.sub(" ", title or "")).strip(" .")[:80].rstrip(" .")
+    return f"Int Costing - {name or rfq_row_id or 'RFQ'}.xlsx"
+
+
+def _attach_costing_workbook(settings: Settings, out, rfq_row_id: str, extraction) -> bool:
+    """
+    Build the internal costing workbook for this RFQ, upload it to the RFQ's
+    folder, and put its file id and link on the ALL RFQ row.
+
+    Best-effort from end to end, like the annexures: no folder, no permission,
+    a bad template or a Glide hiccup all leave the RFQ without a workbook link
+    and never cost the extraction. Returns True only when the link was written.
+    """
+    if not settings.enable_costing_workbook or not upload_configured(settings):
+        return False
+    try:
+        tabs = tabs_from_extraction(extraction)
+    except Exception as e:
+        print(f"[WARN] run_id={out.run_id} | costing tabs could not be built: {type(e).__name__}: {e}")
+        return False
+    if not tabs:
+        return False
+    try:
+        drive_id, folder_id = glide_fetch_annexure_destination(settings, rfq_row_id)
+    except Exception as e:
+        print(f"[WARN] run_id={out.run_id} | costing workbook destination lookup failed: {type(e).__name__}: {e}")
+        return False
+    if not folder_id:
+        print(f"[INFO] run_id={out.run_id} | no folder on the RFQ row — costing workbook not uploaded")
+        return False
+
+    commons = Commons(currency=settings.costing_currency, fx=settings.costing_fx_rate,
+                      packaging=settings.costing_packaging, margin=settings.costing_margin,
+                      pallet_capacity=settings.costing_pallet_capacity_kg,
+                      price_per_pallet=settings.costing_price_per_pallet)
+    template = _costing_template(settings, out.run_id)
+    try:
+        data = build_costing_workbook(tabs, template=template, commons=commons)
+    except Exception as e:
+        if not template:
+            print(f"[WARN] run_id={out.run_id} | costing workbook build failed: {type(e).__name__}: {e}")
+            return False
+        # A template we cannot edit must not cost the generated tabs.
+        print(f"[WARN] run_id={out.run_id} | costing template rejected ({type(e).__name__}: {e}) — "
+              f"building the generated tabs on their own")
+        try:
+            data = build_costing_workbook(tabs, commons=commons)
+        except Exception as e2:
+            print(f"[WARN] run_id={out.run_id} | costing workbook build failed: {type(e2).__name__}: {e2}")
+            return False
+
+    header = getattr(extraction, "header", None)
+    title = str(getattr(header, "rfq_title", "") or getattr(header, "project", "") or "").strip()
+    try:
+        uploaded = upload_annexure(settings, drive_id, folder_id, costing_workbook_filename(title, rfq_row_id), data)
+    except Exception as e:
+        print(f"[WARN] run_id={out.run_id} | costing workbook upload raised: {type(e).__name__}: {e}")
+        uploaded = None
+    if not uploaded:
+        return False
+    try:
+        glide_set_all_rfq_columns(settings, rfq_row_id, {
+            settings.glide_col_all_rfq_costing_file_id: uploaded.id,
+            settings.glide_col_all_rfq_costing_url: uploaded.url,
+        })
+    except Exception as e:
+        print(f"[WARN] run_id={out.run_id} | costing workbook uploaded but its link was not written: "
+              f"{type(e).__name__}: {e}")
+        return False
+    lines = sum(len(t.lines) for t in tabs)
+    print(f"[INFO] run_id={out.run_id} | costing workbook uploaded ({len(tabs)} tab(s), {lines} line(s), "
+          f"template={'yes' if template else 'no'}) -> {uploaded.name}")
+    return True
+
+
 def _write_extracted_products(settings: Settings, rfq_row_id: str, out: TriageOutputPayload):
     """
     Adds the extracted product line items to the ALL Product table, then their open
@@ -244,6 +340,7 @@ def _write_extracted_products(settings: Settings, rfq_row_id: str, out: TriageOu
         return 0, 0
 
     _attach_family_annexures(settings, out, rfq_row_id, extraction)
+    _attach_costing_workbook(settings, out, rfq_row_id, extraction)
 
     try:
         row_ids = glide_add_product_rows(settings, rfq_row_id, extraction.products)

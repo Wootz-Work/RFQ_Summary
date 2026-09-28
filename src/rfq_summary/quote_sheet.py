@@ -28,9 +28,12 @@ from datetime import date
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from openpyxl import Workbook, load_workbook
+
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
+
+from .sheet_columns import display_header, visible_columns
 
 # Palette shared with the change-notification mail, so the two artefacts a
 # customer-facing team sees read as one system.
@@ -44,7 +47,7 @@ FONT = "Arial"
 
 # Never collapsed into the conditions block even when every row agrees: these
 # name the item, and a sheet whose rows cannot be told apart is not a sheet.
-DEFAULT_PROTECTED = ("Item code", "Description")
+DEFAULT_PROTECTED = ("Item code", "Description", "part_number", "description", "Part number")
 
 # OneDrive/SharePoint reject these outright, and a family name routinely
 # carries several of them — "Studs — M56 x 2000 / DIN 976".
@@ -222,13 +225,9 @@ def split_constant_columns(
         if col in protected or len(values) > 1:
             varying.append(col)
         elif len(values) == 1:
-            constants.append(f"{_clean_header(col)}: {values.pop()}")
+            constants.append(f"{display_header(col)}: {values.pop()}")
         # len(values) == 0 -> dropped entirely
     return varying, constants
-
-
-def _clean_header(h: str) -> str:
-    return re.sub(r"\s+", " ", h.replace("\n", " ")).strip()
 
 
 _NUM_RE = re.compile(r"^-?[\d,]*\.?\d+$")
@@ -287,6 +286,8 @@ def build_quote_sheet(
     Carries nothing identifying the customer and no target price: this file
     goes to a supplier. What the caller passes in is what a supplier sees.
     """
+    # No serial numbers or made-up row references, and never the target price: this goes to a supplier.
+    spec_columns = visible_columns(spec_columns, rows, supplier_facing=True)
     varying, derived = split_constant_columns(rows, spec_columns, protected)
     all_conditions = list(conditions) + derived
     numeric = _numeric_columns(rows, varying)
@@ -298,8 +299,8 @@ def build_quote_sheet(
     ws = wb.active
     ws.title = "Quote Sheet"
 
-    headers = ["Sr"] + [_clean_header(c) for c in varying] + [q.name for q in quote_columns]
-    n_ask = 1 + len(varying)
+    headers = [display_header(c) for c in varying] + [q.name for q in quote_columns]
+    n_ask = len(varying)
     ncol = len(headers)
     last_letter = get_column_letter(ncol)
 
@@ -340,9 +341,8 @@ def build_quote_sheet(
         c.border = box
     ws.row_dimensions[HDR].height = 30
 
-    ws.column_dimensions["A"].width = 5
-    for i, col in enumerate(varying, start=2):
-        longest = max([len(_clean_header(col))] + [len(str(r.get(col, ""))) for r in rows] or [10])
+    for i, col in enumerate(varying, start=1):
+        longest = max([len(display_header(col))] + [len(str(r.get(col, ""))) for r in rows] or [10])
         ws.column_dimensions[get_column_letter(i)].width = max(9, min(32, longest + 2))
     for i, q in enumerate(quote_columns, start=n_ask + 1):
         ws.column_dimensions[get_column_letter(i)].width = q.width
@@ -353,13 +353,7 @@ def build_quote_sheet(
         r = first_data + r_off
         banded = r_off % 2 == 1
 
-        c = ws.cell(row=r, column=1, value=r_off + 1)
-        c.font, c.border = Font(name=FONT, size=9), box
-        c.alignment = Alignment(horizontal="center", vertical="top")
-        if banded:
-            c.fill = PatternFill("solid", fgColor=BAND)
-
-        for i, col in enumerate(varying, start=2):
+        for i, col in enumerate(varying, start=1):
             raw = rec.get(col, "")
             num = _as_number(raw) if col in numeric else None
             c = ws.cell(row=r, column=i, value=num if num is not None else (str(raw or "") or None))
@@ -403,7 +397,7 @@ def build_quote_sheet(
 
     # --- what makes 300 rows workable -------------------------------------
     if rows:
-        ws.freeze_panes = f"{get_column_letter(min(4, n_ask + 1))}{first_data}"
+        ws.freeze_panes = f"{get_column_letter(min(3, n_ask + 1))}{first_data}"
         ws.auto_filter.ref = f"A{HDR}:{last_letter}{last_data}"
 
         for i, q in enumerate(quote_columns, start=n_ask + 1):

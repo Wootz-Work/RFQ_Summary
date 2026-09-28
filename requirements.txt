@@ -9,6 +9,8 @@ rich>=13.7
 # Part-2 parsers
 pymupdf>=1.24
 openpyxl>=3.1
+# Lets openpyxl carry pictures (the costing template's logos) through a round trip
+pillow>=10
 
 fastapi>=0.115
 uvicorn>=0.30

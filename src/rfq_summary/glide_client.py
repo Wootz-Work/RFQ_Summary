@@ -134,6 +134,34 @@ def glide_update_all_rfq_triage_outputs(
         r.raise_for_status()
 
 
+def glide_set_all_rfq_columns(settings: Settings, all_rfq_row_id: str, column_values: Dict[str, Any]) -> bool:
+    """
+    Set a few columns on one ALL RFQ row. Empty column ids are skipped, so a
+    column can be switched off from config. Returns False when there was
+    nothing to write; raises on an HTTP failure for the caller to log.
+    """
+    values = {c.strip(): v for c, v in (column_values or {}).items() if (c or "").strip()}
+    row_id = (all_rfq_row_id or "").strip()
+    if not values or not row_id:
+        return False
+    if not (settings.glide_api_key and settings.glide_app_id and settings.glide_all_rfq_table):
+        raise RuntimeError("Missing GLIDE_API_KEY / GLIDE_APP_ID / GLIDE_ALL_RFQ_TABLE.")
+    payload = {
+        "appID": settings.glide_app_id,
+        "mutations": [{
+            "kind": "set-columns-in-row",
+            "tableName": settings.glide_all_rfq_table,
+            "rowID": row_id,
+            "columnValues": values,
+        }],
+    }
+    with httpx.Client(timeout=60) as client:
+        r = client.post("https://api.glideapp.io/api/function/mutateTables",
+                        headers=_glide_headers(settings), json=payload)
+        r.raise_for_status()
+    return True
+
+
 def glide_query_all_companies(settings: Settings) -> list[dict]:
     if not settings.glide_api_key or not settings.glide_app_id:
         raise RuntimeError("Missing GLIDE_API_KEY/GLIDE_APP_ID.")
