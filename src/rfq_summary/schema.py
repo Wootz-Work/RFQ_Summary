@@ -248,6 +248,8 @@ class QueryPayload(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     row_id: str = Field(default="", validation_alias=AliasChoices("rowID", "row_id"))
+    # The RFQ's own title, when the caller sends it — names the costing workbook.
+    title: str = Field(default="", validation_alias=AliasChoices("title", "Title", "rfq_title", "RFQ Title"))
     subject: str = Field(default="")
     from_: str = Field(default="", alias="from_")
     from_name: str = Field(default="")
@@ -287,7 +289,7 @@ class QueryPayload(BaseModel):
             data["attachment_urls"] = data.get("attached_urls")
 
         # Unwrap single-element lists for string fields
-        for field in ("subject", "from_name", "body", "received_at", "from_", "requested_by", "requested_time"):
+        for field in ("subject", "from_name", "body", "received_at", "from_", "requested_by", "requested_time", "title"):
             val = data.get(field)
             if isinstance(val, list):
                 data[field] = val[0] if val else ""
@@ -465,12 +467,6 @@ class ExtractedProduct(BaseModel):
     rep_url: _OptStr = None
     addl_files: _StrOrList = Field(default_factory=list)
     annexure: Optional[ProductAnnexure] = None
-    # Filled by the pipeline after the annexure workbook is uploaded, never by
-    # the model — it cannot know where the file landed. The id is the durable
-    # handle: a url changes if the file is renamed or moved, the DriveItem id
-    # does not, and it is what Graph needs to read the file back.
-    annexure_url: _LooseStr = ""
-    annexure_file_id: _LooseStr = ""
     provenance: Dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="before")

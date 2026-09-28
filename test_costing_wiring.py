@@ -97,8 +97,8 @@ check("weight is never set from the extraction", all(l.weight.kind == "input" fo
 
 
 # ---- the writeback step ----------------------------------------------------
-def run(settings=None, dest=("b!DRIVE", "01FOLDERIDAAAAAAAAAAAAAAAAAAAA"), upload=None, glide=None, template=None,
-        ext=None):
+def run(settings=None, dest=("b!DRIVE", "01FOLDERIDAAAAAAAAAAAAAAAAAAAA", ""), upload=None, glide=None, template=None,
+        ext=None, title=""):
     calls = {"upload": [], "glide": []}
 
     def fake_upload(s, drive_id, folder_id, filename, data):
@@ -114,25 +114,25 @@ def run(settings=None, dest=("b!DRIVE", "01FOLDERIDAAAAAAAAAAAAAAAAAAAA"), uploa
             return glide()
         return True
 
-    saved = (writer.glide_fetch_annexure_destination, writer.upload_annexure, writer.glide_set_all_rfq_columns,
+    saved = (writer.glide_fetch_rfq_folder, writer.upload_file, writer.glide_set_all_rfq_columns,
              writer._costing_template)
-    writer.glide_fetch_annexure_destination = lambda s, r: dest
-    writer.upload_annexure = fake_upload
+    writer.glide_fetch_rfq_folder = lambda s, r: dest
+    writer.upload_file = fake_upload
     writer.glide_set_all_rfq_columns = fake_glide
     writer._costing_template = lambda s, run_id: template
     try:
         out = TriageOutputPayload(run_id="r1", row_id="RFQ1")
-        calls["result"] = writer._attach_costing_workbook(settings or _settings(), out, "RFQ1", ext or extraction())
+        calls["result"] = writer._attach_costing_workbook(settings or _settings(), out, "RFQ1", ext or extraction(), title)
         return calls
     finally:
-        (writer.glide_fetch_annexure_destination, writer.upload_annexure, writer.glide_set_all_rfq_columns,
+        (writer.glide_fetch_rfq_folder, writer.upload_file, writer.glide_set_all_rfq_columns,
          writer._costing_template) = saved
 
 
 calls = run()
 check("one workbook uploaded for the RFQ", len(calls["upload"]) == 1, str(calls["upload"]))
-check("named after the RFQ", calls["upload"][0]["name"] == "Int Costing - Project Falcon - Fasteners.xlsx",
-      calls["upload"][0]["name"])
+check("named 'Int costing (New) - <title>', from the extraction when no title is sent",
+      calls["upload"][0]["name"] == "Int costing (New) - Project Falcon - Fasteners.xlsx", calls["upload"][0]["name"])
 check("file id to ttqlU and link to Vr8gz, on the RFQ row",
       calls["glide"] == [("RFQ1", {"ttqlU": "01COSTINGFILEIDAAAAAAAAAAAAAAA",
                                    "Vr8gz": "https://wootz-my.sharepoint.com/x/cost.xlsx"})], str(calls["glide"]))
@@ -141,9 +141,20 @@ book = openpyxl.load_workbook(io.BytesIO(calls["upload"][0]["data"]))
 check("the uploaded file is the generated workbook",
       book.sheetnames == ["(Zai) Summary", "(Zai) Hex Bolts", "(Zai) Individual items"], str(book.sheetnames))
 
+c = run(title="Malabar 1 - Fasteners and Fixings Price List")
+c2 = run(dest=("b!DRIVE", "01FOLDERIDAAAAAAAAAAAAAAAAAAAA", "Malabar 1 - From Glide"),
+         title="Sent in the payload")
+check("the title on the RFQ row (QdiyR) wins over everything",
+      c2["upload"][0]["name"] == "Int costing (New) - Malabar 1 - From Glide.xlsx", c2["upload"][0]["name"])
+check("the RFQ's own title wins when it is sent",
+      c["upload"][0]["name"] == "Int costing (New) - Malabar 1 - Fasteners and Fixings Price List.xlsx", c["upload"][0]["name"])
+check("a slash in a title cannot make a path",
+      writer.costing_workbook_filename("A/B: C", "r") == "Int costing (New) - A B C.xlsx",
+      writer.costing_workbook_filename("A/B: C", "r"))
+check("no title at all falls back to the RFQ id", writer.costing_workbook_filename("", "RFQ1") == "Int costing (New) - RFQ1.xlsx")
 check("switched off means nothing happens", run(settings=_settings(ENABLE_COSTING_WORKBOOK="false"))["upload"] == [])
 check("no graph credentials means nothing happens", run(settings=_settings(MS_GRAPH_CLIENT_SECRET=""))["upload"] == [])
-check("no folder on the RFQ row means nothing is uploaded", run(dest=("b!DRIVE", ""))["upload"] == [])
+check("no folder on the RFQ row means nothing is uploaded", run(dest=("b!DRIVE", "", ""))["upload"] == [])
 c = run(upload=lambda n: None)
 check("an upload that lands nowhere writes no link", c["glide"] == [] and c["result"] is False)
 
@@ -163,6 +174,62 @@ check("an extraction with no products uploads nothing",
 check("the id and url columns can be renamed from config",
       run(settings=_settings(GLIDE_COL_ALL_RFQ_COSTING_FILE_ID="abc", GLIDE_COL_ALL_RFQ_COSTING_URL="xyz"))["glide"][0][1]
       .keys() == {"abc", "xyz"})
+
+# ---- the template is looked for, and its absence is loud -----------------------
+import contextlib, os, tempfile
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    missing = writer._costing_template(_settings(COSTING_TEMPLATE_PATH=""), "r1")
+check("no template anywhere returns None", missing is None)
+check("…and says plainly which tabs will be missing", "Quotation / Back-end / ExIm / Volza" in buf.getvalue())
+with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as f:
+    f.write(b"PK-template-bytes")
+check("a configured path is read", writer._costing_template(_settings(COSTING_TEMPLATE_PATH=f.name), "r1")
+      == b"PK-template-bytes")
+saved_paths = writer.DEFAULT_TEMPLATE_PATHS
+writer.DEFAULT_TEMPLATE_PATHS = (f.name,)
+check("a Render secret file is found with no env var at all",
+      writer._costing_template(_settings(COSTING_TEMPLATE_PATH=""), "r1") == b"PK-template-bytes")
+writer.DEFAULT_TEMPLATE_PATHS = saved_paths
+os.unlink(f.name)
+
+# ---- the annexure is gone ------------------------------------------------------
+import importlib.util
+check("no annexure generator left", importlib.util.find_spec("rfq_summary.quote_sheet") is None)
+check("no annexure step in the writeback", not hasattr(writer, "_attach_family_annexures"))
+check("product rows no longer carry annexure fields",
+      not {"annexure_url", "annexure_file_id"} & set(ExtractedProduct.model_fields))
+
+# ---- the lookup reads the title off the same row ------------------------------
+import httpx
+from rfq_summary import glide_client
+
+
+class _Resp:
+    status_code = 200
+    def raise_for_status(self): pass
+    def json(self): return [{"rows": [{"zm9TN": "b!D", "QZRyl": "01F", "QdiyR": "  Malabar 1 - Fasteners  "}]}]
+
+
+class _Client:
+    sent = []
+    def __init__(self, *a, **k): pass
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+    def post(self, url, headers=None, json=None):
+        _Client.sent.append(json)
+        return _Resp()
+
+
+real = glide_client.httpx.Client
+glide_client.httpx.Client = _Client
+try:
+    got = glide_client.glide_fetch_rfq_folder(_settings(), "RFQ1")
+finally:
+    glide_client.httpx.Client = real
+check("drive, folder and title come back from one query",
+      tuple(got) == ("b!D", "01F", "Malabar 1 - Fasteners") and len(_Client.sent) == 1, str(got))
+check("QdiyR is the default title column", _settings().glide_col_all_rfq_title == "QdiyR")
 
 print("\nALL PASSED" if ok else "\nFAILURES ABOVE")
 raise SystemExit(0 if ok else 1)

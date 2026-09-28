@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from pydantic import AliasChoices, Field
 
 
 class Settings(BaseSettings):
@@ -95,15 +95,17 @@ class Settings(BaseSettings):
     # Sent Items folder.
     ms_graph_save_to_sent_items: bool = Field(default=True, alias="MS_GRAPH_SAVE_TO_SENT_ITEMS")
 
-    # --- annexure upload ---------------------------------------------------
+    # --- OneDrive upload ----------------------------------------------------
     # Fallback drive, used only when the RFQ row carries no drive id of its
     # own. Normally both the drive and the folder come off the RFQ row, so a
     # different RFQ can live in a different library without redeploying.
     ms_graph_drive_id: str = Field(default="", alias="MS_GRAPH_DRIVE_ID")
-    enable_annexure_upload: bool = Field(default=True, alias="ENABLE_ANNEXURE_UPLOAD")
     # rename | replace | fail. Defaults to rename: someone is editing these
     # sheets in place, and a regeneration must never overwrite their work.
-    annexure_conflict_behavior: str = Field(default="rename", alias="ANNEXURE_CONFLICT_BEHAVIOR")
+    onedrive_conflict_behavior: str = Field(
+        default="rename",
+        validation_alias=AliasChoices("ONEDRIVE_CONFLICT_BEHAVIOR", "ANNEXURE_CONFLICT_BEHAVIOR"),
+    )
 
     # --- internal costing workbook -------------------------------------------
     # One workbook per RFQ, built at extraction and uploaded to the same folder
@@ -245,17 +247,21 @@ class Settings(BaseSettings):
         alias="GLIDE_ALL_RFQ_TABLE",
     )
     glide_col_all_rfq_zai_response: str = Field(default="MANCF", alias="GLIDE_COL_ALL_RFQ_ZAI_RESPONSE")
-    # Where this RFQ's annexures are written. Both are needed: a DriveItem id
-    # is only addressable inside its drive, since Graph has no global
-    # /driveItems/{id} endpoint.
+    # The RFQ's own OneDrive folder, where its costing workbook is written.
+    # Both are needed: a DriveItem id is only addressable inside its drive,
+    # since Graph has no global /driveItems/{id} endpoint.
     #   folder -> the 01… DriveItem id of the RFQ's own folder
     #   drive  -> the b!… id of the library that folder lives in
-    glide_col_all_rfq_annexure_folder: str = Field(
-        default="QZRyl", alias="GLIDE_COL_ALL_RFQ_ANNEXURE_FOLDER"
+    glide_col_all_rfq_onedrive_folder: str = Field(
+        default="QZRyl",
+        validation_alias=AliasChoices("GLIDE_COL_ALL_RFQ_ONEDRIVE_FOLDER", "GLIDE_COL_ALL_RFQ_ANNEXURE_FOLDER"),
     )
-    glide_col_all_rfq_annexure_drive: str = Field(
-        default="zm9TN", alias="GLIDE_COL_ALL_RFQ_ANNEXURE_DRIVE"
+    glide_col_all_rfq_onedrive_drive: str = Field(
+        default="zm9TN",
+        validation_alias=AliasChoices("GLIDE_COL_ALL_RFQ_ONEDRIVE_DRIVE", "GLIDE_COL_ALL_RFQ_ANNEXURE_DRIVE"),
     )
+    # The RFQ's title — names the costing workbook "Int costing (New) - <title>".
+    glide_col_all_rfq_title: str = Field(default="QdiyR", alias="GLIDE_COL_ALL_RFQ_TITLE")
     # The uploaded costing workbook: its DriveItem id (the durable handle) and its link.
     glide_col_all_rfq_costing_file_id: str = Field(default="ttqlU", alias="GLIDE_COL_ALL_RFQ_COSTING_FILE_ID")
     glide_col_all_rfq_costing_url: str = Field(default="Vr8gz", alias="GLIDE_COL_ALL_RFQ_COSTING_URL")
@@ -300,15 +306,6 @@ class Settings(BaseSettings):
     glide_col_product_sr_no: str = Field(default="XbErc", alias="GLIDE_COL_PRODUCT_SR_NO")
     # Boolean flag set to true on every row this service adds.
     glide_col_product_accepted: str = Field(default="117zS", alias="GLIDE_COL_PRODUCT_ACCEPTED")
-    # Link to the uploaded annexure workbook. Only a family line ever carries one.
-    glide_col_product_annexure_url: str = Field(
-        default="viX2v", alias="GLIDE_COL_PRODUCT_ANNEXURE_URL"
-    )
-    # The uploaded workbook's DriveItem id. Paired with the RFQ row's drive id
-    # this addresses the file in Graph, which the url alone cannot do.
-    glide_col_product_annexure_file_id: str = Field(
-        default="MVO1t", alias="GLIDE_COL_PRODUCT_ANNEXURE_FILE_ID"
-    )
     # Max product rows written per Glide mutateTables request.
     glide_product_rows_per_request: int = Field(default=20, alias="GLIDE_PRODUCT_ROWS_PER_REQUEST")
     # Queries table: one row per open question, linked to the product it blocks.
