@@ -182,32 +182,71 @@ with contextlib.redirect_stdout(buf):
     missing = writer._costing_template(_settings(COSTING_TEMPLATE_PATH=""), "r1")
 check("no template anywhere returns None", missing is None)
 check("…and says plainly which tabs will be missing", "Quotation / Back-end / ExIm / Volza" in buf.getvalue())
-with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as f:
-    f.write(b"PK-template-bytes")
-check("a configured path is read", writer._costing_template(_settings(COSTING_TEMPLATE_PATH=f.name), "r1")
-      == b"PK-template-bytes")
-saved_paths = writer.DEFAULT_TEMPLATE_PATHS
-writer.DEFAULT_TEMPLATE_PATHS = (f.name,)
-check("a Render secret file is found with no env var at all",
-      writer._costing_template(_settings(COSTING_TEMPLATE_PATH=""), "r1") == b"PK-template-bytes")
-writer.DEFAULT_TEMPLATE_PATHS = saved_paths
-os.unlink(f.name)
-
 import base64 as _b64
-real_xlsx = io.BytesIO()
-openpyxl.Workbook().save(real_xlsx)
-with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False, mode="w") as f:
-    text = _b64.b64encode(real_xlsx.getvalue()).decode()
-    f.write("\n".join(text[i:i + 76] for i in range(0, len(text), 76)) + "\n")   # wrapped, as a paste would be
-check("a base64 secret file (text only) is decoded back to the workbook",
-      writer._costing_template(_settings(COSTING_TEMPLATE_PATH=f.name), "r1") == real_xlsx.getvalue())
-with open(f.name, "w") as g:
-    g.write("definitely not a workbook")
-buf = io.StringIO()
-with contextlib.redirect_stdout(buf):
-    junk = writer._costing_template(_settings(COSTING_TEMPLATE_PATH=f.name), "r1")
-check("text that is not a workbook is refused, and said so", junk is None and "neither an .xlsx" in buf.getvalue())
-os.unlink(f.name)
+_x = io.BytesIO()
+_wb = openpyxl.Workbook()
+_wb.active.title = "Quotation"
+_wb.create_sheet("Back-end")
+for r in range(1, 400):                    # big enough that a cut-off paste loses real content
+    _wb["Back-end"].cell(r, 1, f"line {r} " * 8)
+_wb.save(_x)
+REAL = _x.getvalue()
+
+
+def _tmp(content, mode="wb"):
+    f = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False, mode=mode)
+    f.write(content)
+    f.close()
+    return f.name
+
+
+def _template_from(content, mode="wb"):
+    path = _tmp(content, mode)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        got = writer._costing_template(_settings(COSTING_TEMPLATE_PATH=path), "r1")
+    os.unlink(path)
+    return got, buf.getvalue()
+
+
+got, log = _template_from(REAL)
+check("a configured .xlsx is read", got == REAL)
+check("…and the log says where from and how big", "costing template:" in log and f"{len(REAL):,} bytes" in log, log)
+path = _tmp(REAL)
+saved_paths = writer.DEFAULT_TEMPLATE_PATHS
+writer.DEFAULT_TEMPLATE_PATHS = (path,)
+check("a Render secret file is found with no env var at all",
+      writer._costing_template(_settings(COSTING_TEMPLATE_PATH=""), "r1") == REAL)
+writer.DEFAULT_TEMPLATE_PATHS = saved_paths
+os.unlink(path)
+
+text = _b64.b64encode(REAL).decode()
+wrapped = "\n".join(text[i:i + 76] for i in range(0, len(text), 76)) + "\n"   # as the .txt I send is
+got, log = _template_from(wrapped, "w")
+check("a base64 secret file (text only) is decoded back to the workbook", got == REAL)
+check("…and the log says it was decoded", "decoded from base64" in log, log)
+
+lines = wrapped.splitlines()
+got, log = _template_from("\n".join(lines[: len(lines) // 2]) + "\n", "w")
+check("a paste cut off at a line break is refused, not opened", got is None)
+check("…and the log says the paste was cut off", "cut off" in log and "characters" in log, log)
+got, log = _template_from(text[: len(text) // 2 + 3], "w")
+check("a paste cut off mid-line is caught too", got is None and "cut off" in log, log)
+got, log = _template_from(REAL[: len(REAL) // 2])
+check("an .xlsx upload that is incomplete is refused and named", got is None and "incomplete" in log, log)
+got, log = _template_from("definitely not a workbook", "w")
+check("text that is not a workbook is refused, and said so", got is None and "neither an .xlsx" in log, log)
+
+sent = []
+saved_dl = writer.download_file
+writer.download_file = lambda s, d, i, path="": (sent.append(path), REAL)[1]
+try:
+    got = writer._costing_template(_settings(COSTING_TEMPLATE_URL="https://wootz-my.sharepoint.com/:x:/g/abc"), "r1")
+finally:
+    writer.download_file = saved_dl
+check("a OneDrive share link is enough to fetch the template", got == REAL)
+check("…through Graph's /shares endpoint", sent and sent[0].startswith("/shares/u!") and sent[0].endswith("/driveItem/content"),
+      str(sent))
 
 # ---- the annexure is gone ------------------------------------------------------
 import importlib.util

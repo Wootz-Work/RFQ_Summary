@@ -116,6 +116,9 @@ class Settings(BaseSettings):
     # Quotation.
     enable_costing_workbook: bool = Field(default=True, alias="ENABLE_COSTING_WORKBOOK")
     costing_template_path: str = Field(default="", alias="COSTING_TEMPLATE_PATH")
+    # A OneDrive / SharePoint share link to the master .xlsx — the simplest way:
+    # no ids to look up, nothing to paste, and editing the master needs no redeploy.
+    costing_template_url: str = Field(default="", alias="COSTING_TEMPLATE_URL")
     costing_template_drive_id: str = Field(default="", alias="COSTING_TEMPLATE_DRIVE_ID")
     costing_template_item_id: str = Field(default="", alias="COSTING_TEMPLATE_ITEM_ID")
     # Starting assumptions written into the legend — all red, all editable in the sheet.
