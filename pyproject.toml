@@ -11,4 +11,6 @@ dependencies = [
   "google-auth>=2.28",
   "google-auth-httplib2>=0.2.0",
   "google-cloud-documentai>=2.20.0",
+  "openpyxl>=3.1",
+  "pillow>=10",
 ]

@@ -148,7 +148,9 @@ def write_all(settings: Settings, inp: InputPayload, out: OutputPayload) -> None
 
 # Render "Secret Files" land here. Dropping the master template in as a secret file
 # named costing_template.xlsx is enough — no env var, and it never enters git.
-DEFAULT_TEMPLATE_PATHS = ("/etc/secrets/costing_template.xlsx",)
+# Render puts a Secret File in /etc/secrets/, and on native (non-Docker)
+# services also in the app's root directory — both are checked.
+DEFAULT_TEMPLATE_PATHS = ("/etc/secrets/costing_template.xlsx", "costing_template.xlsx")
 _ILLEGAL_FILENAME = re.compile(r'[":<>?/\\|*\x00-\x1f]')
 
 
@@ -180,8 +182,11 @@ def _costing_template(settings: Settings, run_id: str):
     for path in paths:
         try:
             with open(path, "rb") as f:
-                data = _as_workbook_bytes(f.read())
+                raw = f.read()
+            data = _as_workbook_bytes(raw)
             if data:
+                print(f"[INFO] run_id={run_id} | costing template: {path} ({len(data)} bytes"
+                      f"{', decoded from base64' if data is not raw else ''})")
                 return data
             print(f"[WARN] run_id={run_id} | {path!r} is neither an .xlsx nor base64 of one — ignored")
         except FileNotFoundError:
@@ -241,6 +246,8 @@ def _attach_costing_workbook(settings: Settings, out, rfq_row_id: str, extractio
     template = _costing_template(settings, out.run_id)
     try:
         data = build_costing_workbook(tabs, template=template, commons=commons)
+        if template:
+            print(f"[INFO] run_id={out.run_id} | costing workbook built on the template")
     except Exception as e:
         if not template:
             print(f"[WARN] run_id={out.run_id} | costing workbook build failed: {type(e).__name__}: {e}")

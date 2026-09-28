@@ -213,5 +213,21 @@ q = openpyxl.load_workbook(io.BytesIO(few))["Quotation"]
 check("a short RFQ leaves the table in place", q["A17"].value == "Freight" and q["A14"].value == "M9 Flat Washer")
 check("unused template rows are cleared", q["C15"].value is None and q["C16"].value is None)
 
+# ---- a server without Pillow still gets every template tab --------------------
+import openpyxl.drawing.image as _oimg
+import openpyxl.reader.drawings as _odraw
+tpl_with_logo = template_bytes()            # built while Pillow is still available
+saved_pil = (_oimg.PILImage, _odraw.PILImage)
+_oimg.PILImage = _odraw.PILImage = False    # what openpyxl sees when Pillow is not installed
+try:
+    no_pil = build_costing_workbook([fastener_tab(3)], template=tpl_with_logo)
+finally:
+    _oimg.PILImage, _odraw.PILImage = saved_pil
+names = openpyxl.load_workbook(io.BytesIO(no_pil)).sheetnames
+check("without Pillow the template tabs are all still there",
+      names[:2] == ["Quotation", "Back-end"] and "ExIm Insights" in names, str(names))
+check("…and the Quotation is still wired",
+      openpyxl.load_workbook(io.BytesIO(no_pil))["Quotation"]["A13"].value == "M8 Flat Washer")
+
 print("\nALL PASSED" if ok else "\nFAILURES ABOVE")
 raise SystemExit(0 if ok else 1)
