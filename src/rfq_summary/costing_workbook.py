@@ -741,10 +741,16 @@ def build_costing_workbook(tabs: List[Tab], *, template: Optional[bytes] = None,
         for sheet in {p.sheet for p in pictures}:
             if sheet in wb.sheetnames:
                 wb[sheet]._images = []
+        # A logo that cannot be put back (no Pillow on the server, an odd image
+        # format) must cost the logo, never the Quotation it sits on.
         for pic in pictures:
             if pic.sheet in wb.sheetnames:
                 start, k = shifts.get(pic.sheet, (0, 0))
-                _add_picture(wb[pic.sheet], pic, start or 10 ** 9, k)
+                try:
+                    _add_picture(wb[pic.sheet], pic, start or 10 ** 9, k)
+                except Exception as e:
+                    print(f"[WARN] costing workbook | picture on '{pic.sheet}' not restored: "
+                          f"{type(e).__name__}: {e}")
         wb.active = wb.sheetnames.index("Quotation") if "Quotation" in wb.sheetnames else 0
         for ws in wb.worksheets:
             ws.sheet_view.tabSelected = ws.title == wb.active.title

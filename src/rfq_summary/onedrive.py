@@ -166,7 +166,7 @@ def upload_file(
     return UploadedFile(id=item_id, url=link, name=name)
 
 
-def download_file(settings: Settings, drive_id: str, item_id: str) -> Optional[bytes]:
+def download_file(settings: Settings, drive_id: str, item_id: str, path: str = "") -> Optional[bytes]:
     """
     Read one file's bytes by DriveItem id — used for the master costing
     template, so the team can edit it on OneDrive without a redeploy.
@@ -175,13 +175,13 @@ def download_file(settings: Settings, drive_id: str, item_id: str) -> Optional[b
     if not upload_configured(settings):
         return None
     drive_id, item_id = (drive_id or "").strip(), (item_id or "").strip()
-    if not (drive_id and item_id):
+    if not path and not (drive_id and item_id):
         return None
+    path = path or f"/drives/{drive_id}/items/{item_id}/content"
     try:
         token = _get_app_token(settings)
         with httpx.Client(timeout=settings.ms_graph_timeout_sec, follow_redirects=True) as client:
-            r = client.get(f"{GRAPH}/drives/{drive_id}/items/{item_id}/content",
-                           headers={"Authorization": f"Bearer {token}"})
+            r = client.get(f"{GRAPH}{path}", headers={"Authorization": f"Bearer {token}"})
         if r.status_code != 200:
             print(f"[WARN] onedrive | template download returned {r.status_code}: {(r.text or '')[:200]}")
             return None

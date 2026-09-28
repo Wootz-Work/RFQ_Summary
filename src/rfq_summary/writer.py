@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import io
 import json
 import re
+import zipfile
 from datetime import datetime, timezone
 from typing import Dict, List
 
@@ -146,8 +150,60 @@ def write_all(settings: Settings, inp: InputPayload, out: OutputPayload) -> None
 
 # Render "Secret Files" land here. Dropping the master template in as a secret file
 # named costing_template.xlsx is enough — no env var, and it never enters git.
-DEFAULT_TEMPLATE_PATHS = ("/etc/secrets/costing_template.xlsx",)
+# Render puts a Secret File in /etc/secrets/, and on native (non-Docker)
+# services also in the app's root directory — both are checked.
+DEFAULT_TEMPLATE_PATHS = ("/etc/secrets/costing_template.xlsx", "costing_template.xlsx")
 _ILLEGAL_FILENAME = re.compile(r'[":<>?/\\|*\x00-\x1f]')
+
+
+def _complete_workbook(data: bytes) -> bool:
+    """A whole .xlsx, not just its first bytes: the zip opens and every part reads."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            return "[Content_Types].xml" in z.namelist() and z.testzip() is None
+    except (zipfile.BadZipFile, OSError, ValueError):
+        return False
+
+
+def _as_workbook_bytes(raw: bytes):
+    """
+    The template as a complete .xlsx, whether it arrived as the file itself or
+    as its base64 text — Render's Secret Files only take text, so the second is
+    how it gets there. Returns (bytes or None, what happened) so a refusal can
+    say *why*: a paste that was cut short still starts like a workbook, and
+    without the reason that failure looks the same as a wrong file.
+    """
+    raw = raw or b""
+    if raw[:2] == b"PK":
+        if _complete_workbook(raw):
+            return raw, ""
+        return None, f"an .xlsx of {len(raw):,} bytes that is incomplete — upload it again"
+    text = b"".join(raw.split())
+    if not text:
+        return None, "empty"
+    # Base64 of any .xlsx starts "UEsD" (that is "PK\x03\x04"): anything else is not the template.
+    if not text.startswith(b"UEsD") or not re.fullmatch(rb"[A-Za-z0-9+/]+={0,2}", text):
+        return None, f"text of {len(text):,} characters that is neither an .xlsx nor base64 of one"
+    if len(text) % 4:
+        return None, (f"base64 text of {len(text):,} characters that stops mid-way — the paste was cut off "
+                      f"(the full text is about 55,000 characters and ends in 'AAAAA')")
+    try:
+        decoded = base64.b64decode(text, validate=True)
+    except (binascii.Error, ValueError):
+        return None, f"text of {len(text):,} characters that is neither an .xlsx nor base64 of one"
+    if decoded[:2] != b"PK":
+        return None, f"base64 text of {len(text):,} characters that is not an .xlsx"
+    if not _complete_workbook(decoded):
+        return None, (f"base64 text of {len(text):,} characters that decodes to an incomplete workbook — "
+                      f"the paste was cut off (the full text is about 55,000 characters and ends in 'AAAAA')")
+    return decoded, "decoded from base64"
+
+
+def _share_download(settings: Settings, share_url: str):
+    """A OneDrive / SharePoint share link -> the file's bytes, via Graph's /shares endpoint."""
+    token = base64.urlsafe_b64encode(share_url.strip().encode()).decode().rstrip("=")
+    data = download_file(settings, "", "", path=f"/shares/u!{token}/driveItem/content")
+    return data
 
 
 def _costing_template(settings: Settings, run_id: str):
@@ -162,14 +218,25 @@ def _costing_template(settings: Settings, run_id: str):
     for path in paths:
         try:
             with open(path, "rb") as f:
-                data = f.read()
+                raw = f.read()
+            data, note = _as_workbook_bytes(raw)
             if data:
+                print(f"[INFO] run_id={run_id} | costing template: {path} ({len(data):,} bytes"
+                      f"{', ' + note if note else ''})")
                 return data
+            print(f"[WARN] run_id={run_id} | costing template at {path} not used: it is {note}")
         except FileNotFoundError:
             if path == (settings.costing_template_path or "").strip():
                 print(f"[WARN] run_id={run_id} | COSTING_TEMPLATE_PATH {path!r} does not exist")
         except OSError as e:
             print(f"[WARN] run_id={run_id} | costing template not readable at {path!r}: {e}")
+    if (settings.costing_template_url or "").strip():
+        data, note = _as_workbook_bytes(_share_download(settings, settings.costing_template_url) or b"")
+        if data:
+            print(f"[INFO] run_id={run_id} | costing template: from its OneDrive link ({len(data):,} bytes)")
+            return data
+        print(f"[WARN] run_id={run_id} | COSTING_TEMPLATE_URL did not give a usable workbook ({note or 'no file'}) "
+              f"— check the link opens the .xlsx and the app can read that drive")
     if (settings.costing_template_item_id or "").strip():
         data = download_file(settings, settings.costing_template_drive_id or settings.ms_graph_drive_id,
                              settings.costing_template_item_id)
@@ -178,7 +245,7 @@ def _costing_template(settings: Settings, run_id: str):
         print(f"[WARN] run_id={run_id} | costing template could not be downloaded from OneDrive")
     print(f"[WARN] run_id={run_id} | NO COSTING TEMPLATE — the workbook will have the (Zai) tabs only, "
           f"without Quotation / Back-end / ExIm / Volza. Add it as a Render secret file named "
-          f"costing_template.xlsx, or set COSTING_TEMPLATE_PATH or COSTING_TEMPLATE_ITEM_ID.")
+          f"costing_template.xlsx, or set COSTING_TEMPLATE_URL (a OneDrive share link to it).")
     return None
 
 
@@ -222,6 +289,8 @@ def _attach_costing_workbook(settings: Settings, out, rfq_row_id: str, extractio
     template = _costing_template(settings, out.run_id)
     try:
         data = build_costing_workbook(tabs, template=template, commons=commons)
+        if template:
+            print(f"[INFO] run_id={out.run_id} | costing workbook built on the template")
     except Exception as e:
         if not template:
             print(f"[WARN] run_id={out.run_id} | costing workbook build failed: {type(e).__name__}: {e}")
