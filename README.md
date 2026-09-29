@@ -127,3 +127,5 @@ Add the following secrets under **Repository Settings > Secrets and variables > 
 | `EC2_PORT` | *(Optional)* SSH Port (defaults to `22`) | `22` |
 | `APP_DIR` | *(Optional)* App directory on EC2 (defaults to `~/RFQ_Summary`) | `/home/ubuntu/RFQ_Summary` |
 
+
+GitHub Actions deployment test 
