@@ -1,0 +1,87 @@
+
+name: Deploy to EC2
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy Application to EC2
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: ${{ secrets.EC2_PORT || 22 }}
+
+          script: |
+            set -e
+
+            # 1. Resolve project directory
+            APP_DIR="${{ secrets.APP_DIR }}"
+
+            if [ -z "$APP_DIR" ]; then
+              APP_DIR="$HOME/RFQ_Summary"
+            fi
+
+            echo "=========================================="
+            echo "📁 Project directory: $APP_DIR"
+            echo "=========================================="
+
+            cd "$APP_DIR"
+
+            # 2. Get latest main branch
+            echo "=========================================="
+            echo "📥 Fetching latest code from main"
+            echo "=========================================="
+
+            git fetch origin main
+            git reset --hard origin/main
+
+            # 3. Detect Docker Compose
+            echo "=========================================="
+            echo "🐳 Checking Docker Compose"
+            echo "=========================================="
+
+            if docker compose version > /dev/null 2>&1; then
+              COMPOSE_CMD="docker compose"
+            elif docker-compose version > /dev/null 2>&1; then
+              COMPOSE_CMD="docker-compose"
+            else
+              echo "❌ Docker Compose is not installed."
+              exit 1
+            fi
+
+            echo "Using: $COMPOSE_CMD"
+
+            # 4. Build and deploy
+            echo "=========================================="
+            echo "🔨 Building and starting containers"
+            echo "=========================================="
+
+            $COMPOSE_CMD up -d --build
+
+            # 5. Remove unused images
+            echo "=========================================="
+            echo "🧹 Cleaning unused Docker images"
+            echo "=========================================="
+
+            docker image prune -f
+
+            # 6. Show container status
+            echo "=========================================="
+            echo "📦 Container status"
+            echo "=========================================="
+
+            $COMPOSE_CMD ps
+
+            echo "=========================================="
+            echo "✅ Deployment completed successfully"
+            echo "=========================================="
