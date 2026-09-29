@@ -1,0 +1,32 @@
+# Git
+.git/
+.gitignore
+
+# Python bytecode & cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Distribution & builds
+build/
+dist/
+*.egg-info/
+
+# Local environment & sensitive credentials
+.env
+service_account*.json
+zaiwootz*.json
+
+# Excel backups & temporary files
+*.backup*
+*.xlsx
+.DS_Store
+Thumbs.db
