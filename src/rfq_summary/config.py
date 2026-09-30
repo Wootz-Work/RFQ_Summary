@@ -268,6 +268,9 @@ class Settings(BaseSettings):
     # The uploaded costing workbook: its DriveItem id (the durable handle) and its link.
     glide_col_all_rfq_costing_file_id: str = Field(default="ttqlU", alias="GLIDE_COL_ALL_RFQ_COSTING_FILE_ID")
     glide_col_all_rfq_costing_url: str = Field(default="Vr8gz", alias="GLIDE_COL_ALL_RFQ_COSTING_URL")
+    # The same workbook, opening on its Volza Insights tab. Written only when the tab exists.
+    glide_col_all_rfq_volza_url: str = Field(default="3qby1", alias="GLIDE_COL_ALL_RFQ_VOLZA_URL")
+    costing_volza_sheet: str = Field(default="Volza Insights", alias="COSTING_VOLZA_SHEET")
     glide_col_all_rfq_costing_order_of_magnitude: str = Field(
         default="AEa95",
         alias="GLIDE_COL_ALL_RFQ_COSTING_ORDER_OF_MAGNITUDE",

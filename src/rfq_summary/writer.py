@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import base64
 import binascii
+import html
 import io
 import json
 import re
 import zipfile
 from datetime import datetime, timezone
 from typing import Dict, List
+from urllib.parse import quote
 
 from .config import Settings
 from .schema import InputPayload, OutputPayload, QueryPayload, TriageOutputPayload, RfqClassificationInputPayload, RfqClassificationOutputPayload, RfqRegenerateTriageInputPayload, RfqRegenerateTriageOutputPayload, RfqQueryInputPayload, RfqQueryOutputPayload
@@ -249,6 +251,29 @@ def _costing_template(settings: Settings, run_id: str):
     return None
 
 
+def workbook_sheet_names(data: bytes) -> List[str]:
+    """Tab names straight from workbook.xml — cheap, no full load."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            xml = z.read("xl/workbook.xml").decode("utf-8", "replace")
+    except (zipfile.BadZipFile, KeyError, OSError):
+        return []
+    return [html.unescape(n) for n in re.findall(r'<sheet\b[^>]*\bname="([^"]+)"', xml)]
+
+
+def sheet_link(url: str, sheet: str) -> str:
+    """
+    The workbook's link, opening on one tab. Excel for the web reads
+    `activeCell` on its Doc.aspx links — the form Graph returns for Office
+    files — so the tab is selected when the link is opened.
+    """
+    url = (url or "").strip()
+    if not url or not sheet:
+        return url
+    cell = quote(f"'{sheet}'!A1", safe="!")
+    return f"{url}{'&' if '?' in url else '?web=1&'}activeCell={cell}"
+
+
 def costing_workbook_filename(title: str, rfq_row_id: str) -> str:
     """`Int costing (New) - <RFQ title>.xlsx` — the team's naming, marked as generated."""
     name = re.sub(r"\s+", " ", _ILLEGAL_FILENAME.sub(" ", title or "")).strip(" .")[:80].rstrip(" .")
@@ -316,11 +341,15 @@ def _attach_costing_workbook(settings: Settings, out, rfq_row_id: str, extractio
         uploaded = None
     if not uploaded:
         return False
+    columns = {
+        settings.glide_col_all_rfq_costing_file_id: uploaded.id,
+        settings.glide_col_all_rfq_costing_url: uploaded.url,
+    }
+    volza = (settings.costing_volza_sheet or "").strip()
+    if uploaded.url and volza and volza in workbook_sheet_names(data):
+        columns[settings.glide_col_all_rfq_volza_url] = sheet_link(uploaded.url, volza)
     try:
-        glide_set_all_rfq_columns(settings, rfq_row_id, {
-            settings.glide_col_all_rfq_costing_file_id: uploaded.id,
-            settings.glide_col_all_rfq_costing_url: uploaded.url,
-        })
+        glide_set_all_rfq_columns(settings, rfq_row_id, columns)
     except Exception as e:
         print(f"[WARN] run_id={out.run_id} | costing workbook uploaded but its link was not written: "
               f"{type(e).__name__}: {e}")
