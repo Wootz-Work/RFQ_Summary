@@ -277,6 +277,27 @@ check("a OneDrive share link is enough to fetch the template", got == REAL)
 check("…through Graph's /shares endpoint", sent and sent[0].startswith("/shares/u!") and sent[0].endswith("/driveItem/content"),
       str(sent))
 
+# ---- the Volza Insights tab link (3qby1) ------------------------------------------
+_v = io.BytesIO()
+_vw = openpyxl.Workbook()
+_vw.active.title = "Quotation"
+for n in ("Back-end", "ExIm Insights", "Volza Insights"):
+    _vw.create_sheet(n)
+_vw.save(_v)
+c = run(template=_v.getvalue())
+cols = c["glide"][0][1] if c["glide"] else {}
+check("with the template, 3qby1 gets a link that opens on Volza Insights",
+      cols.get("3qby1", "").startswith("https://wootz-my.sharepoint.com/x/cost.xlsx")
+      and "activeCell=%27Volza%20Insights%27!A1" in cols.get("3qby1", ""), str(cols))
+check("…written in the same Glide call as the file id and link", {"ttqlU", "Vr8gz", "3qby1"} == set(cols), str(cols))
+check("without a Volza tab nothing is written to 3qby1", "3qby1" not in run()["glide"][0][1])
+doc = "https://wootz-my.sharepoint.com/personal/t/_layouts/15/Doc.aspx?sourcedoc=%7BABC%7D&file=a.xlsx&action=default"
+check("a Doc.aspx link gets activeCell appended",
+      writer.sheet_link(doc, "Volza Insights") == doc + "&activeCell=%27Volza%20Insights%27!A1")
+check("a plain file link opens in Excel for the web on that tab",
+      writer.sheet_link("https://x/a.xlsx", "Volza Insights") == "https://x/a.xlsx?web=1&activeCell=%27Volza%20Insights%27!A1")
+check("the tab name is read from the file itself", "Volza Insights" in writer.workbook_sheet_names(_v.getvalue()))
+
 # ---- the annexure is gone ------------------------------------------------------
 import importlib.util
 check("no annexure generator left", importlib.util.find_spec("rfq_summary.quote_sheet") is None)
