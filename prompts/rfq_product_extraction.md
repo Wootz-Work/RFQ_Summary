@@ -407,6 +407,25 @@ The confidentiality notice still belongs in Specification when the enquiry share
 Drawings via link are confidential — not to be shared without Wootz approval. Request password if not provided.
 ```
 
+### 5.7 Specs — the costing sheet's columns
+
+Every line also carries `specs`: the facts a costing engineer prices from, one short value per field, so they land in their own columns of the internal costing workbook instead of inside a paragraph. They restate what RFQ Details already says — never add a fact here that is not stated there or derivable under §6 Tier 1.
+
+| Field | What goes in it | Example |
+|---|---|---|
+| `material` | Material family and grade as written | `304 SS`, `EN8`, `S355JR`, `Brass CW614N` |
+| `grade_standard` | Governing standard, grade or class | `MSS SP-114`, `ISO 4017 — 8.8`, `ASTM A193 B7` |
+| `finish` | Coating, plating or surface finish | `HDG 50 µm`, `Zinc flake`, `Brushed`, `None` |
+| `key_dimensions` | The size that identifies the part, compact | `1"`, `M16 × 80`, `Ø204 × 357` |
+| `drawing_no` | The customer's drawing / part number, when given | `MT_BGR00110801` |
+| `extra` | Anything else this product is priced on, as `{"Name": "value"}` | `{"Thread": "NPT", "Pressure rating": "3000 lb"}` |
+
+- Values are short — a cell, not a sentence. No markdown, no `\n`.
+- `extra` holds only what matters for **this** product type: thread, pressure rating, heat treatment, hardness, surface roughness, tolerance class, process, test requirement. Name each spec in plain words, Title Case, the same way every time (`Heat treatment`, not `HT` on one line and `Heat Treatment` on the next) — lines sharing a name share a column. Nothing that is already a fixed field, and at most six entries.
+- A field the customer did not give and that does not matter for this part is `""`. Do not write `N/A`, `—` or `not stated`.
+- Provenance covers every spec: add `material`, `grade_standard`, `finish`, `key_dimensions`, `drawing_no`, and each `extra` name, to the line's `provenance` with the usual tokens — `verbatim` when the customer stated it, `derived` when you read it off a standard they named (Tier 1), `unknown` when a supplier needs it and you could not determine it.
+- Anonymity still applies: a drawing number is fine, the customer's name inside a title block is not.
+
 ## 6. Enrichment — what you may add that the customer did not say
 
 ### 6.1 Decode proprietary, cite public
@@ -469,13 +488,14 @@ NDJSON. One object per line, no wrapping array, no fences, no commentary.
 **Product:**
 
 ```json
-{"type":"product","index":1,"source_ref":"","name":"","structure":"single","variant_count":null,"quantity":"","quantity_basis":"not_stated","details":"","internal_notes":"","target_price":null,"dwg_link":null,"rep_url":null,"addl_files":[],"annexure":null,"provenance":{"name":"","specification":"","scope":"","application":"","additional_note":"","quantity":"","target_price":""}}
+{"type":"product","index":1,"source_ref":"","name":"","structure":"single","variant_count":null,"quantity":"","quantity_basis":"not_stated","details":"","internal_notes":"","target_price":null,"dwg_link":null,"rep_url":null,"addl_files":[],"annexure":null,"specs":{"material":"","grade_standard":"","finish":"","key_dimensions":"","drawing_no":"","extra":{}},"provenance":{"name":"","specification":"","scope":"","application":"","additional_note":"","quantity":"","target_price":"","material":"","grade_standard":"","finish":"","key_dimensions":"","drawing_no":""}}
 ```
 
 - `structure` ∈ `single | family | system`
 - `quantity_basis` ∈ `annual | one_time | blanket | price_breaks | release_schedule | not_stated`
 - `details` and `internal_notes` are markdown strings with `\n` escapes. Both fields render as rich text, so `**bold**`, `<mark>` and backticks are live formatting, not literal characters. `internal_notes` carries a blank line (`\n\n`) between every block
 - `dwg_link` and `rep_url` are always `null`, `addl_files` always `[]` — the team attaches files (§5.6)
+- `specs` on every line (§5.7); `extra` names also appear in `provenance`
 - no `queries` key, no `assumptions` key
 
 **Query** — one per line, immediately after the product it blocks:
@@ -737,4 +757,5 @@ Scope carries the tooling clauses (quoted separately per part; stored and mainta
 6. Four section headings present on every line; Specification and Scope are bullets carrying one fact each, with no bold labels; Scope covers packaging; no line carries a drawing or part number in its name or a value in any link field.
 6a. Every AI Internal notes block label is bold and separated from the next block by a blank line, and emphasis inside the blocks is sparing enough to still mean something.
 7. Every provenance value is a single token from the allowed set.
+7a. Every line carries `specs`; each value is a short cell, not a sentence; nothing in `specs` is absent from RFQ Details; `extra` names are consistent across lines and each has a provenance entry.
 8. Every standard referenced is either linked or marked `(not attached)` with a query.

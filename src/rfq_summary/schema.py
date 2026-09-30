@@ -373,6 +373,56 @@ class ProductAnnexure(BaseModel):
     rows: List[Any] = Field(default_factory=list)
 
 
+class ProductSpecs(BaseModel):
+    """
+    The facts a costing engineer prices from, one short value each, so the
+    costing workbook can give them their own columns (prompt §5.7). `extra`
+    carries the product-specific ones — thread, pressure rating, heat
+    treatment — whose names become dynamic columns.
+    """
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    material: _LooseStr = ""
+    grade_standard: _LooseStr = ""
+    finish: _LooseStr = ""
+    key_dimensions: _LooseStr = ""
+    drawing_no: _LooseStr = ""
+    extra: Dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_fields(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return {}
+        data = dict(data)
+        aliases = {"Material": "material", "grade": "grade_standard", "standard": "grade_standard",
+                   "Grade / Standard": "grade_standard", "Finish": "finish", "dimensions": "key_dimensions",
+                   "Key dimensions": "key_dimensions", "drawing": "drawing_no", "Drawing no.": "drawing_no"}
+        for old, new in aliases.items():
+            if old in data and new not in data:
+                data[new] = data.pop(old)
+        extra = data.get("extra")
+        # The model sends the dynamic specs as an object, a list of pairs or
+        # "Name: value; Name: value" — all three mean the same thing.
+        if isinstance(extra, list):
+            pairs = {}
+            for item in extra:
+                if isinstance(item, dict):
+                    k = item.get("name") or item.get("key") or item.get("label")
+                    if k:
+                        pairs[str(k)] = item.get("value", "")
+                    else:
+                        pairs.update(item)
+            extra = pairs
+        elif isinstance(extra, str):
+            extra = dict(part.split(":", 1) for part in extra.split(";") if ":" in part)
+        elif not isinstance(extra, dict):
+            extra = {}
+        data["extra"] = {str(k).strip(): _coerce_str(v).strip() for k, v in extra.items()
+                         if str(k).strip() and _coerce_str(v).strip()}
+        return data
+
+
 class ExtractedQuery(BaseModel):
     """One row of the queries table: a single question for the customer."""
 
@@ -467,6 +517,7 @@ class ExtractedProduct(BaseModel):
     rep_url: _OptStr = None
     addl_files: _StrOrList = Field(default_factory=list)
     annexure: Optional[ProductAnnexure] = None
+    specs: ProductSpecs = Field(default_factory=ProductSpecs)
     provenance: Dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="before")

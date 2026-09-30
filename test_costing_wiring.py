@@ -66,7 +66,16 @@ def extraction():
             ExtractedProduct(index=1, name="Hex Bolts", structure="family", variant_count=5,
                              annexure=ProductAnnexure(required=True, columns=COLS, rows=ROWS)),
             ExtractedProduct(index=2, name="Threaded Stud M56", structure="single", quantity="1,200 pcs",
-                             details="- Stud M56 x 310\n- ASTM A193 B7", provenance={"quantity": "derived"}),
+                             details="- Stud M56 x 310\n- ASTM A193 B7",
+                             specs={"material": "Alloy steel", "grade_standard": "ASTM A193 B7", "finish": "",
+                                    "key_dimensions": "M56 × 310", "drawing_no": "",
+                                    "extra": {"Thread": "UNC", "Heat treatment": "Q&T"}},
+                             provenance={"quantity": "derived", "material": "derived", "grade_standard": "verbatim",
+                                         "finish": "unknown", "key_dimensions": "verbatim", "thread": "derived"}),
+            ExtractedProduct(index=4, name="Half Coupling 1\" 304 SS", structure="single", quantity="170 pcs",
+                             specs={"material": "304 SS", "grade_standard": "MSS SP-114", "key_dimensions": "1\"",
+                                    "extra": {"thread": "NPT", "Pressure rating": "3000 lb"}},
+                             provenance={"material": "verbatim"}),
             ExtractedProduct(index=3, name="Their Washers", structure="family", quantity="As per annexure",
                              annexure=ProductAnnexure(required=True, by_reference=True)),
         ],
@@ -89,10 +98,26 @@ check("each row is labelled for the Quotation by code and description", fam.line
 check("the family has one legend rate, named after it", fam.rate_groups == ["Hex Bolts"])
 check("source lines taken from the variant count", fam.source_lines == 5)
 ind = tabs[1]
-check("single lines go to Individual items", [l.label for l in ind.lines] == ["Threaded Stud M56", "Their Washers"])
+check("single lines go to Individual items",
+      [l.label for l in ind.lines] == ["Threaded Stud M56", 'Half Coupling 1" 304 SS', "Their Washers"],
+      str([l.label for l in ind.lines]))
+heads = [h for h, _ in ind.columns]
+check("the five spec columns are always there, in order",
+      heads[:6] == ["Part name", "Material", "Grade / Standard", "Finish", "Key dimensions", "Drawing no."], str(heads))
+check("no Details paragraph any more", "Details" not in heads, str(heads))
+check("product-specific specs become dynamic columns", heads[6:] == ["Thread", "Heat treatment", "Pressure rating"],
+      str(heads))
+check("one column per spec name, whatever its case", heads.count("Thread") == 1 and "thread" not in heads)
+stud, coupling = ind.lines[0].fields, ind.lines[1].fields
+check("a spec the customer stated is black", stud["Grade / Standard"].kind == "data"
+      and stud["Grade / Standard"].value == "ASTM A193 B7")
+check("a spec read off a standard is red", stud["Material"].kind == "assume" and stud["Thread"].kind == "assume")
+check("a spec needed but unknown is orange and empty", stud["Finish"].kind == "input" and stud["Finish"].value is None)
+check("each line fills only its own dynamic columns",
+      coupling["Thread"].value == "NPT" and "Heat treatment" not in coupling and stud.get("Pressure rating") is None)
 check("a derived quantity is red", ind.lines[0].qty.kind == "assume" and ind.lines[0].qty.value == 1200)
-check("'As per annexure' leaves qty for the team", ind.lines[1].qty.kind == "input")
-check("a by-reference family says why it is not expanded", "own workbook" in ind.lines[1].remarks)
+check("'As per annexure' leaves qty for the team", ind.lines[2].qty.kind == "input")
+check("a by-reference family says why it is not expanded", "own workbook" in ind.lines[2].remarks)
 check("weight is never set from the extraction", all(l.weight.kind == "input" for t in tabs for l in t.lines))
 
 
@@ -138,6 +163,10 @@ check("file id to ttqlU and link to Vr8gz, on the RFQ row",
                                    "Vr8gz": "https://wootz-my.sharepoint.com/x/cost.xlsx"})], str(calls["glide"]))
 check("reports success", calls["result"] is True)
 book = openpyxl.load_workbook(io.BytesIO(calls["upload"][0]["data"]))
+sheet = book["(Zai) Individual items"]
+row2 = [sheet.cell(2, c).value for c in range(1, 12)]
+check("the uploaded sheet carries the spec columns", row2[:6] == ["Part name", "Material", "Grade / Standard", "Finish",
+                                                                  "Key dimensions", "Drawing no."], str(row2))
 check("the uploaded file is the generated workbook",
       book.sheetnames == ["(Zai) Summary", "(Zai) Hex Bolts", "(Zai) Individual items"], str(book.sheetnames))
 

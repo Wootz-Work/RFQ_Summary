@@ -807,6 +807,21 @@ def _annexure_rows_as_dicts(annexure: Any) -> List[Dict[str, str]]:
     return out
 
 
+# Spec fields every individual item gets a column for, in order: (extraction key, header).
+SPEC_COLUMNS = (("material", "Material"), ("grade_standard", "Grade / Standard"), ("finish", "Finish"),
+                ("key_dimensions", "Key dimensions"), ("drawing_no", "Drawing no."))
+
+
+def _spec_val(value: Any, provenance: str) -> Val:
+    """Colour a spec by where it came from: stated black, derived red, needed-but-unknown orange."""
+    v = str(value or "").strip()
+    if provenance == "unknown" and not v:
+        return needed()
+    if not v:
+        return data(None)
+    return assumed(v) if provenance == "derived" else data(v)
+
+
 def tabs_from_extraction(extraction: Any) -> List[Tab]:
     """
     Turn a product extraction into workbook tabs: one per family, one for the rest.
@@ -821,6 +836,7 @@ def tabs_from_extraction(extraction: Any) -> List[Tab]:
     tabs: List[Tab] = []
     taken: set = set()
     individual: List[Line] = []
+    extra_headers: Dict[str, str] = {}      # lower-cased spec name -> the header first seen
     has_drawing = False
     for p in getattr(extraction, "products", None) or []:
         name = str(getattr(p, "name", "") or "").strip()
@@ -860,12 +876,24 @@ def tabs_from_extraction(extraction: Any) -> List[Tab]:
         has_drawing = has_drawing or bool(dwg)
         remarks = ("Variants are in the customer's own workbook — not expanded here"
                    if structure == "family" else "")
-        individual.append(Line(label=name, fields={"Part name": data(name or None),
-                                                   "Details": data(str(getattr(p, "details", "") or "").strip() or None),
-                                                   "Drawing": data(dwg or None)},
-                               qty=qty, qty_unit=unit or "pcs", remarks=remarks))
+        prov = {str(k).strip().lower(): str(v or "").strip().lower()
+                for k, v in (getattr(p, "provenance", None) or {}).items()}
+        specs = getattr(p, "specs", None)
+        fields = {"Part name": data(name or None)}
+        for key, header in SPEC_COLUMNS:
+            fields[header] = _spec_val(getattr(specs, key, "") if specs else "", prov.get(key, ""))
+        for spec, value in ((getattr(specs, "extra", None) or {}) if specs else {}).items():
+            header = extra_headers.setdefault(spec.strip().lower(), spec.strip())
+            fields[header] = _spec_val(value, prov.get(spec.strip().lower(), ""))
+        fields["Drawing link"] = data(dwg or None)
+        individual.append(Line(label=name, fields=fields, qty=qty, qty_unit=unit or "pcs", remarks=remarks))
     if individual:
-        cols = [("Part name", 30), ("Details", 60)] + ([("Drawing", 24)] if has_drawing else [])
+        # Fixed spec columns on every tab; a dynamic column only for a spec some item actually has.
+        cols = [("Part name", 30)] + [(h, w) for (_, h), w in zip(SPEC_COLUMNS, (18, 20, 14, 18, 18))]
+        for header in extra_headers.values():
+            cols.append((header, _width(header, [l.fields.get(header, data(None)).value for l in individual], 24)))
+        if has_drawing:
+            cols.append(("Drawing link", 24))
         tabs.append(Tab(name="Individual items", kind="individual", mode="process", columns=cols,
                         lines=individual, source="Line items in the RFQ", source_lines=len(individual)))
     return tabs
