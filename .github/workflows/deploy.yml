@@ -4,7 +4,7 @@ name: Deploy to EC2
 on:
   push:
     branches:
-      - main
+      - dev
   workflow_dispatch:
 
 jobs:
@@ -37,13 +37,13 @@ jobs:
 
             cd "$APP_DIR"
 
-            # 2. Get latest main branch
+            # 2. Get latest dev branch
             echo "=========================================="
-            echo "📥 Fetching latest code from main"
+            echo "📥 Fetching latest code from dev"
             echo "=========================================="
 
-            git fetch origin main
-            git reset --hard origin/main
+            git checkout dev
+            git pull origin dev
 
             # 3. Detect Docker Compose
             echo "=========================================="
