@@ -84,3 +84,46 @@ Everything the reviewer needs but the supplier must not see — provenance,
 validation warnings, the count reconciliation, unparseable rows and the raw model
 output — is logged to the Google Sheet under mode `triage_products`, never into
 `RFQ Details`.
+
+## CI/CD Deployment (GitHub Actions to EC2)
+
+This repository includes an automated CI/CD pipeline (`.github/workflows/deploy.yml`) that deploys the application directly to an AWS EC2 instance whenever changes are pushed or merged into the `main` branch.
+
+### How it works:
+1. Triggered on push / merge to `main` (or manually via GitHub Actions **Run workflow**).
+2. GitHub Actions connects to the EC2 server over SSH.
+3. Pulls latest changes from `origin/main` directly on EC2 (`git fetch origin main && git reset --hard origin/main`).
+4. Builds the Docker container locally on EC2 using `docker compose up -d --build` (no Docker Hub account required).
+5. Cleans up unused old images (`docker image prune -f`) and outputs container status.
+
+### One-Time EC2 Setup:
+1. **Clone the repository on your EC2 instance**:
+   ```bash
+   git clone git@github-wootzwork:Wootz-Work/RFQ_Summary.git ~/RFQ_Summary
+   # or
+   git clone https://github.com/Wootz-Work/RFQ_Summary.git ~/RFQ_Summary
+   ```
+2. **Setup your `.env` file on EC2**:
+   ```bash
+   cd ~/RFQ_Summary
+   cp .env.example .env
+   # Edit .env with production credentials:
+   nano .env
+   ```
+3. **Ensure Docker & Docker Compose are installed and the user has docker permissions**:
+   ```bash
+   sudo usermod -aG docker $USER
+   newgrp docker
+   ```
+
+### Required GitHub Secrets:
+Add the following secrets under **Repository Settings > Secrets and variables > Actions > Repository secrets**:
+
+| Secret Name | Description | Example |
+|---|---|---|
+| `EC2_HOST` | Public IP or DNS of the EC2 instance | `54.210.xx.xx` or `ec2-xx.compute-1.amazonaws.com` |
+| `EC2_USER` | SSH username for the instance | `ubuntu` (Ubuntu) or `ec2-user` (Amazon Linux) |
+| `EC2_SSH_KEY` | Full private SSH key (`.pem` content) | `-----BEGIN RSA PRIVATE KEY----- ... -----END RSA PRIVATE KEY-----` |
+| `EC2_PORT` | *(Optional)* SSH Port (defaults to `22`) | `22` |
+| `APP_DIR` | *(Optional)* App directory on EC2 (defaults to `~/RFQ_Summary`) | `/home/ubuntu/RFQ_Summary` |
+
