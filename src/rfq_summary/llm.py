@@ -29,6 +29,21 @@ _ADAPTIVE_THINKING_MODELS = re.compile(
 # and output draw on the same max_tokens budget.
 STREAM_ABOVE_TOKENS = 16000
 
+# Ceiling for the one bigger-budget retry below. Opus 5 can emit 128K, but a
+# retry that large on a slow call would outlive every job timeout we set.
+MAX_ESCALATED_TOKENS = 64000
+
+
+def thinking_used_whole_budget(resp: object) -> bool:
+    """True when thinking ran into max_tokens before any answer was written."""
+    meta = getattr(resp, "response_metadata", None) or {}
+    if (meta.get("stop_reason") or meta.get("finish_reason")) != "max_tokens":
+        return False
+    content = getattr(resp, "content", None)
+    return isinstance(content, list) and any(
+        (b.get("type") if isinstance(b, dict) else getattr(b, "type", None)) == "thinking" for b in content
+    )
+
 
 def _supports_adaptive_thinking(model: str) -> bool:
     return bool(_ADAPTIVE_THINKING_MODELS.match((model or "").strip()))
@@ -223,10 +238,14 @@ def generate_text(
 
     want_thinking = settings.anthropic_adaptive_thinking if thinking is None else bool(thinking)
     effort_to_use = (settings.anthropic_effort if effort is None else effort or "").strip().lower()
-    budget = 8000 if max_tokens is None else max(1000, int(max_tokens))
+    # ANTHROPIC_MAX_TOKENS is the default for every call that does not set its own.
+    # It used to be defined and never read — every such call ran on a hard-coded 8000.
+    default_budget = int(getattr(settings, "anthropic_max_tokens", 0) or 24000)
+    budget = max(1000, default_budget if max_tokens is None else int(max_tokens))
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
 
-    def _ask(model: str, with_thinking: bool):
+    def _ask(model: str, with_thinking: bool, tokens: int | None = None):
+        tokens = tokens or budget
         kwargs: dict = {}
         if with_thinking and _supports_adaptive_thinking(model):
             kwargs["thinking"] = {"type": "adaptive"}
@@ -238,12 +257,12 @@ def generate_text(
         # A large max_tokens on a non-streaming request risks an HTTP timeout
         # long before the model is done. Streaming removes that ceiling, and
         # LangChain still returns one aggregated message from .invoke().
-        if budget > STREAM_ABOVE_TOKENS:
+        if tokens > STREAM_ABOVE_TOKENS:
             kwargs["streaming"] = True
         llm = ChatAnthropic(
             model=model,
             anthropic_api_key=settings.anthropic_api_key,
-            max_tokens=budget,
+            max_tokens=tokens,
             **kwargs,
         )
         return llm.invoke(messages)
@@ -263,8 +282,18 @@ def generate_text(
             # been observed to succeed where an earlier attempt returned
             # nothing at all. Try again, unchanged, before reaching for a
             # different configuration (thinking off) or a different model.
+            # Thinking ran out of room: the same call again cannot succeed, it
+            # has exactly the same room. Give it more once, before anything else.
+            if not text and want_thinking and thinking_used_whole_budget(resp) and budget < MAX_ESCALATED_TOKENS:
+                bigger = min(MAX_ESCALATED_TOKENS, budget * 2)
+                print(f"[WARN] llm | {tag} {model} thinking used all {budget} tokens before answering — "
+                      f"retrying once with {bigger}".strip())
+                resp = _ask(model, want_thinking, bigger)
+                _log_usage(model, resp, bigger, tag)
+                text = response_text(resp.content)
+
             attempt = 0
-            while not text and attempt < empty_retries:
+            while not text and attempt < empty_retries and not thinking_used_whole_budget(resp):
                 attempt += 1
                 reason = describe_empty_reply(resp)
                 print(f"[WARN] llm | {tag} {model} returned no text: {reason}".strip())

@@ -751,6 +751,71 @@ def test_empty_reply_retries_before_giving_up() -> bool:
     return ok
 
 
+def test_budget_setting_is_honoured_and_escalated() -> bool:
+    """The production regenerate_triage failure: 134K tokens in, thinking spent
+    the whole 8000-token budget twice (the second an identical, hopeless
+    retry) before a thinking-off retry. ANTHROPIC_MAX_TOKENS existed but was
+    never read. Now the setting is the default, and running out of room earns
+    one retry with double the room, not the same call again."""
+    import io, contextlib
+    from unittest.mock import patch
+    from rfq_summary import llm
+    from rfq_summary.config import Settings
+
+    class Resp:
+        def __init__(self, content, meta):
+            self.content, self.response_metadata = content, meta
+
+    seen = []
+
+    def run(settings, invoke_fn, max_tokens=None):
+        seen.clear()
+        buf = io.StringIO()
+        with patch("langchain_anthropic.ChatAnthropic.invoke", invoke_fn):
+            with contextlib.redirect_stdout(buf):
+                try:
+                    return llm.generate_text(settings, "sys", "user", max_tokens=max_tokens,
+                                             run_id="rb", label="regenerate_triage"), buf.getvalue()
+                except RuntimeError:
+                    return "", buf.getvalue()
+
+    def ok_reply(self, messages, **kw):
+        seen.append(self.max_tokens)
+        return Resp("fine", {"stop_reason": "end_turn", "usage": {"input_tokens": 1, "output_tokens": 1}})
+
+    base = Settings(GLIDE_API_KEY="k", GLIDE_APP_ID="app", ANTHROPIC_API_KEY="sk-test", ANTHROPIC_MODEL_FALLBACKS="")
+    run(base, ok_reply)
+    ok = _check("the default budget is now 24000, not a hard-coded 8000", seen == [24000], str(seen))
+    run(Settings(GLIDE_API_KEY="k", GLIDE_APP_ID="app", ANTHROPIC_API_KEY="sk-test",
+                 ANTHROPIC_MAX_TOKENS="12000", ANTHROPIC_MODEL_FALLBACKS=""), ok_reply)
+    ok &= _check("ANTHROPIC_MAX_TOKENS is actually read", seen == [12000], str(seen))
+    run(base, ok_reply, max_tokens=64000)
+    ok &= _check("a call's own budget still wins", seen == [64000], str(seen))
+
+    def thinks_until_room(self, messages, **kw):
+        seen.append(self.max_tokens)
+        if self.max_tokens < 16000:
+            return Resp([{"type": "thinking", "thinking": "..."}], {"stop_reason": "max_tokens"})
+        return Resp("answer at last", {"stop_reason": "end_turn", "usage": {"input_tokens": 1, "output_tokens": 1}})
+
+    text, log = run(base, thinks_until_room, max_tokens=8000)
+    ok &= _check("thinking that ran out of room is retried with double the room", seen == [8000, 16000], str(seen))
+    ok &= _check("…and the answer comes back", text == "answer at last", text)
+    ok &= _check("…without an identical retry first", "unchanged" not in log, log)
+    ok &= _check("the escalation is logged", "retrying once with 16000" in log, log)
+
+    def always_thinks(self, messages, **kw):
+        seen.append((self.max_tokens, bool(getattr(self, "thinking", None))))
+        if getattr(self, "thinking", None):
+            return Resp([{"type": "thinking", "thinking": "..."}], {"stop_reason": "max_tokens"})
+        return Resp("thinking off", {"stop_reason": "end_turn", "usage": {"input_tokens": 1, "output_tokens": 1}})
+
+    text, log = run(base, always_thinks, max_tokens=8000)
+    ok &= _check("if double is still not enough, thinking-off remains the last resort",
+                 text == "thinking off" and seen == [(8000, True), (16000, True), (8000, False)], str(seen))
+    return ok
+
+
 def test_regenerate_unwraps_list_wrapped_scalar_fields() -> bool:
     """The actual production 422: previous_response arrived as
     ['<triage>...</triage>'] — a one-element list — instead of the plain
@@ -1312,6 +1377,7 @@ if __name__ == "__main__":
             test_name_describes_the_part_not_the_order(),
             test_usage_is_reported(),
             test_empty_reply_retries_before_giving_up(),
+            test_budget_setting_is_honoured_and_escalated(),
             test_regenerate_unwraps_list_wrapped_scalar_fields(),
             test_regenerate_accepts_json_stringified_rfq_and_products(),
             test_regenerate_prev_json_matches_rfq_tolerance(),
