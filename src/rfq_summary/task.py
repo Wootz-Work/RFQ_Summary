@@ -760,9 +760,11 @@ def resolve_product_extraction(out: TriageOutputPayload, timeout_sec: Optional[f
 
     products_model_text = ""
     products_llm_ms = 0
+    failure = ""
     try:
         products_model_text, products_llm_ms = pending.future.result(timeout=timeout_sec)
     except FuturesTimeoutError:
+        failure = f"product extraction timed out after {timeout_sec:.0f}s (PRODUCT_EXTRACTION_TIMEOUT_SEC)"
         print(
             f"[WARN] run_id={pending.run_id} | product extraction timed out after {timeout_sec}s; "
             f"skipping products (raise PRODUCT_EXTRACTION_TIMEOUT_SEC, and JOB_TIMEOUT_SEC if it is the binding limit). "
@@ -770,11 +772,16 @@ def resolve_product_extraction(out: TriageOutputPayload, timeout_sec: Optional[f
         )
         pending.future.cancel()
     except Exception as e:
+        failure = f"product extraction LLM failed: {type(e).__name__}: {e}"[:500]
         print(f"[WARN] run_id={pending.run_id} | product extraction LLM failed: {type(e).__name__}: {e}")
     finally:
         pending.executor.shutdown(wait=False)
 
     extraction = parse_product_extraction(products_model_text)
+    # "empty model output" is only true when the model answered with nothing. A
+    # timeout or an error must say so in the run log, or it reads as the model's fault.
+    if failure and not products_model_text:
+        extraction.parse_errors = [failure]
     if extraction.parse_errors:
         print(f"[WARN] run_id={pending.run_id} | product extraction parse errors: {extraction.parse_errors}")
     for warning in extraction.validation_warnings:

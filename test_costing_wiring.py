@@ -298,6 +298,25 @@ check("a plain file link opens in Excel for the web on that tab",
       writer.sheet_link("https://x/a.xlsx", "Volza Insights") == "https://x/a.xlsx?web=1&activeCell=%27Volza%20Insights%27!A1")
 check("the tab name is read from the file itself", "Volza Insights" in writer.workbook_sheet_names(_v.getvalue()))
 
+# ---- a product-extraction timeout is named as one -------------------------------
+import time as _time
+from concurrent.futures import ThreadPoolExecutor
+from rfq_summary import task as _task
+
+_pool = ThreadPoolExecutor(max_workers=1)
+_slow = _pool.submit(lambda: (_time.sleep(0.5), ("late", 1))[1])
+_out = TriageOutputPayload(run_id="rt", row_id="RFQ1")
+_out.pending_products = _task.PendingProductExtraction(run_id="rt", future=_slow, executor=_pool,
+                                                         started_at=_time.perf_counter())
+with contextlib.redirect_stdout(io.StringIO()):
+    _task.resolve_product_extraction(_out, 0.05)
+errs = _out.product_extraction.parse_errors
+check("a timeout reads as a timeout in the run log, not 'empty model output'",
+      errs and "timed out" in errs[0] and "empty model output" not in errs, str(errs))
+check("the new defaults leave room for a large package",
+      _settings().product_extraction_timeout_sec == 900 and _settings().job_timeout_sec == 1500
+      and _settings().anthropic_max_tokens == 24000)
+
 # ---- the annexure is gone ------------------------------------------------------
 import importlib.util
 check("no annexure generator left", importlib.util.find_spec("rfq_summary.quote_sheet") is None)

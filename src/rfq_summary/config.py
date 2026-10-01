@@ -18,7 +18,10 @@ class Settings(BaseSettings):
         default="claude-opus-4-8,claude-sonnet-5",
         alias="ANTHROPIC_MODEL_FALLBACKS",
     )
-    anthropic_max_tokens: int = Field(default=8000, alias="ANTHROPIC_MAX_TOKENS")
+    # Default output budget (thinking + answer) for every call without its own.
+    # Only tokens actually generated are billed, so a roomy cap costs nothing on
+    # a small RFQ and stops a large one from thinking itself out of an answer.
+    anthropic_max_tokens: int = Field(default=24000, alias="ANTHROPIC_MAX_TOKENS")
     # Adaptive thinking: recommended on Opus 4.6 and the default on Opus 5. Set false
     # to turn it off without a code change.
     anthropic_adaptive_thinking: bool = Field(default=True, alias="ANTHROPIC_ADAPTIVE_THINKING")
@@ -196,7 +199,9 @@ class Settings(BaseSettings):
     # ========================
     max_queue_size: int = Field(default=50, alias="MAX_QUEUE_SIZE")
     max_concurrent_jobs: int = Field(default=2, alias="MAX_CONCURRENT_JOBS")
-    job_timeout_sec: int = Field(default=600, alias="JOB_TIMEOUT_SEC")  # safety kill
+    # Safety kill for a whole job. Must leave room for attachments + triage + the
+    # product extraction wait below; a large MTO package spends ~10 minutes there.
+    job_timeout_sec: int = Field(default=1500, alias="JOB_TIMEOUT_SEC")
 
     # ========================
     # Glide writeback (SAFETY: default off)
@@ -336,7 +341,9 @@ class Settings(BaseSettings):
     # Note JOB_TIMEOUT_SEC is the real ceiling: the job is killed at that point
     # regardless, so a value above (JOB_TIMEOUT_SEC - attachments - triage) never
     # gets used. Raise JOB_TIMEOUT_SEC too if long packages are being cut off.
-    product_extraction_timeout_sec: int = Field(default=420, alias="PRODUCT_EXTRACTION_TIMEOUT_SEC")
+    # A multi-sheet MTO transcribes tens of thousands of output tokens; at 420 s
+    # such packages timed out every time and wrote no products at all.
+    product_extraction_timeout_sec: int = Field(default=900, alias="PRODUCT_EXTRACTION_TIMEOUT_SEC")
 
     # Gate triage writeback separately (keeps RFQ writeback safety intact)
     enable_triage_writeback: bool = Field(default=True, alias="ENABLE_TRIAGE_WRITEBACK")
