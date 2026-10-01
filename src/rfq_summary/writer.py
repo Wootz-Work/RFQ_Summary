@@ -372,6 +372,9 @@ def _write_extracted_products(settings: Settings, rfq_row_id: str, out: TriageOu
     """
     extraction = out.product_extraction
     if extraction is None or not extraction.products:
+        why = "; ".join((extraction.parse_errors if extraction else None) or []) or "no product lines"
+        print(f"[INFO] run_id={out.run_id} | no products extracted ({why}) — "
+              f"no product rows written and no costing workbook built")
         return 0, 0
 
     if not settings.enable_product_writeback:
