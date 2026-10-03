@@ -29,7 +29,7 @@ import io
 import re
 import zipfile
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import openpyxl
 from openpyxl.formula.tokenizer import Token, Tokenizer
@@ -822,6 +822,34 @@ def _spec_val(value: Any, provenance: str) -> Val:
     return assumed(v) if provenance == "derived" else data(v)
 
 
+_MATERIAL_HEADER = re.compile(r"\b(material|moc)\b", re.IGNORECASE)
+_FINISH_HEADER = re.compile(r"\b(finish|coating|plating)\b", re.IGNORECASE)
+
+
+def _rate_group(row: Dict[str, Any], columns: Sequence[str], specs: Any, fallback: str) -> str:
+    """
+    The legend rate a family row is priced at: one per material and finish.
+
+    A family can now mix materials and finishes (they are annexure columns, not
+    reasons to split the line), and a kilo of 316 with PVD does not cost what a
+    kilo of A2 plain does. The row's own material / finish columns decide; a
+    value the row leaves out falls back to the product-level spec the whole
+    family shares; with neither, the family has a single rate.
+    """
+    from .sheet_columns import display_header
+
+    def pick(pattern: "re.Pattern[str]", spec: str) -> str:
+        for c in columns:
+            if pattern.search(display_header(c)):
+                v = re.sub(r"\s+", " ", str(row.get(c) or "")).strip()
+                if v:
+                    return v
+        return re.sub(r"\s+", " ", str(getattr(specs, spec, "") or "")).strip() if specs else ""
+
+    parts = [v for v in (pick(_MATERIAL_HEADER, "material"), pick(_FINISH_HEADER, "finish")) if v]
+    return " · ".join(parts)[:80] if parts else fallback
+
+
 def tabs_from_extraction(extraction: Any) -> List[Tab]:
     """
     Turn a product extraction into workbook tabs: one per family, one for the rest.
@@ -850,14 +878,19 @@ def tabs_from_extraction(extraction: Any) -> List[Tab]:
             label_col = next((c for c in shown if display_header(c).lower() in ("description", "part name")),
                              shown[0] if shown else None)
             code_col = next((c for c in shown if display_header(c).lower() in ("part number", "item code", "stock code")), None)
+            specs = getattr(p, "specs", None)
             lines = []
+            groups: List[str] = []
             for row in rows:
                 qty, unit = split_quantity(row.get(qty_col)) if qty_col else (needed(), "pcs")
                 label = str(row.get(label_col) or "").strip() if label_col else ""
                 if code_col and code_col != label_col and row.get(code_col):
                     label = f"{row.get(code_col)} {label}".strip()
+                group = _rate_group(row, shown, specs, name or "This family")
+                if group not in groups:
+                    groups.append(group)
                 lines.append(Line(label=label or name, fields={display_header(c): data(row.get(c) or None) for c in shown},
-                                  qty=qty, qty_unit=unit or "pcs", rate_group=name or "This family"))
+                                  qty=qty, qty_unit=unit or "pcs", rate_group=group))
             tabs.append(Tab(
                 name=_tab_name(name, taken), kind="family", mode="weight_rate",
                 columns=[(display_header(c), _width(display_header(c), [r.get(c) for r in rows])) for c in shown],
@@ -865,7 +898,7 @@ def tabs_from_extraction(extraction: Any) -> List[Tab]:
                 source=" · ".join(x for x in (f"Line {p.index}" if getattr(p, "index", None) is not None else "",
                                               str(getattr(p, "source_ref", "") or "").strip()) if x),
                 source_lines=getattr(p, "variant_count", None) or len(rows),
-                rate_groups=[name or "This family"],
+                rate_groups=groups,
             ))
             continue
 

@@ -34,11 +34,11 @@ _LABELS = {
 
 
 def display_header(key: Any) -> str:
-    """`key_dimensions` -> `Key dimensions`; a header the customer wrote stays as written."""
+    """`key_dimensions` -> `Key dimensions`, `size` -> `Size`; a header the customer wrote stays as written."""
     k = re.sub(r"\s+", " ", str(key or "").replace("\n", " ")).strip()
     if k.lower() in _LABELS:
         return _LABELS[k.lower()]
-    if "_" in k and " " not in k and k == k.lower():
+    if re.fullmatch(r"[a-z][a-z0-9_]*", k):
         return k.replace("_", " ").capitalize()
     return k
 
