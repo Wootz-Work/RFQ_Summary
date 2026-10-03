@@ -128,7 +128,7 @@ Bad, whatever the type:
 Two things live at RFQ level, not on lines:
 
 - **`common_conditions`** — anything true of every line: a decoded customer coating standard, certification-per-shipment, currency and incoterm, quantity basis, the quote-basis block. Stated once here, never repeated on lines. Lines reference it by standard number only.
-- **`reconciliation`** — the line-count check and any structural decisions (merges, splits, dropped scratch rows).
+- **`reconciliation`** — the line-count check and any structural decisions (merges, splits, dropped scratch rows). For each family, its level on the ladder (§4.3) and, where it stopped below level 3, the test that stopped it — one short clause each: `Micro screws: level 2, 23 items; standoffs kept apart (test 1, turned not headed)`.
 
 ### 1.4 Anonymity
 
@@ -181,31 +181,60 @@ A line is **one quotable unit: the smallest thing a supplier returns a single pr
 
 Multiplicity comes in two kinds. Do not confuse them.
 
-**Variation (breadth).** Same part, N sizes or finishes. One setup, one quality plan, N prices. → **One line, variants in an annexure.**
+**Variation (breadth).** The same kind of part in N sizes, materials, finishes or styles. One supplier, one way to cost, N prices. → **One line, variants in an annexure** — how far to take it is §4.3.
 
 **Composition (depth).** One deliverable made of N different parts. → **Ask who owns the assembly.** If the supplier hands over the assembled unit, one line with a subsystem list. If Wootz or the customer assembles from separately sourced parts, N lines.
 
 A bolt and washer delivered as a SEMS assembly is one line. A pump skid with tank and diffuser delivered as a working system is one line. A machined housing made from a casting the supplier procures is one line, casting noted as a child part. "Nut and bolt" with no stated assembly is two lines — or a query.
 
-### 4.3 Five tests, in order
+### 4.3 How far to group — the ladder
 
-1. **Process chain** — can one supplier make it in one process chain? If the pieces would go to different suppliers, split.
-2. **Quote shape** — one price or many? Many prices from one setup means annexure, not more lines.
-3. **Assembly ownership** — who hands over the finished thing? That party's deliverable is the line.
-4. **Tooling** — different tooling means different lines. Never bend this one.
-5. **Commercial identity** — separate target price, delivery schedule or approval requirement means a separate line even when 1–4 say consolidate.
+The aim is an RFQ the team can read, cost and send to suppliers without getting lost in it — not the fewest possible lines, and not one line per spreadsheet row. Every grouped line keeps each item in its annexure, so nothing is hidden by grouping; what changes is how many things a person has to hold in their head.
 
-**Tie-breaker:** when genuinely unsure, split, and raise the possible consolidation as a query. Over-splitting costs attention. Under-splitting hides an item the customer wanted priced.
+Climb the ladder one rung at a time. Stop at the first rung where any of the four tests below fails.
+
+| Level | Items share | Example |
+|---|---|---|
+| **0 — each item** | nothing | `Hex Bolt M10 x 120 — 10.9` |
+| **1 — sizes** | part type, material and finish; only sizes or lengths differ | `Pan Head Screws M2–M4 — A4 (family)` |
+| **2 — variants** | part type; material, finish, head or drive type, tooling differ | `Micro Screws — 23 variants (family)` |
+| **3 — product class** | product class and process route — related part types one supplier makes the same way | `Standoffs & SMT Nuts — 3 parts (family)` |
+
+**Level 3 is the ceiling.** Never put a whole commodity on one line — `Fasteners`, `Machined parts`, `Sheet metal parts`, `Castings` are commodities, not products. Never group across process routes that belong to different kinds of supplier: a turned standoff and a pressed washer are two lines however long the RFQ.
+
+**The four tests.** A group holds only while all four pass:
+
+1. **One supplier, one job** — the supplier who makes one item in the group makes all of them, in the same process route, with the same quality plan. If items would go to different suppliers, split.
+2. **One way to cost** — every item is costed the same way (the same columns on the costing sheet: weight × rate, or the same process list). If one item needs a different costing model, it leaves the group.
+3. **A plain name** — the group has an honest name within 50 characters, with no "and" joining unrelated things. `Micro Screws` passes; `Screws, Standoffs and Washers` fails. `Standoffs & SMT Nuts` passes only because both are threaded spacers made on the same machines.
+4. **Nothing commercial separates them** — the customer did not set a separate target price, delivery schedule, approval route or award decision for some items. If they did, those items are their own line. (A different delivery *date* per item is not separation — it is a column.)
+
+**What differs becomes a column, not a line.** Within a group, everything that varies item to item goes into the annexure as its own column: part number, description, size, head and drive type, material, finish, tooling, drawing number, delivery date, quantity, target price. Different material, different finish and different tooling are all columns — the costing sheet prices each material-and-finish combination at its own rate.
+
+**How hard to look for groups depends on the item count.** It decides effort, never the answer:
+
+- **1–5 items** — group only what is obviously the same part in different sizes (level 1). Five separate lines are easy to read.
+- **6–10 items** — look for level 1 and level 2 groups.
+- **More than 10 items** — look for level 2 and level 3 groups; a long list of lines nobody can scan defeats the purpose.
+- **More than 20 items** — every line should be a group unless a test forces it out; expect a handful of lines.
+
+**Don't group for its own sake.** A group of two that saves one line is rarely worth the annexure; keep them separate unless they are plainly the same part in two sizes. A lone item that fails a test against its neighbours is a line on its own — thirteen screws in a group and one washer beside it is two lines, which is right.
+
+**Assembly ownership still comes first.** Composition (§4.2) is decided before the ladder: a delivered assembly is one line with a subsystem list, never a family.
+
+**Tie-breaker:** when genuinely unsure whether a test passes, keep the items apart and raise the possible grouping in `notes_for_reviewer`. A missed group costs a little attention; a wrong group hides a price the customer wanted.
 
 ### 4.4 The three shapes
 
-**Single** — default.
+**Single** — one item, level 0.
 
-**Family** — one line plus annexure. Use when variation holds and either the variant count is 6 or more or the customer presented them as a table. Outliers split out: thirteen zinc-plated washers and one stainless is two lines. Annexure columns, dropping any that don't apply:
+**Family** — one line plus annexure: any level 1, 2 or 3 group the ladder allows. Annexure columns, dropping any that don't apply and adding any the items differ on:
 
-`part_number · description · standard · key_dimensions · material · finish · drawing_ref · quantity · target_price · notes`
+`part_number · description · type · size · key_dimensions · material · finish · tooling · standard · drawing_ref · delivery_date · quantity · target_price · notes`
 
-`part_number` is the customer's own part, stock or item code, and only when they gave one — never a serial number, a row count or a reference you make up to tell rows apart. With no code, leave the column out and let `description` (or the part name) identify the row. Preserve the customer's row order. If the customer's workbook will travel with the RFQ, set `annexure.by_reference: true`, name the file, and set Qty to `As per annexure`.
+`type` is the part type within a level 2 or 3 group (`Pan head screw`, `Standoff`); leave it out when every item shares it. `part_number` is the customer's own part, stock or item code, and only when they gave one — never a serial number, a row count or a reference you make up to tell rows apart. With no code, leave the column out and let `description` (or the part name) identify the row. Preserve the customer's row order. Qty on a family line is always `As per annexure`, with the total in brackets only when every item shares a unit: `As per annexure (52,500 pcs)`. If the customer's workbook will travel with the RFQ, set `annexure.by_reference: true` and name the file.
+
+A query about one item in a family names that item in its text (`For SC-0412, …`) — the query still points at the family line by index.
 
 **System** — one line plus a subsystem list in Specification, each with its own quantity:
 
@@ -424,6 +453,7 @@ Every line also carries `specs`: the facts a costing engineer prices from, one s
 - `extra` holds only what matters for **this** product type: thread, pressure rating, heat treatment, hardness, surface roughness, tolerance class, process, test requirement. Name each spec in plain words, Title Case, the same way every time (`Heat treatment`, not `HT` on one line and `Heat Treatment` on the next) — lines sharing a name share a column. Nothing that is already a fixed field, and at most six entries.
 - A field the customer did not give and that does not matter for this part is `""`. Do not write `N/A`, `—` or `not stated`.
 - Provenance covers every spec: add `material`, `grade_standard`, `finish`, `key_dimensions`, `drawing_no`, and each `extra` name, to the line's `provenance` with the usual tokens — `verbatim` when the customer stated it, `derived` when you read it off a standard they named (Tier 1), `unknown` when a supplier needs it and you could not determine it.
+- On a family line, a spec every item shares holds that value; a spec that differs item to item is `""` here and lives in the annexure column instead.
 - Anonymity still applies: a drawing number is fine, the customer's name inside a title block is not.
 
 ## 6. Enrichment — what you may add that the customer did not say
@@ -515,6 +545,8 @@ NDJSON. One object per line, no wrapping array, no fences, no commentary.
 ```json
 {"required":true,"by_reference":false,"suggested_filename":"","columns":[],"rows":[]}
 ```
+
+`columns` are the keys from §4.4 the items actually differ on or need, in that order; `rows` are objects keyed by those columns, one per item, in the customer's order. Fill `rows` with every item whenever you can read the item list — also when `by_reference` is true, since the costing workbook is built from them. Leave `rows` empty only when the list itself could not be read.
 
 **Summary:**
 
@@ -739,7 +771,7 @@ Scope carries the tooling clauses (quoted separately per part; stored and mainta
 12e. Never leave packaging out of Scope, and never drop an instruction the customer wrote in the email.
 12f. Never run the AI Internal notes blocks together. Bold label, blank line between blocks, every time — five topics in one paragraph is a note nobody reads.
 12g. Never name a line after the transaction — `Repeat Order Part`, `As previously supplied`, `Reorder`, `Sample`. That the line is a repeat goes in Specification and under `Context:` in AI Internal notes.
-13. Never consolidate across process families or material classes; never force a system into the variant annexure.
+13. Never group past level 3 (§4.3), never put a whole commodity on one line, never group items that fail any of the four tests, and never force a system into the variant annexure. Different material, finish or tooling alone never splits a group — they are annexure columns.
 14. Never put a customer-proprietary or purchased standard in `Addl. files`.
 15. Never exceed 50 characters in Product name, or put anything but the quantity in Qty.
 16. When the email is genuinely ambiguous about what is being asked for, say so in `notes_for_reviewer` rather than producing a confident wrong structure.
@@ -757,5 +789,6 @@ Scope carries the tooling clauses (quoted separately per part; stored and mainta
 6. Four section headings present on every line; Specification and Scope are bullets carrying one fact each, with no bold labels; Scope covers packaging; no line carries a drawing or part number in its name or a value in any link field.
 6a. Every AI Internal notes block label is bold and separated from the next block by a blank line, and emphasis inside the blocks is sparing enough to still mean something.
 7. Every provenance value is a single token from the allowed set.
+6b. Grouping follows the ladder (§4.3): no group beyond level 3, no commodity as one line, every group passes all four tests, nothing that only differs by size, material, finish, tooling or delivery date is left as separate lines when the item count says to look for groups; every family's Qty is `As per annexure`, its annexure carries a column for each attribute its items differ on, and `reconciliation` records each family's level.
 7a. Every line carries `specs`; each value is a short cell, not a sentence; nothing in `specs` is absent from RFQ Details; `extra` names are consistent across lines and each has a provenance entry.
 8. Every standard referenced is either linked or marked `(not attached)` with a query.

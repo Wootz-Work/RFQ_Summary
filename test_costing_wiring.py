@@ -95,7 +95,29 @@ check("quantity is split into number and unit, not a column", "Quantity" not in 
       and fam.lines[2].qty.value == 300 and fam.lines[2].qty_unit == "pcs")
 check("each row is labelled for the Quotation by code and description", fam.lines[0].label == "HB-000 Hex bolt M8",
       fam.lines[0].label)
-check("the family has one legend rate, named after it", fam.rate_groups == ["Hex Bolts"])
+check("a family all in one finish has one legend rate, named by it", fam.rate_groups == ["HDG"], str(fam.rate_groups))
+check("every row is priced at that rate", {l.rate_group for l in fam.lines} == {"HDG"})
+
+# A level-2 group mixes materials and finishes: one rate per combination, in first-seen order.
+mixed = tabs_from_extraction(ProductExtractionResult(products=[ExtractedProduct(
+    index=1, name="Micro Screws", structure="family", quantity="As per annexure",
+    specs={"material": "316 SS"},
+    annexure=ProductAnnexure(required=True, columns=["part_number", "type", "size", "Material", "Surface finish", "qty"],
+                             rows=[["MS-1", "Pan head", "M2 x 4", "", "PVD black", "500"],
+                                   ["MS-2", "Flat head", "M2 x 6", "", "PVD black", "500"],
+                                   ["MS-3", "Pan head", "M3 x 6", "A2 SS", "Plain", "1000"],
+                                   ["MS-4", "Pan head", "M3 x 8", "", "Plain", "1000"],
+                                   ["MS-5", "Pan head", "M3 x 10", "A2 SS", "Plain", "1000"]]))]))[0]
+check("a mixed family gets one rate per material and finish",
+      mixed.rate_groups == ["316 SS · PVD black", "A2 SS · Plain", "316 SS · Plain"], str(mixed.rate_groups))
+check("a row without its own material uses the family's", mixed.lines[0].rate_group == "316 SS · PVD black"
+      and mixed.lines[3].rate_group == "316 SS · Plain", str([l.rate_group for l in mixed.lines]))
+check("differing attributes stay as columns", [h for h, _ in mixed.columns][:3] == ["Part number", "Type", "Size"],
+      str(mixed.columns))
+plain = tabs_from_extraction(ProductExtractionResult(products=[ExtractedProduct(
+    index=1, name="Spacers", structure="family",
+    annexure=ProductAnnexure(required=True, columns=["description", "qty"], rows=[["Spacer 5", "10"], ["Spacer 8", "10"]]))]))[0]
+check("with no material or finish anywhere, the family has one rate named after it", plain.rate_groups == ["Spacers"])
 check("source lines taken from the variant count", fam.source_lines == 5)
 ind = tabs[1]
 check("single lines go to Individual items",
@@ -119,6 +141,11 @@ check("a derived quantity is red", ind.lines[0].qty.kind == "assume" and ind.lin
 check("'As per annexure' leaves qty for the team", ind.lines[2].qty.kind == "input")
 check("a by-reference family says why it is not expanded", "own workbook" in ind.lines[2].remarks)
 check("weight is never set from the extraction", all(l.weight.kind == "input" for t in tabs for l in t.lines))
+
+
+check("the log says how far the extraction grouped",
+      writer.grouping_summary(extraction()) == "4 line(s) for 8 item(s): 2 family (6 items), 2 single",
+      writer.grouping_summary(extraction()))
 
 
 # ---- the writeback step ----------------------------------------------------

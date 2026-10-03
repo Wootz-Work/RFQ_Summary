@@ -8,7 +8,7 @@ import json
 import re
 import zipfile
 from datetime import datetime, timezone
-from typing import Dict, List
+from typing import Any, Dict, List
 from urllib.parse import quote
 
 from .config import Settings
@@ -360,6 +360,21 @@ def _attach_costing_workbook(settings: Settings, out, rfq_row_id: str, extractio
     return True
 
 
+def grouping_summary(extraction: Any) -> str:
+    """`3 line(s) for 27 item(s): 2 family (26 items), 1 single` — how far the extraction grouped."""
+    products = getattr(extraction, "products", None) or []
+    fam_lines = fam_items = singles = 0
+    for p in products:
+        if str(getattr(p, "structure", "") or "").lower() == "family":
+            annexure = getattr(p, "annexure", None)
+            n = getattr(p, "variant_count", None) or len(getattr(annexure, "rows", None) or []) or 1
+            fam_lines, fam_items = fam_lines + 1, fam_items + n
+        else:
+            singles += 1
+    parts = ([f"{fam_lines} family ({fam_items} items)"] if fam_lines else []) + ([f"{singles} single"] if singles else [])
+    return f"{len(products)} line(s) for {fam_items + singles} item(s): " + ", ".join(parts)
+
+
 def _write_extracted_products(settings: Settings, rfq_row_id: str, out: TriageOutputPayload, rfq_title: str = ""):
     """
     Adds the extracted product line items to the ALL Product table, then their open
@@ -376,6 +391,8 @@ def _write_extracted_products(settings: Settings, rfq_row_id: str, out: TriageOu
         print(f"[INFO] run_id={out.run_id} | no products extracted ({why}) — "
               f"no product rows written and no costing workbook built")
         return 0, 0
+
+    print(f"[INFO] run_id={out.run_id} | product extraction grouped {grouping_summary(extraction)}")
 
     if not settings.enable_product_writeback:
         print(f"[INFO] run_id={out.run_id} | product writeback disabled; {len(extraction.products)} line(s) not written")
