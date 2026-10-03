@@ -822,6 +822,21 @@ def _spec_val(value: Any, provenance: str) -> Val:
     return assumed(v) if provenance == "derived" else data(v)
 
 
+def _process_route(specs: Any, provenance: str) -> Tuple[List[Val], List[str]]:
+    """
+    The extraction's process route as Process 1..8, and whatever did not fit.
+
+    Red unless the customer or the drawing stated the operations — a route is
+    usually our reading of the part. A name matching a standard process takes
+    its spelling, so it meets its legend rate; a new one is added to the legend.
+    """
+    known = {p.lower(): p for p in DEFAULT_PROCESSES}
+    names = [known.get(str(n).strip().lower(), str(n).strip())
+             for n in (getattr(specs, "processes", None) or []) if str(n).strip()]
+    mark = data if provenance == "verbatim" else assumed
+    return [mark(n) for n in names[:PROCESS_SLOTS]], names[PROCESS_SLOTS:]
+
+
 _MATERIAL_HEADER = re.compile(r"\b(material|moc)\b", re.IGNORECASE)
 _FINISH_HEADER = re.compile(r"\b(finish|coating|plating)\b", re.IGNORECASE)
 
@@ -919,7 +934,11 @@ def tabs_from_extraction(extraction: Any) -> List[Tab]:
             header = extra_headers.setdefault(spec.strip().lower(), spec.strip())
             fields[header] = _spec_val(value, prov.get(spec.strip().lower(), ""))
         fields["Drawing link"] = data(dwg or None)
-        individual.append(Line(label=name, fields=fields, qty=qty, qty_unit=unit or "pcs", remarks=remarks))
+        route, beyond = _process_route(specs, prov.get("processes", ""))
+        if beyond:
+            remarks = "; ".join(x for x in (remarks, "Also: " + ", ".join(beyond)) if x)
+        individual.append(Line(label=name, fields=fields, qty=qty, qty_unit=unit or "pcs", remarks=remarks,
+                               processes=route))
     if individual:
         # Fixed spec columns on every tab; a dynamic column only for a spec some item actually has.
         cols = [("Part name", 30)] + [(h, w) for (_, h), w in zip(SPEC_COLUMNS, (18, 20, 14, 18, 18))]

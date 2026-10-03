@@ -388,6 +388,8 @@ class ProductSpecs(BaseModel):
     key_dimensions: _LooseStr = ""
     drawing_no: _LooseStr = ""
     extra: Dict[str, str] = Field(default_factory=dict)
+    # The manufacturing route, in order — the costing sheet's Process 1..8.
+    processes: List[str] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -420,6 +422,18 @@ class ProductSpecs(BaseModel):
             extra = {}
         data["extra"] = {str(k).strip(): _coerce_str(v).strip() for k, v in extra.items()
                          if str(k).strip() and _coerce_str(v).strip()}
+        # A list, or one string in any of "a, b", "a > b", "a → b", "1. a\n2. b".
+        route = data.get("processes", data.get("process_route", data.get("process")))
+        if isinstance(route, str):
+            route = re.split(r"\s*(?:[,;\n>]|→|->)\s*", route)
+        elif not isinstance(route, list):
+            route = []
+        names = []
+        for step in route:
+            name = re.sub(r"^\s*\d+[.)]\s*", "", _coerce_str(step)).strip(" .")
+            if name and name.lower() not in (n.lower() for n in names):
+                names.append(name)
+        data["processes"] = names
         return data
 
 
