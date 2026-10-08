@@ -69,13 +69,16 @@ def extraction():
                              details="- Stud M56 x 310\n- ASTM A193 B7",
                              specs={"material": "Alloy steel", "grade_standard": "ASTM A193 B7", "finish": "",
                                     "key_dimensions": "M56 × 310", "drawing_no": "",
-                                    "extra": {"Thread": "UNC", "Heat treatment": "Q&T"}},
+                                    "extra": {"Thread": "UNC", "Heat treatment": "Q&T"},
+                                    "processes": ["Cutting", "machining", "Thread rolling", "Heat treatment"]},
                              provenance={"quantity": "derived", "material": "derived", "grade_standard": "verbatim",
                                          "finish": "unknown", "key_dimensions": "verbatim", "thread": "derived"}),
             ExtractedProduct(index=4, name="Half Coupling 1\" 304 SS", structure="single", quantity="170 pcs",
                              specs={"material": "304 SS", "grade_standard": "MSS SP-114", "key_dimensions": "1\"",
-                                    "extra": {"thread": "NPT", "Pressure rating": "3000 lb"}},
-                             provenance={"material": "verbatim"}),
+                                    "extra": {"thread": "NPT", "Pressure rating": "3000 lb"},
+                                    "processes": "1. Forging > 2. Machining > Threading > Pickling & passivation > "
+                                                 "Leak test > Marking > Grinding > Brushing > Assembly > Polishing"},
+                             provenance={"material": "verbatim", "processes": "verbatim"}),
             ExtractedProduct(index=3, name="Their Washers", structure="family", quantity="As per annexure",
                              annexure=ProductAnnexure(required=True, by_reference=True)),
         ],
@@ -140,6 +143,14 @@ check("each line fills only its own dynamic columns",
 check("a derived quantity is red", ind.lines[0].qty.kind == "assume" and ind.lines[0].qty.value == 1200)
 check("'As per annexure' leaves qty for the team", ind.lines[2].qty.kind == "input")
 check("a by-reference family says why it is not expanded", "own workbook" in ind.lines[2].remarks)
+check("the process route fills Process 1..n in order",
+      [v.value for v in ind.lines[0].processes] == ["Cutting", "Machining", "Thread rolling", "Heat treatment"],
+      str([v.value for v in ind.lines[0].processes]))
+check("a route we read off the part is red", all(v.kind == "assume" for v in ind.lines[0].processes))
+check("a route the customer stated is black, parsed from one string",
+      [v.kind for v in ind.lines[1].processes] == ["data"] * 8 and ind.lines[1].processes[0].value == "Forging")
+check("steps past eight go to Remarks", ind.lines[1].remarks == "Also: Assembly, Polishing", ind.lines[1].remarks)
+check("a line with no route leaves the slots empty", ind.lines[2].processes == [])
 check("weight is never set from the extraction", all(l.weight.kind == "input" for t in tabs for l in t.lines))
 
 
