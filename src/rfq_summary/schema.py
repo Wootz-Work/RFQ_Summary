@@ -394,6 +394,9 @@ class ProductSpecs(BaseModel):
     weight_kg: Optional[float] = None
     # Technically doubtful values: {"Material": "why"} — pink in the sheet.
     doubts: Dict[str, str] = Field(default_factory=dict)
+    # Bought-in components (balls, bearings, inserts), INR per piece, and what they are.
+    bought_out_inr: Optional[float] = None
+    bought_out_note: _LooseStr = ""
 
     @model_validator(mode="before")
     @classmethod
@@ -439,6 +442,12 @@ class ProductSpecs(BaseModel):
                 names.append(name)
         data["processes"] = names
         data["weight_kg"] = _kg(data.get("weight_kg", data.get("weight")))
+        bo = data.get("bought_out_inr", data.get("bought_out"))
+        if isinstance(bo, dict):
+            data["bought_out_note"] = bo.get("note", bo.get("what", data.get("bought_out_note", "")))
+            bo = bo.get("inr", bo.get("value"))
+        m = re.search(r"\d[\d,]*\.?\d*", str(bo)) if bo is not None and not isinstance(bo, bool) else None
+        data["bought_out_inr"] = float(m.group().replace(",", "")) if m else None
         doubts = data.get("doubts")
         if isinstance(doubts, list):
             doubts = {str(d.get("field", "")): d.get("why", d.get("reason", "")) for d in doubts if isinstance(d, dict)}
