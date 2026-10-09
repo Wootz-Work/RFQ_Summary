@@ -187,13 +187,27 @@ _g = _wb[gaskets.title]
 check("a long description wraps from the top and its row grows to fit",
       _g["A3"].alignment.wrap_text and _g["A3"].alignment.vertical == "top"
       and (_g.row_dimensions[3].height or 0) >= 30, str(_g.row_dimensions[3].height))
-_legend = {_g.cell(r, 2).value: _g.cell(r, 3) for r in range(1, _g.max_row + 1) if _g.cell(r, 4).value == "INR / kg"}
+_legend = {_g.cell(r, 1).value: _g.cell(r, 2) for r in range(1, _g.max_row + 1) if _g.cell(r, 3).value == "INR / kg"}
 check("the family's legend rate is filled, in red", _legend["SS316L / graphite · Graphite"].value == 435
       and _legend["SS316L / graphite · Graphite"].font.color.rgb.endswith("C00000"))
 _i = _wb[ind.title]
-_plegend = {_i.cell(r, 2).value: _i.cell(r, 3).value for r in range(1, _i.max_row + 1) if _i.cell(r, 4).value == "INR / kg"}
+_plegend = {_i.cell(r, 1).value: _i.cell(r, 2).value for r in range(1, _i.max_row + 1) if _i.cell(r, 3).value == "INR / kg"}
 check("process rates come from the default table", _plegend.get("Welding") == 35 and _plegend.get("Thread rolling") == 15,
       str(_plegend))
+check("no extra sheets for the originals", not [n for n in _wb.sheetnames if "orig" in n.lower()], str(_wb.sheetnames))
+_wcol = {c.value: c.column_letter for c in _g[2]}["Weight"]
+_helpers = {c.value: c.column_letter for c in _g[2] if str(c.value or "").startswith("Zai original")}
+_hw = _helpers.get(f"Zai original — {_wcol}")
+check("the value we wrote is kept in a hidden column on the same row",
+      _hw and _g.column_dimensions[_hw].hidden and _g[f"{_hw}3"].value == 0.08, str(_helpers))
+_rules = {str(cf.sqref): r for cf in _g.conditional_formatting for r in cf.rules}
+_wr = next((r for sq, r in _rules.items() if sq.startswith(f"{_wcol}3")), None)
+check("an edited red or pink cell turns black, compared on its own row",
+      _wr is not None and _wr.dxf.font.color.rgb.endswith("000000") and _wr.formula[0] == f'AND(${_hw}3<>"",{_wcol}3<>${_hw}3)',
+      str({k: v.formula for k, v in _rules.items()}))
+check("helper columns sit after Remarks, so nothing the Quotation reads moves",
+      all(openpyxl.utils.column_index_from_string(c) > [x.value for x in _g[2]].index("Remarks") + 1
+          for c in _helpers.values()))
 
 
 check("the log says how far the extraction grouped",
@@ -248,7 +262,7 @@ row2 = [sheet.cell(2, c).value for c in range(1, 12)]
 check("the uploaded sheet carries the spec columns", row2[:6] == ["Part name", "Material", "Grade / Standard", "Finish",
                                                                   "Key dimensions", "Drawing no."], str(row2))
 check("the uploaded file is the generated workbook",
-      book.sheetnames == ["(Zai) Summary", "(Zai) Hex Bolts", "(Zai) Individual items"], str(book.sheetnames))
+      [w.title for w in book.worksheets if w.sheet_state == "visible"] == ["(Zai) Summary", "(Zai) Hex Bolts", "(Zai) Individual items"], str(book.sheetnames))
 
 c = run(title="Malabar 1 - Fasteners and Fixings Price List")
 c2 = run(dest=("b!DRIVE", "01FOLDERIDAAAAAAAAAAAAAAAAAAAA", "Malabar 1 - From Glide"),
