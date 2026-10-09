@@ -149,9 +149,51 @@ check("the process route fills Process 1..n in order",
 check("a route we read off the part is red", all(v.kind == "assume" for v in ind.lines[0].processes))
 check("a route the customer stated is black, parsed from one string",
       [v.kind for v in ind.lines[1].processes] == ["data"] * 8 and ind.lines[1].processes[0].value == "Forging")
-check("steps past eight go to Remarks", ind.lines[1].remarks == "Also: Assembly, Polishing", ind.lines[1].remarks)
+check("steps past eight go to Remarks", ind.lines[1].remarks.startswith("Also: Assembly, Polishing"), ind.lines[1].remarks)
 check("a line with no route leaves the slots empty", ind.lines[2].processes == [])
-check("weight is never set from the extraction", all(l.weight.kind == "input" for t in tabs for l in t.lines))
+check("with no weight in the extraction, weight stays orange", all(l.weight.kind == "input" for t in tabs for l in t.lines))
+check("a single item's material rate comes from the default table, in red",
+      ind.lines[1].material_rate.kind == "assume" and ind.lines[1].material_rate.value == 280
+      and "SS 304" in ind.lines[1].remarks, str(ind.lines[1].material_rate))
+check("an unknown material leaves the material rate orange", ind.lines[2].material_rate.kind == "input")
+
+# Weight, rates and doubts — the gasket family.
+gaskets = tabs_from_extraction(ProductExtractionResult(products=[ExtractedProduct(
+    index=1, name="Spiral Wound Gaskets", structure="family", quantity="As per annexure",
+    specs={"material": "SS316L / graphite", "processes": ["Winding", "Assembly"],
+           "doubts": {"Finish": "graphite filler above 450 °C in oxidising service"}},
+    provenance={"weight": "derived"},
+    annexure=ProductAnnexure(required=True, columns=["description", "size", "finish", "quantity", "weight_kg", "doubt"],
+                             rows=[["SPIRAL-WOUND GASKET,IR/CR: SS316L,CL150,-ASME B16.5,.75,SS-GRAPHITE", '3/4"',
+                                    "Graphite", "40", "0.08", ""],
+                                   ["SPIRAL-WOUND GASKET,IR/CR: SS316L,CL300,-ASME B16.5,16,SS-GRAPHITE", '16"',
+                                    "Graphite", "4", "2.6 kg", "Size: 16\" CL300 needs B16.20 confirmation"]]))]))[0]
+g0, g1 = gaskets.lines
+check("estimated weight is red, per piece", g0.weight.kind == "assume" and g0.weight.value == 0.08
+      and g1.weight.value == 2.6, str((g0.weight, g1.weight)))
+check("weight and doubt are not shown as customer columns",
+      [h for h, _ in gaskets.columns] == ["Description", "Size", "Finish"], str(gaskets.columns))
+rate, basis = gaskets.rates["SS316L / graphite · Graphite"]
+check("a family rate is material plus its route, with the sum spelled out", rate == 380 + 40 + 15
+      and "SS 316 380 + Winding 40 + Assembly 15" in basis, basis)
+check("a family-level doubt turns its column pink on every row, reason in Remarks",
+      g0.fields["Finish"].kind == "doubt" and "Check Finish: graphite filler" in g0.remarks, g0.remarks)
+check("a row's own doubt turns that cell pink", g1.fields["Size"].kind == "doubt" and "B16.20" in g1.remarks
+      and g0.fields["Size"].kind == "data")
+
+from rfq_summary.costing_workbook import build_costing_workbook
+_wb = openpyxl.load_workbook(io.BytesIO(build_costing_workbook([gaskets, ind])))
+_g = _wb[gaskets.title]
+check("a long description wraps from the top and its row grows to fit",
+      _g["A3"].alignment.wrap_text and _g["A3"].alignment.vertical == "top"
+      and (_g.row_dimensions[3].height or 0) >= 30, str(_g.row_dimensions[3].height))
+_legend = {_g.cell(r, 2).value: _g.cell(r, 3) for r in range(1, _g.max_row + 1) if _g.cell(r, 4).value == "INR / kg"}
+check("the family's legend rate is filled, in red", _legend["SS316L / graphite · Graphite"].value == 435
+      and _legend["SS316L / graphite · Graphite"].font.color.rgb.endswith("C00000"))
+_i = _wb[ind.title]
+_plegend = {_i.cell(r, 2).value: _i.cell(r, 3).value for r in range(1, _i.max_row + 1) if _i.cell(r, 4).value == "INR / kg"}
+check("process rates come from the default table", _plegend.get("Welding") == 35 and _plegend.get("Thread rolling") == 15,
+      str(_plegend))
 
 
 check("the log says how far the extraction grouped",
