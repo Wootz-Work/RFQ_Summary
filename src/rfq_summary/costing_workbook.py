@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import openpyxl
+from openpyxl.formatting.rule import FormulaRule
 from openpyxl.formula.tokenizer import Token, Tokenizer
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter, range_boundaries
@@ -355,9 +356,9 @@ def _build_tab(wb, tab: Tab, commons: Commons, shared: Dict[str, str], first_tab
     ws.cell(key_top, 2, "Review only red and pink cells — black is copied from the customer, grey is formula").font = \
         Font(size=10, bold=True, color=_RED)
     key = [("", "input", "Orange — to fill in (from the drawing, the customer, or your rate). Left empty on purpose"),
-           ("Red text", "assume", "Ours to review — an estimate or default rate, kept on the higher side. Check before quoting"),
+           ("Red text", "assume", "Ours to review — an estimate or default rate, kept on the higher side. Turns black once you change it"),
            ("Black text", "data", "Straight from the customer's data or drawing"),
-           ("Pink text", "doubt", "Technically doubtful — the reason is in Remarks. Confirm before quoting"),
+           ("Pink text", "doubt", "Technically doubtful — the reason is in Remarks. Turns black once you change it"),
            ("Grey cell", "calc", "Formula — fills in once its inputs are there; don't type over it")]
     for i, (txt, kind, expl) in enumerate(key):
         c = ws.cell(key_top + 1 + i, 1, txt or None)
@@ -425,7 +426,35 @@ def _build_tab(wb, tab: Tab, commons: Commons, shared: Dict[str, str], first_tab
         ws.add_data_validation(dv)
         dv.add(f"{col['Process 1']}{first}:{col[f'Process {PROCESS_SLOTS}']}{last + 50}")
 
+    _black_once_edited(wb, ws)
     return _Built(tab.title, rows_out, col)
+
+
+def _black_once_edited(wb, ws) -> None:
+    """
+    Red and pink mean "not yet reviewed". Once someone types over one, it should
+    read as theirs — black. Excel cannot recolour on edit without macros, so the
+    value we wrote is kept on a hidden sheet at the same address, and one
+    conditional format turns any cell black when it no longer matches.
+    """
+    flagged = [c for row in ws.iter_rows(min_row=FIRST_DATA_ROW) for c in row
+               if c.value is not None and not (isinstance(c.value, str) and c.value.startswith("="))
+               and c.font is not None and c.font.color is not None
+               and str(c.font.color.rgb or "").upper().endswith((_RED, _PINK))]
+    if not flagged:
+        return
+    n = 1
+    while f"zai_orig_{n}" in wb.sheetnames:
+        n += 1
+    orig = wb.create_sheet(f"zai_orig_{n}")
+    orig.sheet_state = "veryHidden"
+    for c in flagged:
+        orig[c.coordinate] = c.value
+    last = f"{get_column_letter(ws.max_column)}{ws.max_row}"
+    ref = f"'{orig.title}'!A{FIRST_DATA_ROW}"
+    ws.conditional_formatting.add(
+        f"A{FIRST_DATA_ROW}:{last}",
+        FormulaRule(formula=[f'AND({ref}<>"",A{FIRST_DATA_ROW}<>{ref})'], font=Font(color=_BLACK), stopIfTrue=False))
 
 
 # ----------------------------------------------------------------------------- summary

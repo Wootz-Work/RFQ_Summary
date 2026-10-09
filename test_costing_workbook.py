@@ -71,7 +71,7 @@ def fab_tab():
 
 
 book = openpyxl.load_workbook(io.BytesIO(build_costing_workbook([fastener_tab(), fab_tab()])))
-check("every generated tab is marked (Zai)", all(n.startswith("(Zai) ") for n in book.sheetnames), str(book.sheetnames))
+check("every generated tab is marked (Zai)", all(w.title.startswith("(Zai) ") for w in book.worksheets if w.sheet_state == "visible"), str(book.sheetnames))
 check("the summary comes first", book.sheetnames[0] == SUMMARY_TITLE, str(book.sheetnames))
 
 ws = book["(Zai) Washers"]
@@ -181,7 +181,7 @@ raw = build_costing_workbook([tab, fab_tab()], template=template_bytes(), common
 book = openpyxl.load_workbook(io.BytesIO(raw))
 check("the template's own sample Costing tab is gone", "Costing" not in book.sheetnames, str(book.sheetnames))
 check("generated tabs sit after Back-end, before the insights",
-      book.sheetnames == ["Quotation", "Back-end", SUMMARY_TITLE, "(Zai) Washers", "(Zai) Individual items", "ExIm Insights"],
+      [w.title for w in book.worksheets if w.sheet_state == "visible"] == ["Quotation", "Back-end", SUMMARY_TITLE, "(Zai) Washers", "(Zai) Individual items", "ExIm Insights"],
       str(book.sheetnames))
 q = book["Quotation"]
 check("every line is on the Quotation", [q[f"A{r}"].value for r in range(13, 20)] ==

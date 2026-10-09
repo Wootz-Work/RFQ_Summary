@@ -194,6 +194,16 @@ _i = _wb[ind.title]
 _plegend = {_i.cell(r, 1).value: _i.cell(r, 2).value for r in range(1, _i.max_row + 1) if _i.cell(r, 3).value == "INR / kg"}
 check("process rates come from the default table", _plegend.get("Welding") == 35 and _plegend.get("Thread rolling") == 15,
       str(_plegend))
+_orig = [_wb[n] for n in _wb.sheetnames if n.startswith("zai_orig_")]
+check("one hidden copy of the red and pink values per tab", len(_orig) == 2
+      and all(o.sheet_state == "veryHidden" for o in _orig))
+_wcol = {c.value: c.column_letter for c in _g[2]}["Weight"]
+check("the copy holds the value we wrote, at the same address", _orig[0][f"{_wcol}3"].value == 0.08)
+check("formulas and black data are not copied", _orig[0]["A3"].value is None)
+_rules = [r for cf in _g.conditional_formatting for r in cf.rules]
+check("an edited red or pink cell turns black",
+      any(r.dxf and r.dxf.font and str(r.dxf.font.color.rgb).endswith("000000") and _orig[0].title in r.formula[0]
+          for r in _rules), str([r.formula for r in _rules]))
 
 
 check("the log says how far the extraction grouped",
@@ -248,7 +258,7 @@ row2 = [sheet.cell(2, c).value for c in range(1, 12)]
 check("the uploaded sheet carries the spec columns", row2[:6] == ["Part name", "Material", "Grade / Standard", "Finish",
                                                                   "Key dimensions", "Drawing no."], str(row2))
 check("the uploaded file is the generated workbook",
-      book.sheetnames == ["(Zai) Summary", "(Zai) Hex Bolts", "(Zai) Individual items"], str(book.sheetnames))
+      [w.title for w in book.worksheets if w.sheet_state == "visible"] == ["(Zai) Summary", "(Zai) Hex Bolts", "(Zai) Individual items"], str(book.sheetnames))
 
 c = run(title="Malabar 1 - Fasteners and Fixings Price List")
 c2 = run(dest=("b!DRIVE", "01FOLDERIDAAAAAAAAAAAAAAAAAAAA", "Malabar 1 - From Glide"),
