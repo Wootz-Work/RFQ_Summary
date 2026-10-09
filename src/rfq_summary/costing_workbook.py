@@ -352,6 +352,8 @@ def _build_tab(wb, tab: Tab, commons: Commons, shared: Dict[str, str], first_tab
 
     # ---- legend
     ws.cell(key_top, 2, "LEGEND").font = Font(size=12, bold=True, color="1F3864")
+    ws.cell(key_top, 3, "Review only red and pink cells — black is copied from the customer, grey is formula").font = \
+        Font(size=10, bold=True, color=_RED)
     key = [("", "input", "Orange — to fill in (from the drawing, the customer, or your rate). Left empty on purpose"),
            ("Red text", "assume", "Ours to review — an estimate or default rate, kept on the higher side. Check before quoting"),
            ("Black text", "data", "Straight from the customer's data or drawing"),

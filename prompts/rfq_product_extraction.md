@@ -313,6 +313,16 @@ Application:
 Additional note:
 ```
 
+**Write only what the reviewer cannot already see.** Every bullet is a point someone has to read and check, so each one must earn its place. The team has the drawing, the customer's item list and the standards open beside this text; repeating them doubles the review and adds chances to restate something wrong. A bullet belongs here only if it passes one of three tests:
+
+1. **Not in any attached document.** It came from the email, a call note, a decoded customer code or a standard the drawing only names — `PVD black finish (email; drawing silent)`.
+2. **Drives price and is easy to miss in the document.** A note buried in a title block, a general note, a footnote or a revision cloud that changes the process or the cost — `100% UT per drawing note 7`, `Ra 0.4 on bore — grinding`, `Material certs EN 10204 3.2`.
+3. **Two sources disagree.** Drawing versus email, drawing versus item list, item list versus standard — state both and which one you followed, and raise the conflict as a query: `Drawing 304; email 316 — quoted 316`.
+
+Everything else the drawing or item list already shows — dimensions, the ordinary material grade, tolerances, threads, general finish — is **not** repeated. It is covered by one reference line at the top of Specification, unbulleted, naming what governs the part: `Per drawing MT-4471 rev B.` · `Per customer item list (17 sizes).` · `Per drawing set in annexure, one drawing per part.` When there is no drawing or list — a descriptor-only line such as `Hex bolt M10 x 120, 10.9, zinc flake` — the email *is* the only source, so the Specification carries what is needed to make the part, as the examples in §10 show.
+
+A typical drawing-based line has the reference line and two to four bullets. Ten bullets on a part with a drawing means the drawing is being copied.
+
 `Applicable standards` is **not** a section here. Standards are more use to the team routing the line than to the reader quoting it, so they live under `Applicable standards:` in AI Internal notes (§5.4). Where a standard's *requirement* matters to make the part right, state the requirement in Specification and let the designation sit in the internal notes.
 
 **Bullet every point inside Specification and Scope.** One fact per `- ` bullet. A reader scanning for the grade runs down a list and finds it; they do not read a paragraph to locate it. No labels and no bold prefixes — the bullet is the structure.
@@ -329,12 +339,12 @@ Two kinds of line sit above the bullets, unbulleted, and only at the *top* of Sp
 
 | Section | Carries | Does not carry |
 |---|---|---|
-| Specification | Everything needed to make the part right: form, dimensions, thread, material, grade, hardness, heat treatment, finish, coating thickness, corrosion test, NDT, marking | Standard designations as justification for each line — those go to AI Internal notes |
-| Scope | The whole deliverable boundary, end to end — see below | Anything already stated as a spec requirement |
+| Specification | The reference line, then only what passes the three tests above: what is needed to make the part right and is not already plain in the drawing, item list or a standard the team holds | Anything the drawing or item list already shows; standard designations as justification — those go to AI Internal notes |
+| Scope | What differs from standard scope for this line, then one closing bullet for the rest — see below | Anything already stated as a spec requirement; the standard boundary spelled out item by item |
 | Application | End use and what it implies | Commercial posture, programme description, the customer's motive |
 | Additional note | Line-specific quoting instructions: price breaks, MOQ, release schedule, alternates welcome, samples, lead time — **and any instruction the customer gave in the email**, carried through in their terms | Anything true of all lines — that is `common_conditions` |
 
-**Scope runs end to end, to ex-works.** Walk the part from raw material to the loading bay and state who does what. Cover every one of these that applies, and never leave one out because it seems obvious:
+**Scope: the differences, then one line for the rest.** Walk the part from raw material to the loading bay and check each of the steps below — but write a bullet only for a step where this line departs from the standard boundary (supplier's own material, their usual operations, routine inspection, standard export packing, ex-works): customer-supplied material, an origin restriction, third-party inspection, a 3.2 certificate, special marking, tooling terms, a release schedule, a delivery point other than ex-works, packing the customer prescribed. Close Scope with one bullet that covers everything standard, naming only the steps that apply: `- Otherwise standard scope: supplier's material, manufacture, inspection, standard export packing, ex-works.` That closing bullet is how packaging is always covered without a line of its own. The steps to check:
 
 1. Raw material — who supplies it, and any origin restriction.
 2. Manufacturing operations, in order.
@@ -343,7 +353,7 @@ Two kinds of line sit above the bullets, unbulleted, and only at the *top* of Sp
 5. Inspection and testing, including NDT, and who bears the cost.
 6. Documentation — certificates, test reports, traceability, dimensional layout.
 7. Marking and identification.
-8. **Packaging.** State it every time. Unless the email says otherwise, assume standard export packaging suitable for the delivery mode, and say so — it is a real cost and it is the one line most often forgotten.
+8. **Packaging.** Always covered — by the closing bullet when standard export packing applies, by its own bullet when the customer prescribed something else. It is a real cost and the line most often forgotten.
 9. Palletisation and labelling where the quantity warrants it.
 10. Tooling — in or out of scope, who owns it, who stores it and for how long, quoted separately or amortised.
 11. Delivery point — ex-works unless the email says otherwise.
@@ -352,10 +362,11 @@ An instruction the customer wrote in the email — how they want it packed, mark
 
 A standard may appear in Specification only when a value inside it needs decoding for the supplier (see §6). Otherwise Specification states the requirement and Applicable standards names the source.
 
-**Summarise what is attached; do not reproduce it.** The team attaches the drawings, the item list, the customer standard. The reader has them. Your job is the summary that lets someone judge feasibility and rough cost *without* opening a 40-page package: what the part is, what governs it, what is unusual or expensive about it, and what varies across the set. Reproducing a table or a standard's dimensions wastes the reader's attention and risks restating it wrong.
+**Summarise what is attached; do not reproduce it.** The team attaches the drawings, the item list, the customer standard. The reader has them — this is the same rule as the three tests above, applied to tables and standards. Your job is the summary that lets someone judge feasibility and rough cost *without* opening a 40-page package: what the part is, what governs it, what is unusual or expensive about it, and what varies across the set. Reproducing a table or a standard's dimensions wastes the reader's attention and risks restating it wrong.
 
 **Concise means:**
 
+- Nothing the drawing or item list already shows (the three tests above).
 - One grade, not the menu. If you don't know which applies, query it.
 - Don't restate what a drawing or a public standard defines. `Per drawing Table 1` beats reproducing Table 1.
 - State a number once. `min 7 µm` — not `min 7 µm (8–10 µm typical)`.
@@ -410,11 +421,11 @@ Emphasis that lands on everything lands on nothing. If a block has no line that 
 
 **Sourcing** is what lets the team route the line: process family and equipment (multi-station cold header with thread roller; progressive stamping die with extrusion and tapping stations; 5-axis mill), special processes (austempering, zinc-flake line, FPI + UT, welding to AWS D17.1), approvals (IATF 16949 for PPAP Level 3, AS9100, EN 10204 3.1), volume fit (high-volume header shop vs job shop), and disqualifiers (no Chinese melt and pour).
 
-**Applicable standards** lives here rather than in the supplier text. List every standard governing the line — designation, two or three words of role, and whether it came with the enquiry. `ISO 4017:2022 — dimensions (attached)`. `ISO 4014 — dimensions (not attached)`. A standard marked `(not attached)` and needed to quote the right part is a `Customer` query; one we could simply buy is not.
+**Applicable standards** lives here rather than in the supplier text. When the drawing itself lists the standards, do not copy that list: write `As cited on drawing MT-4471` and name only the ones that matter to the team — a standard not attached that we must buy or ask for, or one the drawing cites that is unusual for this part. Otherwise list every standard governing the line — designation, two or three words of role, and whether it came with the enquiry. `ISO 4017:2022 — dimensions (attached)`. `ISO 4014 — dimensions (not attached)`. A standard marked `(not attached)` and needed to quote the right part is a `Customer` query; one we could simply buy is not.
 
 **Attachments** is the team's checklist for this line. You know which documents belong to it, so name them: the drawings by their number, the customer standard, the item list or compilation for a family, a photo. Say what each one is, so a reviewer can gather them without re-reading the thread — `Attach: drawing MT-4471 rev B; MTL5102 coating standard; the 42-row support schedule from the enquiry workbook`. Never populate the link fields yourself (§5.6) — this note is what tells the team what to put there.
 
-**An assumption is a choice a reviewer might reverse.** "Treated MTL5102A as applicable at class 8.8, which is its upper limit" is an assumption. "Customer correctly specified ISO 4014" is not — it's a remark. "Not consolidated because only two variants" is not — it's reconciliation. Keep the list to things that change the quote if reversed.
+**An assumption is a choice a reviewer might reverse.** An assumption that applies to every line — currency, incoterm, quantity basis, packing — goes once in `common_conditions`, never repeated on each line. "Treated MTL5102A as applicable at class 8.8, which is its upper limit" is an assumption. "Customer correctly specified ISO 4014" is not — it's a remark. "Not consolidated because only two variants" is not — it's reconciliation. Keep the list to things that change the quote if reversed.
 
 **Context** is where commercial posture lives — "price-conscious, competing on volume", "sales lead flagged as priority". It does not go in Application.
 
@@ -598,14 +609,10 @@ Specification:
 - Coating per MTL5102A — see common conditions
 <br>
 Scope:
-- Raw material by the manufacturer
-- Cold heading, thread rolling, heat treatment
-- Cr(VI)-free passivation
-- In-process and final inspection
 - Chemical, physical and plating certificates with every shipment
-- Standard export packaging in cartons on pallets, labelled per line item
+- Cartons on pallets, labelled per line item
 - Tooling, if any, quoted separately
-- Ex-works
+- Otherwise standard scope: supplier's material, cold heading, thread rolling, heat treatment, Cr(VI)-free passivation, inspection, ex-works.
 <br>
 Application:
 \--
@@ -658,14 +665,10 @@ Specification:
 \--
 <br>
 Scope:
-- Raw material by the manufacturer
-- Cold heading, thread rolling, heat treatment
-- Zinc flake coating
-- In-process and final inspection
 - Certificates with every shipment
-- Standard export packaging on pallets, labelled per line item
+- Pallets, labelled per line item
 - Tooling, if any, quoted separately
-- Ex-works
+- Otherwise standard scope: supplier's material, cold heading, thread rolling, heat treatment, zinc flake coating, inspection, ex-works.
 <br>
 Application:
 \--
@@ -744,7 +747,7 @@ RFQ Details (Specification excerpt):
 ```
 Specification:
 Drawings via link are confidential — not to be shared without Wootz approval. Request password if not provided.
-- Forged, welded and machined parts per individual drawings in annexure
+Per drawing set in annexure — forged, welded and machined parts, one drawing per part.
 - Inconel 718, solution annealed
 - <mark>Raw material of Chinese melt and pour not permitted.</mark>
 - Weld wire per AMS 5832; welding to AWS D17.1 and D2.4
@@ -775,7 +778,8 @@ Scope carries the tooling clauses (quoted separately per part; stored and mainta
 12b. Never put a commercial, logistical or administrative question to a customer — incoterm, payment, packaging, delivery, quantity basis, PPAP and project references are `Team`, always. A `Customer` query is technical and about the product itself. Never ask one question twice — one row carrying every line index it covers.
 12c. Never fill `Dwg link`, `Rep URL` or `Addl. files`. Name what to attach under `Attachments:` in AI Internal notes instead.
 12d. Never put a drawing number, part number or print reference in `Product name` while any technical detail exists to name the part with. In a pure reorder that carries no technical description at all, the customer's reference is the exception and becomes the name.
-12e. Never leave packaging out of Scope, and never drop an instruction the customer wrote in the email.
+12e. Never leave packaging uncovered in Scope (its own bullet, or the closing standard-scope bullet), and never drop an instruction the customer wrote in the email.
+12h. Never copy into Specification what the drawing or item list already shows. Reference it in one line; bullet only what is absent from the documents, price-driving and easy to miss, or in conflict between sources.
 12f. Never run the AI Internal notes blocks together. Bold label, blank line between blocks, every time — five topics in one paragraph is a note nobody reads.
 12g. Never name a line after the transaction — `Repeat Order Part`, `As previously supplied`, `Reorder`, `Sample`. That the line is a repeat goes in Specification and under `Context:` in AI Internal notes.
 13. Never group past level 3 (§4.3), never put a whole commodity on one line, never group items that fail any of the four tests, and never force a system into the variant annexure. Different material, finish or tooling alone never splits a group — they are annexure columns.
@@ -793,6 +797,7 @@ Scope carries the tooling clauses (quoted separately per part; stored and mainta
 4. Nothing identifying the customer in any field — no company, contact or end-customer name, email address, phone number, website, postal address, town, plant or site. Scan the text you are about to emit once, specifically for these, before you emit it.
 4a. Every `Customer` query is technical and about the product itself, with nothing commercial, logistical or administrative among them; every query carries a `query_type`; no question appears twice under different wording; every query passes one of the three tests in §1.2 and is technical. None asks about our file problems, a project name, or anything that reveals how the part is made; commercial terms, PPAP and quantity basis appear only as `Team` queries, never as `Customer`.
 5. No fact appears in two sections of one line; nothing on a line duplicates `common_conditions`.
+5a. For each line with a drawing or item list: Specification opens with the reference line, and every bullet below it passes one of the three tests in §5.3 — strike any bullet that only restates the document; Scope lists only departures from standard scope plus the closing bullet; AI Internal notes does not copy the drawing's standards list.
 6. Four section headings present on every line; Specification and Scope are bullets carrying one fact each, with no bold labels; Scope covers packaging; no line carries a drawing or part number in its name or a value in any link field.
 6a. Every AI Internal notes block label is bold and separated from the next block by a blank line, and emphasis inside the blocks is sparing enough to still mean something.
 7. Every provenance value is a single token from the allowed set.
