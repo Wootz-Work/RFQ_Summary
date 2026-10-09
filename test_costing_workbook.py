@@ -87,12 +87,12 @@ check("weight is never filled in by us", ws[f"{h['Weight']}3"].value is None)
 check("…and is orange so it is seen", ws[f"{h['Weight']}3"].fill.fgColor.rgb.endswith("FCD5B4"))
 check("the doubtful standard is pink", ws[f"{h['Standard']}4"].font.color.rgb.endswith("E0218A"))
 check("the rate column only points at the legend",
-      str(ws[f"{h['Rate (INR / kg)']}3"].value).startswith("=IF($C$"), str(ws[f"{h['Rate (INR / kg)']}3"].value))
-legend_rate = [r for r in range(1, ws.max_row + 1) if ws.cell(r, 2).value == "Flat washer"]
-check("the rate itself is an empty legend cell", legend_rate and ws.cell(legend_rate[0], 3).value is None)
+      str(ws[f"{h['Rate (INR / kg)']}3"].value).startswith("=IF($B$"), str(ws[f"{h['Rate (INR / kg)']}3"].value))
+legend_rate = [r for r in range(1, ws.max_row + 1) if ws.cell(r, 1).value == "Flat washer"]
+check("the rate itself is an empty legend cell", legend_rate and ws.cell(legend_rate[0], 2).value is None)
 check("missing inputs are spelled out", "Add weight" in str(ws[f"{h['Missing input']}3"].value))
-fx = [r for r in range(1, ws.max_row + 1) if ws.cell(r, 2).value == "INR per GBP"]
-check("shared assumptions live once, on the first tab", fx and ws.cell(fx[0], 3).value == 120)
+fx = [r for r in range(1, ws.max_row + 1) if ws.cell(r, 1).value == "INR per GBP"]
+check("shared assumptions live once, on the first tab", fx and ws.cell(fx[0], 2).value == 120)
 check("remarks carried through", ws[f"{h['Remarks']}5"].value == "Very low qty")
 
 fab = book["(Zai) Individual items"]
@@ -100,15 +100,15 @@ fh = header_map(fab)
 check("eight process columns", sum(1 for k in fh if k.startswith("Process ")) == 8, str([k for k in fh if k.startswith("Process")]))
 check("processes listed, black and red kept", fab[f"{fh['Process 2']}3"].value == "Welding"
       and fab[f"{fh['Process 1']}3"].font.color.rgb.endswith("C00000"))
-names = [fab.cell(r, 2).value for r in range(1, fab.max_row + 1)]
+names = [fab.cell(r, 1).value for r in range(1, fab.max_row + 1)]
 check("a process the defaults lack is added to the legend", "Laser marking" in names)
 mfg = str(fab[f"{fh['Mfg cost / pc (INR)']}3"].value)
 check("a missing process rate does not blank the total",
       "COUNTIFS" not in mfg.split(',"",')[0], mfg)
 check("…but is counted in Missing input", "process rate(s) missing" in str(fab[f"{fh['Missing input']}3"].value))
 check("the stated weight is kept, black", fab[f"{fh['Weight']}3"].value == 4.62)
-link = [r for r in range(1, fab.max_row + 1) if fab.cell(r, 2).value == "INR per GBP"]
-check("other tabs link the shared assumptions", link and str(fab.cell(link[0], 3).value).startswith("='(Zai) Washers'!$C$"))
+link = [r for r in range(1, fab.max_row + 1) if fab.cell(r, 1).value == "INR per GBP"]
+check("other tabs link the shared assumptions", link and str(fab.cell(link[0], 2).value).startswith("='(Zai) Washers'!$B$"))
 check("the process list can grow past the visible rows",
       "200" not in "" and any("ZaiProcesses" in n for n in book.defined_names))
 

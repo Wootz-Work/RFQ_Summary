@@ -187,11 +187,11 @@ _g = _wb[gaskets.title]
 check("a long description wraps from the top and its row grows to fit",
       _g["A3"].alignment.wrap_text and _g["A3"].alignment.vertical == "top"
       and (_g.row_dimensions[3].height or 0) >= 30, str(_g.row_dimensions[3].height))
-_legend = {_g.cell(r, 2).value: _g.cell(r, 3) for r in range(1, _g.max_row + 1) if _g.cell(r, 4).value == "INR / kg"}
+_legend = {_g.cell(r, 1).value: _g.cell(r, 2) for r in range(1, _g.max_row + 1) if _g.cell(r, 3).value == "INR / kg"}
 check("the family's legend rate is filled, in red", _legend["SS316L / graphite · Graphite"].value == 435
       and _legend["SS316L / graphite · Graphite"].font.color.rgb.endswith("C00000"))
 _i = _wb[ind.title]
-_plegend = {_i.cell(r, 2).value: _i.cell(r, 3).value for r in range(1, _i.max_row + 1) if _i.cell(r, 4).value == "INR / kg"}
+_plegend = {_i.cell(r, 1).value: _i.cell(r, 2).value for r in range(1, _i.max_row + 1) if _i.cell(r, 3).value == "INR / kg"}
 check("process rates come from the default table", _plegend.get("Welding") == 35 and _plegend.get("Thread rolling") == 15,
       str(_plegend))
 

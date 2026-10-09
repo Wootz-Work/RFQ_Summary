@@ -226,19 +226,19 @@ def _build_tab(wb, tab: Tab, commons: Commons, shared: Dict[str, str], first_tab
     ref: Dict[str, str] = {}
     r = a_head + 2
     for name, *_ in common_rows:
-        ref[name] = f"$C${r}"
+        ref[name] = f"$B${r}"
         r += 1
     rate_rows: Dict[str, int] = {}
     if tab.mode == "weight_rate":
         for g in tab.rate_groups:
             rate_rows[g] = r
-            ref[g] = f"$C${r}"
+            ref[g] = f"$B${r}"
             r += 1
         proc_first = None
     else:
         proc_first = r
-        names = f"$B${proc_first}:$B${proc_first + PROCESS_LIST_REACH - 1}"
-        rates = f"$C${proc_first}:$C${proc_first + PROCESS_LIST_REACH - 1}"
+        names = f"$A${proc_first}:$A${proc_first + PROCESS_LIST_REACH - 1}"
+        rates = f"$B${proc_first}:$B${proc_first + PROCESS_LIST_REACH - 1}"
 
     # ---- band + headers
     spans: Dict[str, List[int]] = {}
@@ -351,8 +351,8 @@ def _build_tab(wb, tab: Tab, commons: Commons, shared: Dict[str, str], first_tab
     ws.print_title_rows = "1:2"
 
     # ---- legend
-    ws.cell(key_top, 2, "LEGEND").font = Font(size=12, bold=True, color="1F3864")
-    ws.cell(key_top, 3, "Review only red and pink cells — black is copied from the customer, grey is formula").font = \
+    ws.cell(key_top, 1, "LEGEND").font = Font(size=12, bold=True, color="1F3864")
+    ws.cell(key_top, 2, "Review only red and pink cells — black is copied from the customer, grey is formula").font = \
         Font(size=10, bold=True, color=_RED)
     key = [("", "input", "Orange — to fill in (from the drawing, the customer, or your rate). Left empty on purpose"),
            ("Red text", "assume", "Ours to review — an estimate or default rate, kept on the higher side. Check before quoting"),
@@ -360,7 +360,7 @@ def _build_tab(wb, tab: Tab, commons: Commons, shared: Dict[str, str], first_tab
            ("Pink text", "doubt", "Technically doubtful — the reason is in Remarks. Confirm before quoting"),
            ("Grey cell", "calc", "Formula — fills in once its inputs are there; don't type over it")]
     for i, (txt, kind, expl) in enumerate(key):
-        c = ws.cell(key_top + 1 + i, 2, txt or None)
+        c = ws.cell(key_top + 1 + i, 1, txt or None)
         c.border = _BOX
         if kind == "input":
             c.fill = _ORANGE
@@ -368,30 +368,30 @@ def _build_tab(wb, tab: Tab, commons: Commons, shared: Dict[str, str], first_tab
             c.font = _font(kind, True)
             if kind == "calc":
                 c.fill = _GREY
-        ws.cell(key_top + 1 + i, 3, expl).font = Font(size=10)
-    ws.cell(a_head, 2, "ASSUMPTIONS & RATES — change once here; every row updates").font = \
+        ws.cell(key_top + 1 + i, 2, expl).font = Font(size=10)
+    ws.cell(a_head, 1, "ASSUMPTIONS & RATES — change once here; every row updates").font = \
         Font(size=11, bold=True, color="1F3864")
-    for c_, t in ((2, "Item"), (3, "Value"), (4, "Unit"), (5, "Basis")):
+    for c_, t in ((1, "Item"), (2, "Value"), (3, "Unit"), (4, "Basis")):
         ws.cell(a_head + 1, c_, t).font = Font(size=9, bold=True, color="595959")
 
     def legend_row(r: int, name: str, value: Any, unit: str, basis: str, kind: str, bold_name=False):
-        nc = ws.cell(r, 2, name or None)
+        nc = ws.cell(r, 1, name or None)
         nc.font = Font(size=10, bold=bold_name)
         if bold_name:
             nc.border = _BOX
             if not name:
                 nc.fill = _ORANGE
-        c = ws.cell(r, 3)
+        c = ws.cell(r, 2)
         c.border = _BOX
         _paint(c, Val(value, kind), "0%" if unit == "%" else None)
-        ws.cell(r, 4, unit).font = Font(size=10, color="595959")
-        ws.cell(r, 5, basis).font = Font(size=9, italic=True, color="595959")
+        ws.cell(r, 3, unit).font = Font(size=10, color="595959")
+        ws.cell(r, 4, basis).font = Font(size=9, italic=True, color="595959")
 
     r = a_head + 2
     for name, value, unit in common_rows:
         if first_tab:
             legend_row(r, name, value, unit, commons.basis, "assume")
-            shared[name] = f"'{tab.title}'!$C${r}"
+            shared[name] = f"'{tab.title}'!$B${r}"
         else:
             legend_row(r, name, f"={shared[name]}", unit, "Linked to the first tab — change it there", "calc")
         r += 1
@@ -418,8 +418,8 @@ def _build_tab(wb, tab: Tab, commons: Commons, shared: Dict[str, str], first_tab
         dn = f"ZaiProcesses{len(wb.defined_names) + 1}"
         sheet = f"'{tab.title}'"
         wb.defined_names[dn] = DefinedName(
-            dn, attr_text=f"OFFSET({sheet}!$B${proc_first},0,0,"
-                          f"MAX(1,COUNTA({sheet}!$B${proc_first}:$B${proc_first + PROCESS_LIST_REACH - 1})),1)")
+            dn, attr_text=f"OFFSET({sheet}!$A${proc_first},0,0,"
+                          f"MAX(1,COUNTA({sheet}!$A${proc_first}:$A${proc_first + PROCESS_LIST_REACH - 1})),1)")
         dv = DataValidation(type="list", formula1=dn, allow_blank=True, showErrorMessage=True,
                             error="Pick a process from the list, or add it to the legend first")
         ws.add_data_validation(dv)
