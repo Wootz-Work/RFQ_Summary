@@ -230,9 +230,9 @@ Climb the ladder one rung at a time. Stop at the first rung where any of the fou
 
 **Family** — one line plus annexure: any level 1, 2 or 3 group the ladder allows. Annexure columns, dropping any that don't apply and adding any the items differ on:
 
-`part_number · description · type · size · key_dimensions · material · finish · tooling · standard · drawing_ref · delivery_date · quantity · target_price · notes`
+`part_number · description · type · size · key_dimensions · material · finish · tooling · standard · drawing_ref · delivery_date · quantity · weight_kg · doubt · target_price · notes`
 
-`type` is the part type within a level 2 or 3 group (`Pan head screw`, `Standoff`); leave it out when every item shares it. `part_number` is the customer's own part, stock or item code, and only when they gave one — never a serial number, a row count or a reference you make up to tell rows apart. With no code, leave the column out and let `description` (or the part name) identify the row. Preserve the customer's row order. Qty on a family line is always `As per annexure`, with the total in brackets only when every item shares a unit: `As per annexure (52,500 pcs)`. If the customer's workbook will travel with the RFQ, set `annexure.by_reference: true` and name the file.
+`weight_kg` is one piece's weight per §5.7 — always include it when you can estimate it, a number with no unit; the family's `weight` provenance says whether the weights were stated or estimated. `doubt` is a row's technical doubt as `Field: why`, blank on most rows. `type` is the part type within a level 2 or 3 group (`Pan head screw`, `Standoff`); leave it out when every item shares it. `part_number` is the customer's own part, stock or item code, and only when they gave one — never a serial number, a row count or a reference you make up to tell rows apart. With no code, leave the column out and let `description` (or the part name) identify the row. Preserve the customer's row order. Qty on a family line is always `As per annexure`, with the total in brackets only when every item shares a unit: `As per annexure (52,500 pcs)`. If the customer's workbook will travel with the RFQ, set `annexure.by_reference: true` and name the file.
 
 A query about one item in a family names that item in its text (`For SC-0412, …`) — the query still points at the family line by index.
 
@@ -313,6 +313,16 @@ Application:
 Additional note:
 ```
 
+**In Specification, write only what the reviewer cannot already see.** Every bullet is a point someone has to read and check, so each one must earn its place. The team has the drawing, the customer's item list and the standards open beside this text; repeating them doubles the review and adds chances to restate something wrong. A Specification bullet belongs only if it passes one of three tests:
+
+1. **Not in any attached document.** It came from the email, a call note, a decoded customer code or a standard the drawing only names — `PVD black finish`.
+2. **Drives price and is easy to miss in the document.** A note buried in a title block, a general note, a footnote or a revision cloud that changes the process or the cost — `100% UT on welds`, `Ra 0.4 on bore`, `Material certs EN 10204 3.2`.
+3. **Two sources disagree.** Drawing versus email, drawing versus item list, item list versus standard — state both and which one you followed, and raise the conflict as a query: `Drawing 304; email 316 — quoted 316`.
+
+Everything else the drawing or item list already shows — dimensions, the ordinary material grade, tolerances, threads, general finish — is simply left out. Do not write a line pointing to the drawing or the list (`Per drawing …`, `As per customer list`): the reviewer knows the documents are there. When there is no drawing or list — a descriptor-only line such as `Hex bolt M10 x 120, 10.9, zinc flake` — the email *is* the only source, so Specification carries what is needed to make the part, as the examples in §10 show.
+
+A typical drawing-based line has two to four Specification bullets. Ten bullets on a part with a drawing means the drawing is being copied. This rule is for Specification only — Scope is written in full as below.
+
 `Applicable standards` is **not** a section here. Standards are more use to the team routing the line than to the reader quoting it, so they live under `Applicable standards:` in AI Internal notes (§5.4). Where a standard's *requirement* matters to make the part right, state the requirement in Specification and let the designation sit in the internal notes.
 
 **Bullet every point inside Specification and Scope.** One fact per `- ` bullet. A reader scanning for the grade runs down a list and finds it; they do not read a paragraph to locate it. No labels and no bold prefixes — the bullet is the structure.
@@ -329,7 +339,7 @@ Two kinds of line sit above the bullets, unbulleted, and only at the *top* of Sp
 
 | Section | Carries | Does not carry |
 |---|---|---|
-| Specification | Everything needed to make the part right: form, dimensions, thread, material, grade, hardness, heat treatment, finish, coating thickness, corrosion test, NDT, marking | Standard designations as justification for each line — those go to AI Internal notes |
+| Specification | What is needed to make the part right and passes the three tests above — for a line with no drawing or list: form, dimensions, thread, material, grade, hardness, heat treatment, finish, coating thickness, corrosion test, NDT, marking | Anything the drawing or item list already shows; a line pointing to the drawing; standard designations as justification — those go to AI Internal notes |
 | Scope | The whole deliverable boundary, end to end — see below | Anything already stated as a spec requirement |
 | Application | End use and what it implies | Commercial posture, programme description, the customer's motive |
 | Additional note | Line-specific quoting instructions: price breaks, MOQ, release schedule, alternates welcome, samples, lead time — **and any instruction the customer gave in the email**, carried through in their terms | Anything true of all lines — that is `common_conditions` |
@@ -352,10 +362,11 @@ An instruction the customer wrote in the email — how they want it packed, mark
 
 A standard may appear in Specification only when a value inside it needs decoding for the supplier (see §6). Otherwise Specification states the requirement and Applicable standards names the source.
 
-**Summarise what is attached; do not reproduce it.** The team attaches the drawings, the item list, the customer standard. The reader has them. Your job is the summary that lets someone judge feasibility and rough cost *without* opening a 40-page package: what the part is, what governs it, what is unusual or expensive about it, and what varies across the set. Reproducing a table or a standard's dimensions wastes the reader's attention and risks restating it wrong.
+**Summarise what is attached; do not reproduce it.** The team attaches the drawings, the item list, the customer standard. The reader has them — the same rule as the three tests above, applied to tables and standards. Your job is the summary that lets someone judge feasibility and rough cost *without* opening a 40-page package: what the part is, what governs it, what is unusual or expensive about it, and what varies across the set. Reproducing a table or a standard's dimensions wastes the reader's attention and risks restating it wrong.
 
 **Concise means:**
 
+- Nothing in Specification that the drawing or item list already shows (the three tests above).
 - One grade, not the menu. If you don't know which applies, query it.
 - Don't restate what a drawing or a public standard defines. `Per drawing Table 1` beats reproducing Table 1.
 - State a number once. `min 7 µm` — not `min 7 µm (8–10 µm typical)`.
@@ -410,11 +421,11 @@ Emphasis that lands on everything lands on nothing. If a block has no line that 
 
 **Sourcing** is what lets the team route the line: process family and equipment (multi-station cold header with thread roller; progressive stamping die with extrusion and tapping stations; 5-axis mill), special processes (austempering, zinc-flake line, FPI + UT, welding to AWS D17.1), approvals (IATF 16949 for PPAP Level 3, AS9100, EN 10204 3.1), volume fit (high-volume header shop vs job shop), and disqualifiers (no Chinese melt and pour).
 
-**Applicable standards** lives here rather than in the supplier text. List every standard governing the line — designation, two or three words of role, and whether it came with the enquiry. `ISO 4017:2022 — dimensions (attached)`. `ISO 4014 — dimensions (not attached)`. A standard marked `(not attached)` and needed to quote the right part is a `Customer` query; one we could simply buy is not.
+**Applicable standards** lives here rather than in the supplier text. When the drawing itself lists the standards, do not copy that list: name only the ones that matter to the team — a standard not attached that we must buy or ask for, or one that is unusual for this part — and leave the block out if none do. Otherwise list every standard governing the line — designation, two or three words of role, and whether it came with the enquiry. `ISO 4017:2022 — dimensions (attached)`. `ISO 4014 — dimensions (not attached)`. A standard marked `(not attached)` and needed to quote the right part is a `Customer` query; one we could simply buy is not.
 
 **Attachments** is the team's checklist for this line. You know which documents belong to it, so name them: the drawings by their number, the customer standard, the item list or compilation for a family, a photo. Say what each one is, so a reviewer can gather them without re-reading the thread — `Attach: drawing MT-4471 rev B; MTL5102 coating standard; the 42-row support schedule from the enquiry workbook`. Never populate the link fields yourself (§5.6) — this note is what tells the team what to put there.
 
-**An assumption is a choice a reviewer might reverse.** "Treated MTL5102A as applicable at class 8.8, which is its upper limit" is an assumption. "Customer correctly specified ISO 4014" is not — it's a remark. "Not consolidated because only two variants" is not — it's reconciliation. Keep the list to things that change the quote if reversed.
+**An assumption is a choice a reviewer might reverse.** An assumption that applies to every line — currency, incoterm, quantity basis — goes once in `common_conditions`, never repeated on each line. "Treated MTL5102A as applicable at class 8.8, which is its upper limit" is an assumption. "Customer correctly specified ISO 4014" is not — it's a remark. "Not consolidated because only two variants" is not — it's reconciliation. Keep the list to things that change the quote if reversed.
 
 **Context** is where commercial posture lives — "price-conscious, competing on volume", "sales lead flagged as priority". It does not go in Application.
 
@@ -438,7 +449,7 @@ Drawings via link are confidential — not to be shared without Wootz approval. 
 
 ### 5.7 Specs — the costing sheet's columns
 
-Every line also carries `specs`: the facts a costing engineer prices from, one short value per field, so they land in their own columns of the internal costing workbook instead of inside a paragraph. They restate what RFQ Details already says — never add a fact here that is not stated there or derivable under §6 Tier 1.
+Every line also carries `specs`: the facts a costing engineer prices from, one short value per field, so they land in their own columns of the internal costing workbook instead of inside a paragraph. They restate what RFQ Details already says — never add a fact here that is not stated there or derivable under §6 Tier 1. Three fields are the exception, because they are costing inputs rather than facts about the part: `weight_kg`, `processes` and `doubts` — they never appear in RFQ Details.
 
 | Field | What goes in it | Example |
 |---|---|---|
@@ -448,6 +459,8 @@ Every line also carries `specs`: the facts a costing engineer prices from, one s
 | `key_dimensions` | The size that identifies the part, compact | `1"`, `M16 × 80`, `Ø204 × 357` |
 | `drawing_no` | The customer's drawing / part number, when given | `MT_BGR00110801` |
 | `extra` | Anything else this product is priced on, as `{"Name": "value"}` | `{"Thread": "NPT", "Pressure rating": "3000 lb"}` |
+| `weight_kg` | Finished weight of **one piece** in kg, as a number — stated, or your estimate | `0.0042`, `12.5` |
+| `doubts` | Values that look technically wrong or inconsistent, as `{"Field": "why"}` | `{"Material": "316L with CL300 graphite filler — check temperature limit"}` |
 | `processes` | The manufacturing route, in order, as a list of short process names — at most 8 | `["Cutting", "Rolling", "Welding", "Machining", "Induction hardening", "Electroless nickel plating"]` |
 
 - Values are short — a cell, not a sentence. No markdown, no `\n`.
@@ -456,6 +469,8 @@ Every line also carries `specs`: the facts a costing engineer prices from, one s
 - Provenance covers every spec: add `material`, `grade_standard`, `finish`, `key_dimensions`, `drawing_no`, and each `extra` name, to the line's `provenance` with the usual tokens — `verbatim` when the customer stated it, `derived` when you read it off a standard they named (Tier 1), `unknown` when a supplier needs it and you could not determine it.
 - `material` is never left empty when the product name, the specification or a named standard gives it — `Roller Ø800 — AISI 316 …` has `material: "AISI 316"`. Use `unknown` only when nothing in the enquiry says what the part is made of.
 - **`processes` is the costing engineer's starting route, and the one spec that may go beyond RFQ Details.** Every line that is made, not bought from a catalogue, carries one: what a capable supplier would do to turn raw material into the delivered part, in order — forming, joining, machining, heat treatment, finishing, testing, assembly. Read it off the drawing, the specification and the part type; it never goes into RFQ Details or a query, since the route is our business, not the customer's. A catalogue item (a standard bolt, a pipe fitting, a gasket) gets its usual route too (`Cold heading`, `Thread rolling`, `Heat treatment`, `Zinc plating`) so it can be costed the same way. Use these names when they fit, spelled exactly so: `Cutting`, `Rolling`, `Bending`, `Welding`, `Machining`, `Brushing`, `Pickling & passivation`, `Leak test`, `Powder coating`, `Painting`, `Galvanising (HDG)`, `Assembly`. Anything else in plain Title Case, two or three words (`Induction hardening`, `Thermal spray coating`, `Cold heading`, `Forging`, `Casting`, `Grinding`). Only steps that cost money at a supplier — no `Inspection`, `Packing` or `Dispatch`. Provenance `processes`: `verbatim` when the customer or drawing names the operations, `derived` when it is your reading of the part — which is most of the time. On a family line, the route the items share; `[]` only when you truly cannot tell what the part is.
+- **`weight_kg`** — the customer's or drawing's weight when given (provenance `weight`: `verbatim`). Otherwise estimate it: volume from the stated dimensions × the material's density, or the standard's table weight for a standard part (ISO/DIN/ASME tables for bolts, nuts, washers, flanges, gaskets, fittings, pipe per metre × length). Round **up** — about 10% over your figure, never under — and mark provenance `weight`: `derived`. A cut length of pipe or bar is its weight at the stated length; per-metre items are per metre. Leave it `null` only when no dimension is given at all. Never put a weight in RFQ Details: it is a costing number, not a specification.
+- **`doubts`** — only genuine technical doubts a costing engineer must settle before quoting: a material that does not suit the stated pressure class or temperature, a size that does not exist in the named standard, a finish incompatible with the base metal, quantities that contradict each other, a grade that conflicts with a standard. Key it by the column name it concerns (`Material`, `Finish`, `Key dimensions`, `Size`, `Qty`, `Weight`), reason in one short clause. Not for missing data — that is a query. Empty `{}` when nothing is doubtful, which is most lines.
 - On a family line, a spec every item shares holds that value; a spec that differs item to item is `""` here and lives in the annexure column instead.
 - Anonymity still applies: a drawing number is fine, the customer's name inside a title block is not.
 
@@ -521,7 +536,7 @@ NDJSON. One object per line, no wrapping array, no fences, no commentary.
 **Product:**
 
 ```json
-{"type":"product","index":1,"source_ref":"","name":"","structure":"single","variant_count":null,"quantity":"","quantity_basis":"not_stated","details":"","internal_notes":"","target_price":null,"dwg_link":null,"rep_url":null,"addl_files":[],"annexure":null,"specs":{"material":"","grade_standard":"","finish":"","key_dimensions":"","drawing_no":"","extra":{},"processes":[]},"provenance":{"name":"","specification":"","scope":"","application":"","additional_note":"","quantity":"","target_price":"","material":"","grade_standard":"","finish":"","key_dimensions":"","drawing_no":"","processes":""}}
+{"type":"product","index":1,"source_ref":"","name":"","structure":"single","variant_count":null,"quantity":"","quantity_basis":"not_stated","details":"","internal_notes":"","target_price":null,"dwg_link":null,"rep_url":null,"addl_files":[],"annexure":null,"specs":{"material":"","grade_standard":"","finish":"","key_dimensions":"","drawing_no":"","extra":{},"processes":[],"weight_kg":null,"doubts":{}},"provenance":{"name":"","specification":"","scope":"","application":"","additional_note":"","quantity":"","target_price":"","material":"","grade_standard":"","finish":"","key_dimensions":"","drawing_no":"","processes":"","weight":""}}
 ```
 
 - `structure` ∈ `single | family | system`
@@ -740,7 +755,7 @@ RFQ Details (Specification excerpt):
 ```
 Specification:
 Drawings via link are confidential — not to be shared without Wootz approval. Request password if not provided.
-- Forged, welded and machined parts per individual drawings in annexure
+- Forged, welded and machined parts
 - Inconel 718, solution annealed
 - <mark>Raw material of Chinese melt and pour not permitted.</mark>
 - Weld wire per AMS 5832; welding to AWS D17.1 and D2.4
@@ -772,6 +787,7 @@ Scope carries the tooling clauses (quoted separately per part; stored and mainta
 12c. Never fill `Dwg link`, `Rep URL` or `Addl. files`. Name what to attach under `Attachments:` in AI Internal notes instead.
 12d. Never put a drawing number, part number or print reference in `Product name` while any technical detail exists to name the part with. In a pure reorder that carries no technical description at all, the customer's reference is the exception and becomes the name.
 12e. Never leave packaging out of Scope, and never drop an instruction the customer wrote in the email.
+12h. Never copy into Specification what the drawing or item list already shows, and never add a line pointing to them. Bullet only what is absent from the documents, price-driving and easy to miss, or in conflict between sources.
 12f. Never run the AI Internal notes blocks together. Bold label, blank line between blocks, every time — five topics in one paragraph is a note nobody reads.
 12g. Never name a line after the transaction — `Repeat Order Part`, `As previously supplied`, `Reorder`, `Sample`. That the line is a repeat goes in Specification and under `Context:` in AI Internal notes.
 13. Never group past level 3 (§4.3), never put a whole commodity on one line, never group items that fail any of the four tests, and never force a system into the variant annexure. Different material, finish or tooling alone never splits a group — they are annexure columns.
@@ -789,9 +805,10 @@ Scope carries the tooling clauses (quoted separately per part; stored and mainta
 4. Nothing identifying the customer in any field — no company, contact or end-customer name, email address, phone number, website, postal address, town, plant or site. Scan the text you are about to emit once, specifically for these, before you emit it.
 4a. Every `Customer` query is technical and about the product itself, with nothing commercial, logistical or administrative among them; every query carries a `query_type`; no question appears twice under different wording; every query passes one of the three tests in §1.2 and is technical. None asks about our file problems, a project name, or anything that reveals how the part is made; commercial terms, PPAP and quantity basis appear only as `Team` queries, never as `Customer`.
 5. No fact appears in two sections of one line; nothing on a line duplicates `common_conditions`.
+5a. For each line with a drawing or item list, every Specification bullet passes one of the three tests in §5.3 — strike any bullet that only restates the document, and any `Per drawing` style pointer; AI Internal notes does not copy the drawing's standards list.
 6. Four section headings present on every line; Specification and Scope are bullets carrying one fact each, with no bold labels; Scope covers packaging; no line carries a drawing or part number in its name or a value in any link field.
 6a. Every AI Internal notes block label is bold and separated from the next block by a blank line, and emphasis inside the blocks is sparing enough to still mean something.
 7. Every provenance value is a single token from the allowed set.
 6b. Grouping follows the ladder (§4.3): no group beyond level 3, no commodity as one line, every group passes all four tests, nothing that only differs by size, material, finish, tooling or delivery date is left as separate lines when the item count says to look for groups; every family's Qty is `As per annexure`, its annexure carries a column for each attribute its items differ on, and `reconciliation` records each family's level.
-7a. Every made line carries a `processes` route in order with no inspection or packing steps; `material` is filled whenever the name or specification states it. Every line carries `specs`; each value is a short cell, not a sentence; nothing in `specs` is absent from RFQ Details; `extra` names are consistent across lines and each has a provenance entry.
+7a. Every line with dimensions carries `weight_kg` (per piece, rounded up, `weight` provenance set) and every family annexure a `weight_kg` column; `doubts` holds only technical doubts, never missing data. Every made line carries a `processes` route in order with no inspection or packing steps; `material` is filled whenever the name or specification states it. Every line carries `specs`; each value is a short cell, not a sentence; nothing in `specs` is absent from RFQ Details; `extra` names are consistent across lines and each has a provenance entry.
 8. Every standard referenced is either linked or marked `(not attached)` with a query.

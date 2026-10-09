@@ -39,6 +39,8 @@ from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.cell_range import MultiCellRange
 from openpyxl.worksheet.datavalidation import DataValidation
 
+from .costing_rates import BASIS as RATE_BASIS, material_rate, process_rate
+
 ZAI_PREFIX = "(Zai) "
 SUMMARY_TITLE = ZAI_PREFIX + "Summary"
 PROCESS_SLOTS = 8
@@ -102,6 +104,9 @@ class Tab:
     skipped: List[Tuple[str, str]] = field(default_factory=list)   # (source row, reason)
     rate_groups: List[str] = field(default_factory=list)            # weight_rate legend rates
     processes: Tuple[str, ...] = DEFAULT_PROCESSES                  # process legend
+    # Legend rates we start from: rate group or process -> (INR / kg, basis). Red in the sheet;
+    # a process missing here takes the default table's rate when it has one.
+    rates: Dict[str, Tuple[float, str]] = field(default_factory=dict)
 
     @property
     def title(self) -> str:
@@ -258,6 +263,7 @@ def _build_tab(wb, tab: Tab, commons: Commons, shared: Dict[str, str], first_tab
     cost_fmt = {h: f for h, _, f in _cost_columns(cur)}
     widths = {h: w for h, _, w in cols}
 
+    wrapped = {h for h, band, _ in cols if band == "cust" or h == "Remarks"}
     rows_out: List[int] = []
     for k, line in enumerate(tab.lines):
         r = first + k
@@ -266,7 +272,9 @@ def _build_tab(wb, tab: Tab, commons: Commons, shared: Dict[str, str], first_tab
         for h, *_ in cols:
             c = at(h)
             c.border = _BOX
-            c.alignment = Alignment(vertical="center", wrap_text=(h == "Remarks" or widths.get(h, 0) >= 40))
+            # Top-aligned and wrapped, so a long description shows from its first line
+            # and the row grows to hold the rest.
+            c.alignment = Alignment(vertical="top", wrap_text=h in wrapped)
 
         def put(h: str, v: Val, fmt: Optional[str] = None):
             _paint(at(h), v, fmt)
@@ -332,6 +340,8 @@ def _build_tab(wb, tab: Tab, commons: Commons, shared: Dict[str, str], first_tab
             _formula(at(h), f, cost_fmt[h])
         at("Remarks").value = line.remarks or None
         at("Remarks").font = _font("data")
+        ws.row_dimensions[r].height = _row_height(
+            [(at(h).value, widths[h]) for h in wrapped if isinstance(at(h).value, str)])
 
     ws.freeze_panes = ws.cell(first, 3)
     ws.page_setup.orientation = "landscape"
@@ -342,10 +352,12 @@ def _build_tab(wb, tab: Tab, commons: Commons, shared: Dict[str, str], first_tab
 
     # ---- legend
     ws.cell(key_top, 2, "LEGEND").font = Font(size=12, bold=True, color="1F3864")
+    ws.cell(key_top, 3, "Review only red and pink cells — black is copied from the customer, grey is formula").font = \
+        Font(size=10, bold=True, color=_RED)
     key = [("", "input", "Orange — to fill in (from the drawing, the customer, or your rate). Left empty on purpose"),
-           ("Red text", "assume", "Our assumption — fair, kept on the higher side. Check before quoting"),
+           ("Red text", "assume", "Ours to review — an estimate or default rate, kept on the higher side. Check before quoting"),
            ("Black text", "data", "Straight from the customer's data or drawing"),
-           ("Pink text", "doubt", "In the customer's data, but technically doubtful — confirm"),
+           ("Pink text", "doubt", "Technically doubtful — the reason is in Remarks. Confirm before quoting"),
            ("Grey cell", "calc", "Formula — fills in once its inputs are there; don't type over it")]
     for i, (txt, kind, expl) in enumerate(key):
         c = ws.cell(key_top + 1 + i, 2, txt or None)
@@ -385,11 +397,19 @@ def _build_tab(wb, tab: Tab, commons: Commons, shared: Dict[str, str], first_tab
         r += 1
     if tab.mode == "weight_rate":
         for g in tab.rate_groups:
-            legend_row(rate_rows[g], g, None, "INR / kg", "Your rate — prices every row of this group", "input")
+            if g in tab.rates:
+                value, basis = tab.rates[g]
+                legend_row(rate_rows[g], g, value, "INR / kg", basis, "assume")
+            else:
+                legend_row(rate_rows[g], g, None, "INR / kg", "Your rate — prices every row of this group", "input")
     else:
         for i, p in enumerate(tab.processes):
-            legend_row(proc_first + i, p, None, "INR / kg", "Your rate — added when a row lists this process",
-                       "input", bold_name=True)
+            value, basis = tab.rates.get(p) or (process_rate(p), RATE_BASIS)
+            if value is None:
+                legend_row(proc_first + i, p, None, "INR / kg", "Your rate — added when a row lists this process",
+                           "input", bold_name=True)
+            else:
+                legend_row(proc_first + i, p, value, "INR / kg", basis, "assume", bold_name=True)
         for j in range(SPARE_PROCESS_ROWS):
             legend_row(proc_first + len(tab.processes) + j, "", None, "INR / kg",
                        "Spare — type a new process here. Need more? keep going on the rows below",
@@ -790,6 +810,15 @@ def _tab_name(name: str, taken: set) -> str:
     return out
 
 
+def _row_height(texts: List[Tuple[str, int]]) -> float:
+    """Tall enough for the longest wrapped cell, at ~1.1 characters per width unit; 15 pt per line."""
+    lines = 1
+    for text, width in texts:
+        per_line = max(4, int(width * 1.1))
+        lines = max(lines, sum(max(1, -(-len(part) // per_line)) for part in text.split("\n")))
+    return min(15.0 * lines, 150.0)
+
+
 def _width(header: str, values: List[Any], cap: int = 40) -> int:
     return max(8, min(cap, max([len(str(header))] + [len(str(v or "")) for v in values]) + 2))
 
@@ -851,18 +880,78 @@ def _rate_group(row: Dict[str, Any], columns: Sequence[str], specs: Any, fallbac
     value the row leaves out falls back to the product-level spec the whole
     family shares; with neither, the family has a single rate.
     """
+    parts = [v for v in (_pick(row, columns, _MATERIAL_HEADER, specs, "material"),
+                         _pick(row, columns, _FINISH_HEADER, specs, "finish")) if v]
+    return " · ".join(parts)[:80] if parts else fallback
+
+
+def _pick(row: Dict[str, Any], columns: Sequence[str], pattern: "re.Pattern[str]", specs: Any, spec: str) -> str:
+    """The row's own value in the first column the pattern names, else the family's spec."""
     from .sheet_columns import display_header
 
-    def pick(pattern: "re.Pattern[str]", spec: str) -> str:
-        for c in columns:
-            if pattern.search(display_header(c)):
-                v = re.sub(r"\s+", " ", str(row.get(c) or "")).strip()
-                if v:
-                    return v
-        return re.sub(r"\s+", " ", str(getattr(specs, spec, "") or "")).strip() if specs else ""
+    for c in columns:
+        if pattern.search(display_header(c)):
+            v = re.sub(r"\s+", " ", str(row.get(c) or "")).strip()
+            if v:
+                return v
+    return re.sub(r"\s+", " ", str(getattr(specs, spec, "") or "")).strip() if specs else ""
 
-    parts = [v for v in (pick(_MATERIAL_HEADER, "material"), pick(_FINISH_HEADER, "finish")) if v]
-    return " · ".join(parts)[:80] if parts else fallback
+
+def _group_rate(material: str, route: Sequence[str]) -> Optional[Tuple[float, str]]:
+    """
+    An all-in INR/kg for a family's rate group: raw material plus each step of
+    the family's route, from the default tables. None when the material is unknown.
+    """
+    hit = material_rate(material)
+    if not hit:
+        return None
+    name, total = hit
+    parts, unpriced = [f"{name} {total:g}"], []
+    for step in route:
+        rate = process_rate(step)
+        if rate is None:
+            unpriced.append(step)
+        else:
+            total += rate
+            parts.append(f"{step} {rate:g}")
+    basis = " + ".join(parts) + f" — {RATE_BASIS}"
+    if unpriced:
+        basis += f"; not priced: {', '.join(unpriced)}"
+    return total, basis
+
+
+_WEIGHT_KEY = re.compile(r"^\s*(unit\s*|piece\s*|est\.?\s*)?weight(\s*_?\(?kg\)?)?\s*$|^weight_kg$", re.IGNORECASE)
+_DOUBT_KEY = re.compile(r"^\s*(doubts?|technical\s*doubt)\s*$", re.IGNORECASE)
+
+
+def _doubts_from(text: str) -> Dict[str, str]:
+    """"Material: 316L with CL300?; Size: ..." -> {"Material": "316L with CL300?", ...}; no field -> {"": text}."""
+    out: Dict[str, str] = {}
+    for part in re.split(r"\s*;\s*", str(text or "").strip()):
+        if not part:
+            continue
+        field_, _, why = part.partition(":")
+        out[field_.strip() if why else ""] = (why if why else part).strip()
+    return out
+
+
+def _mark_doubts(line: Line, doubts: Dict[str, str]) -> None:
+    """Turn each doubted value pink and say why in Remarks."""
+    from .sheet_columns import display_header
+
+    notes = []
+    for key, why in doubts.items():
+        target = display_header(key).lower() if key else ""
+        hit = next((h for h in line.fields if h.lower() == target), None)
+        if hit:
+            line.fields[hit] = doubtful(line.fields[hit].value)
+        elif target in ("weight", "weight kg") and line.weight.kind != "input":
+            line.weight = doubtful(line.weight.value)
+        elif target in ("qty", "quantity", "annual qty") and line.qty.kind != "input":
+            line.qty = doubtful(line.qty.value)
+        notes.append(f"Check {display_header(key)}: {why}" if key else f"Check: {why}")
+    if notes:
+        line.remarks = "; ".join(x for x in [line.remarks] + notes if x)
 
 
 def tabs_from_extraction(extraction: Any) -> List[Tab]:
@@ -872,8 +961,12 @@ def tabs_from_extraction(extraction: Any) -> List[Tab]:
     Only what the extraction actually carries is used. Family rows come across
     column for column, minus bookkeeping (serial numbers, made-up references);
     the product-level quantity turns red when the extraction marked it derived.
-    Weight and rates are never set here — they are the team's to fill.
+    Weight comes from the extraction (stated black, estimated red); material and
+    process rates from the default tables in costing_rates (red); anything the
+    extraction doubted turns pink with its reason in Remarks. What none of
+    these can supply stays orange for the team.
     """
+    from .schema import _kg
     from .sheet_columns import display_header, visible_columns
 
     tabs: List[Tab] = []
@@ -889,13 +982,20 @@ def tabs_from_extraction(extraction: Any) -> List[Tab]:
         if structure == "family" and rows:
             cols = visible_columns(getattr(annexure, "columns", None) or [], rows)
             qty_col = next((c for c in cols if _QTY_HEADER.search(display_header(c))), None)
-            shown = [c for c in cols if c != qty_col]
+            weight_col = next((c for c in cols if _WEIGHT_KEY.search(str(c))), None)
+            doubt_col = next((c for c in cols if _DOUBT_KEY.search(str(c))), None)
+            shown = [c for c in cols if c not in (qty_col, weight_col, doubt_col)]
             label_col = next((c for c in shown if display_header(c).lower() in ("description", "part name")),
                              shown[0] if shown else None)
             code_col = next((c for c in shown if display_header(c).lower() in ("part number", "item code", "stock code")), None)
             specs = getattr(p, "specs", None)
+            prov = {str(k).strip().lower(): str(v or "").strip().lower()
+                    for k, v in (getattr(p, "provenance", None) or {}).items()}
+            route = [str(x) for x in (getattr(specs, "processes", None) or [])] if specs else []
+            family_doubts = dict(getattr(specs, "doubts", None) or {}) if specs else {}
             lines = []
             groups: List[str] = []
+            rates: Dict[str, Tuple[float, str]] = {}
             for row in rows:
                 qty, unit = split_quantity(row.get(qty_col)) if qty_col else (needed(), "pcs")
                 label = str(row.get(label_col) or "").strip() if label_col else ""
@@ -904,8 +1004,15 @@ def tabs_from_extraction(extraction: Any) -> List[Tab]:
                 group = _rate_group(row, shown, specs, name or "This family")
                 if group not in groups:
                     groups.append(group)
-                lines.append(Line(label=label or name, fields={display_header(c): data(row.get(c) or None) for c in shown},
-                                  qty=qty, qty_unit=unit or "pcs", rate_group=group))
+                    rate = _group_rate(_pick(row, shown, _MATERIAL_HEADER, specs, "material"), route)
+                    if rate:
+                        rates[group] = rate
+                kg = _kg(row.get(weight_col)) if weight_col else None
+                line = Line(label=label or name, fields={display_header(c): data(row.get(c) or None) for c in shown},
+                            qty=qty, qty_unit=unit or "pcs", rate_group=group,
+                            weight=(data(kg) if prov.get("weight") == "verbatim" else assumed(kg)) if kg else needed())
+                _mark_doubts(line, {**family_doubts, **_doubts_from(row.get(doubt_col, "") if doubt_col else "")})
+                lines.append(line)
             tabs.append(Tab(
                 name=_tab_name(name, taken), kind="family", mode="weight_rate",
                 columns=[(display_header(c), _width(display_header(c), [r.get(c) for r in rows])) for c in shown],
@@ -913,7 +1020,7 @@ def tabs_from_extraction(extraction: Any) -> List[Tab]:
                 source=" · ".join(x for x in (f"Line {p.index}" if getattr(p, "index", None) is not None else "",
                                               str(getattr(p, "source_ref", "") or "").strip()) if x),
                 source_lines=getattr(p, "variant_count", None) or len(rows),
-                rate_groups=groups,
+                rate_groups=groups, rates=rates,
             ))
             continue
 
@@ -937,8 +1044,15 @@ def tabs_from_extraction(extraction: Any) -> List[Tab]:
         route, beyond = _process_route(specs, prov.get("processes", ""))
         if beyond:
             remarks = "; ".join(x for x in (remarks, "Also: " + ", ".join(beyond)) if x)
-        individual.append(Line(label=name, fields=fields, qty=qty, qty_unit=unit or "pcs", remarks=remarks,
-                               processes=route))
+        kg = getattr(specs, "weight_kg", None) if specs else None
+        mat = material_rate(getattr(specs, "material", "") if specs else "")
+        if mat:
+            remarks = "; ".join(x for x in (remarks, f"Material rate: {mat[0]} default") if x)
+        line = Line(label=name, fields=fields, qty=qty, qty_unit=unit or "pcs", remarks=remarks, processes=route,
+                    weight=(data(kg) if prov.get("weight") == "verbatim" else assumed(kg)) if kg else needed(),
+                    material_rate=assumed(mat[1]) if mat else needed())
+        _mark_doubts(line, dict(getattr(specs, "doubts", None) or {}) if specs else {})
+        individual.append(line)
     if individual:
         # Fixed spec columns on every tab; a dynamic column only for a spec some item actually has.
         cols = [("Part name", 30)] + [(h, w) for (_, h), w in zip(SPEC_COLUMNS, (18, 20, 14, 18, 18))]

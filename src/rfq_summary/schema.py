@@ -390,6 +390,10 @@ class ProductSpecs(BaseModel):
     extra: Dict[str, str] = Field(default_factory=dict)
     # The manufacturing route, in order — the costing sheet's Process 1..8.
     processes: List[str] = Field(default_factory=list)
+    # Finished weight of one piece, kg — stated, or estimated from the size.
+    weight_kg: Optional[float] = None
+    # Technically doubtful values: {"Material": "why"} — pink in the sheet.
+    doubts: Dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
@@ -434,7 +438,30 @@ class ProductSpecs(BaseModel):
             if name and name.lower() not in (n.lower() for n in names):
                 names.append(name)
         data["processes"] = names
+        data["weight_kg"] = _kg(data.get("weight_kg", data.get("weight")))
+        doubts = data.get("doubts")
+        if isinstance(doubts, list):
+            doubts = {str(d.get("field", "")): d.get("why", d.get("reason", "")) for d in doubts if isinstance(d, dict)}
+        elif isinstance(doubts, str):
+            doubts = dict(part.split(":", 1) for part in doubts.split(";") if ":" in part)
+        elif not isinstance(doubts, dict):
+            doubts = {}
+        data["doubts"] = {str(k).strip(): _coerce_str(v).strip() for k, v in doubts.items()
+                          if str(k).strip() and _coerce_str(v).strip()}
         return data
+
+
+def _kg(value: Any) -> Optional[float]:
+    """1.25, "1.25", "1.25 kg", "~1,250 g" -> kilograms; anything else -> None."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value) if value > 0 else None
+    m = re.search(r"(\d[\d,]*\.?\d*)\s*(kg|g|gm|gms|grams?|t|mt|tonnes?)?\b", str(value or ""), re.IGNORECASE)
+    if not m:
+        return None
+    n = float(m.group(1).replace(",", ""))
+    unit = (m.group(2) or "kg").lower()
+    n = n / 1000 if unit.startswith("g") else n * 1000 if unit in ("t", "mt") or unit.startswith("tonne") else n
+    return n if n > 0 else None
 
 
 class ExtractedQuery(BaseModel):
