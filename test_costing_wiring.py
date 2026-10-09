@@ -194,16 +194,20 @@ _i = _wb[ind.title]
 _plegend = {_i.cell(r, 1).value: _i.cell(r, 2).value for r in range(1, _i.max_row + 1) if _i.cell(r, 3).value == "INR / kg"}
 check("process rates come from the default table", _plegend.get("Welding") == 35 and _plegend.get("Thread rolling") == 15,
       str(_plegend))
-_orig = [_wb[n] for n in _wb.sheetnames if n.startswith("zai_orig_")]
-check("one hidden copy of the red and pink values per tab", len(_orig) == 2
-      and all(o.sheet_state == "veryHidden" for o in _orig))
+check("no extra sheets for the originals", not [n for n in _wb.sheetnames if "orig" in n.lower()], str(_wb.sheetnames))
 _wcol = {c.value: c.column_letter for c in _g[2]}["Weight"]
-check("the copy holds the value we wrote, at the same address", _orig[0][f"{_wcol}3"].value == 0.08)
-check("formulas and black data are not copied", _orig[0]["A3"].value is None)
-_rules = [r for cf in _g.conditional_formatting for r in cf.rules]
-check("an edited red or pink cell turns black",
-      any(r.dxf and r.dxf.font and str(r.dxf.font.color.rgb).endswith("000000") and _orig[0].title in r.formula[0]
-          for r in _rules), str([r.formula for r in _rules]))
+_helpers = {c.value: c.column_letter for c in _g[2] if str(c.value or "").startswith("Zai original")}
+_hw = _helpers.get(f"Zai original — {_wcol}")
+check("the value we wrote is kept in a hidden column on the same row",
+      _hw and _g.column_dimensions[_hw].hidden and _g[f"{_hw}3"].value == 0.08, str(_helpers))
+_rules = {str(cf.sqref): r for cf in _g.conditional_formatting for r in cf.rules}
+_wr = next((r for sq, r in _rules.items() if sq.startswith(f"{_wcol}3")), None)
+check("an edited red or pink cell turns black, compared on its own row",
+      _wr is not None and _wr.dxf.font.color.rgb.endswith("000000") and _wr.formula[0] == f'AND(${_hw}3<>"",{_wcol}3<>${_hw}3)',
+      str({k: v.formula for k, v in _rules.items()}))
+check("helper columns sit after Remarks, so nothing the Quotation reads moves",
+      all(openpyxl.utils.column_index_from_string(c) > [x.value for x in _g[2]].index("Remarks") + 1
+          for c in _helpers.values()))
 
 
 check("the log says how far the extraction grouped",

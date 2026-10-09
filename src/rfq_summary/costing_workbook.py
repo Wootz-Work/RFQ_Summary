@@ -434,27 +434,36 @@ def _black_once_edited(wb, ws) -> None:
     """
     Red and pink mean "not yet reviewed". Once someone types over one, it should
     read as theirs — black. Excel cannot recolour on edit without macros, so the
-    value we wrote is kept on a hidden sheet at the same address, and one
-    conditional format turns any cell black when it no longer matches.
+    value we wrote is kept in a hidden column at the far right of the same tab,
+    on the same row, and a conditional format turns the cell black once it no
+    longer matches.
+
+    Same tab and same row on purpose: inserting, deleting or sorting rows moves
+    the copy with its row, and inserting columns shifts the rule's references,
+    so the comparison never falls out of line the way a separate sheet would.
     """
-    flagged = [c for row in ws.iter_rows(min_row=FIRST_DATA_ROW) for c in row
-               if c.value is not None and not (isinstance(c.value, str) and c.value.startswith("="))
-               and c.font is not None and c.font.color is not None
-               and str(c.font.color.rgb or "").upper().endswith((_RED, _PINK))]
+    flagged: Dict[int, List[Any]] = {}
+    for row in ws.iter_rows(min_row=FIRST_DATA_ROW):
+        for c in row:
+            if (c.value is not None and not (isinstance(c.value, str) and c.value.startswith("="))
+                    and c.font is not None and c.font.color is not None
+                    and str(c.font.color.rgb or "").upper().endswith((_RED, _PINK))):
+                flagged.setdefault(c.column, []).append(c)
     if not flagged:
         return
-    n = 1
-    while f"zai_orig_{n}" in wb.sheetnames:
-        n += 1
-    orig = wb.create_sheet(f"zai_orig_{n}")
-    orig.sheet_state = "veryHidden"
-    for c in flagged:
-        orig[c.coordinate] = c.value
-    last = f"{get_column_letter(ws.max_column)}{ws.max_row}"
-    ref = f"'{orig.title}'!A{FIRST_DATA_ROW}"
-    ws.conditional_formatting.add(
-        f"A{FIRST_DATA_ROW}:{last}",
-        FormulaRule(formula=[f'AND({ref}<>"",A{FIRST_DATA_ROW}<>{ref})'], font=Font(color=_BLACK), stopIfTrue=False))
+    helper = ws.max_column + 2                       # one empty column of gap after Remarks
+    for col_idx, cells in sorted(flagged.items()):
+        h = get_column_letter(helper)
+        x = get_column_letter(col_idx)
+        ws.cell(2, helper, f"Zai original — {x}").font = Font(size=8, color="808080")
+        for c in cells:
+            ws.cell(c.row, helper, c.value)
+        ws.column_dimensions[h].hidden = True
+        top, bottom = min(c.row for c in cells), max(c.row for c in cells)
+        ws.conditional_formatting.add(
+            f"{x}{top}:{x}{bottom}",
+            FormulaRule(formula=[f'AND(${h}{top}<>"",{x}{top}<>${h}{top})'], font=Font(color=_BLACK)))
+        helper += 1
 
 
 # ----------------------------------------------------------------------------- summary
