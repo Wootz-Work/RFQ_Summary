@@ -215,6 +215,19 @@ check("the log says how far the extraction grouped",
       writer.grouping_summary(extraction()))
 
 
+# The rod end: bought-in ball, route names mapped to the rate table, no double assembly.
+rod = tabs_from_extraction(ProductExtractionResult(products=[ExtractedProduct(
+    index=1, name="Spherical Rod End 5/16-24 Female — LH, Zinc", structure="single", quantity="6,600 pcs",
+    specs={"material": "Steel", "weight_kg": 0.04, "bought_out_inr": "Rs 20", "bought_out_note": "Hardened chrome-plated ball",
+           "processes": ["Cold heading", "Drilling", "Thread Tapping", "Heat Treatment", "Zinc Plating", "Swaging", "Assembly"]},
+    provenance={"weight": "derived"})]))[0].lines[0]
+check("bought-in components fill the bought-out column in red", rod.bought_out.kind == "assume" and rod.bought_out.value == 20)
+check("...and Remarks says what they are", "Bought-out: Hardened chrome-plated ball" in rod.remarks, rod.remarks)
+check("process names take the rate table's spelling; swaging is the assembly",
+      [v.value for v in rod.processes] == ["Cold heading", "Drilling", "Tapping", "Heat treatment", "Zinc plating", "Swaging"],
+      str([v.value for v in rod.processes]))
+check("no bought-out estimate leaves the column orange", ind.lines[0].bought_out.kind == "input")
+
 # ---- the writeback step ----------------------------------------------------
 def run(settings=None, dest=("b!DRIVE", "01FOLDERIDAAAAAAAAAAAAAAAAAAAA", ""), upload=None, glide=None, template=None,
         ext=None, title=""):

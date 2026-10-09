@@ -58,10 +58,31 @@ PROCESS_RATES = {
     "Chrome plating": 150, "Anodising": 60, "PVD coating": 300, "Thermal spray coating": 400,
     "Heat treatment": 25, "Induction hardening": 40, "Case hardening": 35, "Cold heading": 20,
     "Hot forging": 45, "Forging": 45, "Casting": 60, "Thread rolling": 15, "Assembly": 15,
-    "Moulding": 60, "Winding": 40, "Lamination": 50,
+    "Moulding": 60, "Winding": 40, "Lamination": 50, "Swaging": 20, "Staking": 20, "Press fitting": 20,
+}
+
+# Other spellings the extraction uses for a step in the table.
+PROCESS_ALIASES = {
+    "thread tapping": "Tapping", "internal threading": "Tapping", "heat-treatment": "Heat treatment",
+    "hardening": "Heat treatment", "hot dip galvanising": "Galvanising (HDG)", "hot-dip galvanizing": "Galvanising (HDG)",
+    "galvanizing": "Galvanising (HDG)", "hdg": "Galvanising (HDG)", "zinc electroplating": "Zinc plating",
+    "anodizing": "Anodising", "cnc turning": "Turning", "cnc machining": "Machining", "cnc milling": "Milling",
+    "cold forging": "Cold heading", "cold forming": "Cold heading", "sawing": "Cutting", "shearing": "Cutting",
+    "passivating": "Passivation", "pickling and passivation": "Pickling & passivation",
 }
 
 _PROCESS_INDEX = {k.lower(): (k, v) for k, v in PROCESS_RATES.items()}
+
+# Steps that close or join the parts — each one already is the assembly.
+JOINING_STEPS = {"swaging", "staking", "press fitting"}
+
+
+def canonical_process(name: str) -> str:
+    """'Thread Tapping' -> 'Tapping', 'heat treatment' -> 'Heat treatment'; unknown names unchanged."""
+    key = (name or "").strip().lower()
+    key = PROCESS_ALIASES.get(key, key).lower()
+    hit = _PROCESS_INDEX.get(key)
+    return hit[0] if hit else (name or "").strip()
 
 
 def material_rate(material: str) -> Optional[Tuple[str, float]]:

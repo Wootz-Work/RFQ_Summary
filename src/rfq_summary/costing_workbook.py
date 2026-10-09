@@ -40,7 +40,7 @@ from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.cell_range import MultiCellRange
 from openpyxl.worksheet.datavalidation import DataValidation
 
-from .costing_rates import BASIS as RATE_BASIS, material_rate, process_rate
+from .costing_rates import BASIS as RATE_BASIS, JOINING_STEPS, canonical_process, material_rate, process_rate
 
 ZAI_PREFIX = "(Zai) "
 SUMMARY_TITLE = ZAI_PREFIX + "Summary"
@@ -90,6 +90,7 @@ class Line:
     rate_group: str = ""                         # weight_rate mode: which legend rate prices it
     material_rate: Val = field(default_factory=needed)   # process mode
     processes: List[Val] = field(default_factory=list)   # process mode: names from the legend
+    bought_out: Val = field(default_factory=needed)      # process mode: INR / pc of bought-in components
     remarks: str = ""
 
 
@@ -313,7 +314,7 @@ def _build_tab(wb, tab: Tab, commons: Commons, shared: Dict[str, str], first_tab
                 if i < len(line.processes):
                     put(f"Process {i + 1}", line.processes[i])
                 slot.alignment = Alignment(horizontal="center", vertical="center")
-            put("Bought-out items / pc (INR)", needed(), "0.00")
+            put("Bought-out items / pc (INR)", line.bought_out, "0.00")
             p = f"{col['Process 1']}{r}:{col[f'Process {PROCESS_SLOTS}']}{r}"
             unpriced = f'SUMPRODUCT(({p}<>"")*(COUNTIFS({names},{p},{rates},"<>")=0))'
             # A process without a rate is left out of the total, not allowed to blank it —
@@ -898,8 +899,15 @@ def _process_route(specs: Any, provenance: str) -> Tuple[List[Val], List[str]]:
     its spelling, so it meets its legend rate; a new one is added to the legend.
     """
     known = {p.lower(): p for p in DEFAULT_PROCESSES}
-    names = [known.get(str(n).strip().lower(), str(n).strip())
-             for n in (getattr(specs, "processes", None) or []) if str(n).strip()]
+    names: List[str] = []
+    for n in (getattr(specs, "processes", None) or []):
+        name = canonical_process(str(n))
+        name = known.get(name.lower(), name)
+        if name and name.lower() not in (x.lower() for x in names):
+            names.append(name)
+    # Swaging, staking or press fitting already is the assembly — never charge it twice.
+    if any(x.lower() in JOINING_STEPS for x in names):
+        names = [x for x in names if x.lower() != "assembly"]
     mark = data if provenance == "verbatim" else assumed
     return [mark(n) for n in names[:PROCESS_SLOTS]], names[PROCESS_SLOTS:]
 
@@ -1083,12 +1091,17 @@ def tabs_from_extraction(extraction: Any) -> List[Tab]:
         if beyond:
             remarks = "; ".join(x for x in (remarks, "Also: " + ", ".join(beyond)) if x)
         kg = getattr(specs, "weight_kg", None) if specs else None
+        bo = getattr(specs, "bought_out_inr", None) if specs else None
+        bo_note = str(getattr(specs, "bought_out_note", "") or "").strip() if specs else ""
+        if bo is not None:
+            remarks = "; ".join(x for x in (remarks, f"Bought-out: {bo_note}" if bo_note else "") if x)
         mat = material_rate(getattr(specs, "material", "") if specs else "")
         if mat:
             remarks = "; ".join(x for x in (remarks, f"Material rate: {mat[0]} default") if x)
         line = Line(label=name, fields=fields, qty=qty, qty_unit=unit or "pcs", remarks=remarks, processes=route,
                     weight=(data(kg) if prov.get("weight") == "verbatim" else assumed(kg)) if kg else needed(),
-                    material_rate=assumed(mat[1]) if mat else needed())
+                    material_rate=assumed(mat[1]) if mat else needed(),
+                    bought_out=assumed(bo) if bo is not None else needed())
         _mark_doubts(line, dict(getattr(specs, "doubts", None) or {}) if specs else {})
         individual.append(line)
     if individual:
