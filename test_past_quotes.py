@@ -9,6 +9,7 @@ database, an empty match or a Glide failure never touches the summary.
 Run:
     python test_past_quotes.py
 """
+import re
 import sys
 import types
 
@@ -43,7 +44,7 @@ def check(label, cond, detail=""):
 
 def row(rfq, name, qty="100.0000", unit="nos", total="NULL", price="NULL", cur="EUR", remarks="NULL",
         part_number="NULL", status="Quoted", customer="Alpha", margin="20.0000", date="2026-05-10",
-        incoterm="EXW", title=None):
+        incoterm="EXW", title=None, folder="NULL"):
     return {
         "row_id": rfq, "line_no": "1", "title": title or f"Proj {rfq} - Parts", "customer_name": customer,
         "rfq_sequence": "1", "current_status": status, "quote_margin": margin, "final_quote_number": f"WZ-{rfq}",
@@ -51,12 +52,13 @@ def row(rfq, name, qty="100.0000", unit="nos", total="NULL", price="NULL", cur="
         "part_name": name, "part_number": part_number, "remarks": remarks,
         "unit_of_quantity": qty, "quantity_in_unit": unit, "total_value": total, "ex_works_unit_price": price,
         "currency": cur, "ex_works": "8.0000", "ex_works_unit": "weeks", "lead_time": "NULL",
-        "unit_of_lead_time": "NULL", "created_at": "2026-09-24 06:00:00+00",
+        "unit_of_lead_time": "NULL", "created_at": "2026-09-24 06:00:00+00", "quotation_folder_link": folder,
     }
 
 
 ROWS = [
-    row("R1", 'M10 x 120 Hex Bolt DIN 931 8.8 HDG', qty="1000.0000", total="250.0000", status="Won"),
+    row("R1", 'M10 x 120 Hex Bolt DIN 931 8.8 HDG', qty="1000.0000", total="250.0000", status="Won",
+        folder="https://onedrive.example/R1"),
     row("R1", "Air Freight", qty="NULL", unit="NULL", total="139.19"),
     row("R1", "One -Time Tooling Cost", qty="1.0000", total="500"),
     row("R2", 'M12 x 120 Hex Bolt DIN 931 8.8 HDG', qty="500.0000", total="180.0000", cur="NULL", customer="Alpha"),
@@ -77,6 +79,7 @@ by = {(l.rfq_row_id, l.part_name[:20]): l for l in lines}
 check("freight and tooling lines are not products", not any(l.part_name in ("Air Freight", "One -Time Tooling Cost") for l in lines))
 r1 = by[("R1", "M10 x 120 Hex Bolt D")]
 check("the swapped quantity columns are read by what they hold", r1.qty == 1000 and r1.unit == "nos")
+check("the RFQ's OneDrive quotation folder is kept", r1.folder_link == "https://onedrive.example/R1")
 check("a missing unit price is total ÷ quantity", abs(r1.unit_price - 0.25) < 1e-9)
 check("an RFQ with a freight line is marked as quoting freight separately", r1.freight_quoted_separately)
 r2 = by[("R2", "M12 x 120 Hex Bolt D")]
@@ -132,21 +135,31 @@ check("a vague name matches nothing", not index.find(pq.fingerprint("Hex Head Ca
 
 # ---- the section ------------------------------------------------------------------
 w = pq.Wanted("Hex Bolts M10", "Hex Bolts M10", pq.fingerprint('M10 x 120 Hex Bolt DIN 931 8.8 HDG'))
-shares = {"R1": [pq.SupplierShare("Acme Forge", "Quotation shared", True, ["https://x/q.pdf"], set()),
-                 pq.SupplierShare("Bolt Co", "Active", False, [], set())]}
-sec = pq.render_section([(w, index.find(w.fp))], shares)
-check("the section has its heading and the same part first",
-      sec.startswith("---") and pq.SECTION_HEADING in sec and sec.index("Same part") < sec.index("Similar"), sec)
-check("prices are in the quoted currency, per unit", "EUR 0.25 / nos" in sec, sec)
-check("quantity, margin, date and status are shown", "1,000 nos" in sec and "margin 20%" in sec and "May 2026" in sec
-      and "*Won*" in sec, sec)
-check("suppliers: who quoted (linked) and who did not", "[Acme Forge](https://x/q.pdf) (quoted)" in sec
-      and "Bolt Co (active)" in sec, sec)
-check("an assumed currency is marked", "EUR?" in sec and "assumed from the customer" in sec, sec)
+w2 = pq.Wanted("Flanges (family)", "4in WN", pq.fingerprint('4" Weld Neck Flange RF 150# A105 B16.5'))
+sec = pq.render_section([(w, index.find(w.fp)), (w2, index.find(w2.fp))])
+bullets = [x for x in sec.splitlines() if x.startswith("- ")]
+check("one bullet per past RFQ, under the heading", sec.startswith("---") and pq.SECTION_HEADING in sec
+      and len(bullets) == 4, sec)
+check("each title links to its OneDrive quotation folder",
+      bullets[0].startswith("- [Proj R1 - Parts](https://onedrive.example/R1)"), bullets[0])
+check("…and says which of this RFQ's products match, at product level",
+      bullets[0].endswith("— Hex Bolts M10 (same)"), bullets[0])
+check("RFQs with the same part come before those with only a similar one",
+      [re.match(r"- \[?(.*?)(\]\(.*?\))? — ", b).group(1) for b in bullets]
+      == ["Proj R1 - Parts", "Proj R3 - Parts", "Proj R4 - Parts", "Proj R2 - Parts"],
+      str(bullets))
+check("no prices, quantities or suppliers — just the pointer",
+      "EUR" not in sec and "@" not in sec and "margin" not in sec and "Shared with" not in sec, sec)
 check("the customer is never named", "Alpha" not in sec and "Beta" not in sec, sec)
-check("a DAP price without a freight line is flagged", "may include freight" in pq.render_section(
-    [(w, [pq.Match("same", by[("R3", "M10 x 120 Hex Bolt D")], 2, "x")])], {}))
-check("nothing close means no section at all", pq.render_section([(w, [])], {}) == "")
+check("a past RFQ without a folder link shows its title plain",
+      pq.render_section([(w, [pq.Match("same", by[("R3", "M10 x 120 Hex Bolt D")], 2, "x")])]).splitlines()[-1]
+      .startswith("- Proj R3 - Parts — "))
+check("nothing close means no section at all", pq.render_section([(w, [])]) == "")
+lots = [(pq.Wanted(f"P{i}", f"P{i}", w.fp), [pq.Match("same", pq.PastLine(**{**by[("R1", "M10 x 120 Hex Bolt D")].__dict__,
+                                                                         "rfq_row_id": f"X{i}", "title": f"T{i}"}), 2, "x")])
+        for i in range(11)]
+check("at most eight past RFQs, then a count", pq.render_section(lots).count("\n- [T") == 8
+      and "and 3 more past RFQ(s)" in pq.render_section(lots))
 
 summary = "<triage>\n**Two lines.**\n\n| a | b |\n</triage>"
 joined = pq.attach_section(summary, sec)
@@ -155,10 +168,6 @@ check("the section goes at the end, inside the triage tag",
 check("adding it twice replaces, never duplicates", pq.attach_section(joined, sec).count(pq.SECTION_HEADING) == 1)
 check("it can be lifted out and stripped again", pq.extract_section(joined).startswith("---")
       and pq.strip_section(joined).strip() == summary)
-
-many = [(pq.Wanted("Fam", f"item {i}", w.fp), index.find(w.fp)) for i in range(8)]
-fam_sec = pq.render_section(many, {})
-check("a family shows five items, then a count", fam_sec.count("**Fam — item") == 5 and "and 3 more item(s) of Fam" in fam_sec)
 
 # ---- from an extraction ------------------------------------------------------------
 ext = ProductExtractionResult(products=[
@@ -185,19 +194,18 @@ def _settings(**kw):
     return Settings(**base)
 
 
-def run(settings, *, index_obj=index, shares_fn=None, ext_obj=ext):
+def run(settings, *, index_obj=index, ext_obj=ext):
     calls = {"set": []}
     out = TriageOutputPayload(run_id="r1", row_id="NEW", triage_text=summary,
                               structured={"regenerate_row_id": "REGEN1"})
     out.product_extraction = ext_obj
-    orig = (pq.load_index, writer.glide_fetch_supplier_shares, writer.glide_set_regenerate_response)
+    orig = (pq.load_index, writer.glide_set_regenerate_response)
     pq.load_index = lambda s, **k: index_obj
-    writer.glide_fetch_supplier_shares = shares_fn or (lambda s, ids: shares)
     writer.glide_set_regenerate_response = lambda s, rid, text: calls["set"].append((rid, text)) or True
     try:
         n = writer.write_past_quotes(settings, out)
     finally:
-        pq.load_index, writer.glide_fetch_supplier_shares, writer.glide_set_regenerate_response = orig
+        pq.load_index, writer.glide_set_regenerate_response = orig
     return n, out, calls
 
 
@@ -214,16 +222,29 @@ n, out, calls = run(_settings(), index_obj=pq.PastQuoteIndex([]))
 check("nothing close: the summary is left alone", n == 0 and not calls["set"])
 
 
-def boom(s, ids):
-    raise RuntimeError("glide down")
-
-
-n, out, calls = run(_settings(), shares_fn=boom)
-check("suppliers unavailable: prices still shown, no supplier line",
-      n == 2 and calls["set"] and "Shared with" not in calls["set"][0][1])
-check("the settings default to the live Strike supplier table",
-      Settings().glide_supplier_shares_table.startswith("native-table-a3c75ad1") and Settings().glide_col_share_rfq == "fipwH")
 check("past quotes are off by default", not Settings().enable_past_quotes)
+
+
+class _Cur:
+    def __init__(self, found): self.found = found
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+    def execute(self, q, params=None): self.q = q
+    def fetchall(self): return self.found
+
+
+class _Conn:
+    def __init__(self, found): self.found = found
+    def cursor(self): return _Cur(self.found)
+
+
+check("with no table set, the one table with the quote-line columns is used",
+      pq._find_table(_Conn([("public", "rfq_quote_lines")])) == "public.rfq_quote_lines")
+try:
+    pq._find_table(_Conn([("a", "x"), ("b", "y")]))
+    check("two candidate tables ask for PAST_QUOTES_TABLE instead of guessing", False)
+except LookupError as e:
+    check("two candidate tables ask for PAST_QUOTES_TABLE instead of guessing", "PAST_QUOTES_TABLE" in str(e))
 
 # ---- regeneration keeps the section ---------------------------------------------------
 from rfq_summary import task

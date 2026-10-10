@@ -120,21 +120,13 @@ class Settings(BaseSettings):
     enable_costing_workbook: bool = Field(default=True, alias="ENABLE_COSTING_WORKBOOK")
 
     # Past quotes: the same or closely similar products we quoted before, shown at
-    # the end of the RFQ summary. Read-only Postgres (one row per quote line), plus
-    # the Strike table of suppliers each RFQ was shared with.
+    # the end of the RFQ summary. Read-only Postgres, one row per quote line; with
+    # PAST_QUOTES_TABLE empty the one table holding those columns is found.
     enable_past_quotes: bool = Field(default=False, alias="ENABLE_PAST_QUOTES")
     past_quotes_db_url: str = Field(default="", alias="PAST_QUOTES_DB_URL")
     past_quotes_table: str = Field(default="", alias="PAST_QUOTES_TABLE")
     past_quotes_refresh_hours: float = Field(default=24.0, alias="PAST_QUOTES_REFRESH_HOURS")
     past_quotes_per_product: int = Field(default=3, alias="PAST_QUOTES_PER_PRODUCT")
-    glide_supplier_shares_table: str = Field(
-        default="native-table-a3c75ad1-9bb9-4d95-a9c6-b8f17ac22acc", alias="GLIDE_SUPPLIER_SHARES_TABLE")
-    glide_col_share_supplier: str = Field(default="Name", alias="GLIDE_COL_SHARE_SUPPLIER")
-    glide_col_share_rfq: str = Field(default="fipwH", alias="GLIDE_COL_SHARE_RFQ")
-    glide_col_share_status: str = Field(default="EvClA", alias="GLIDE_COL_SHARE_STATUS")
-    glide_col_share_products: str = Field(default="NoiXi", alias="GLIDE_COL_SHARE_PRODUCTS")
-    glide_col_share_quotation: str = Field(default="zsTUn", alias="GLIDE_COL_SHARE_QUOTATION")
-    glide_col_share_quotation_date: str = Field(default="yrhUA", alias="GLIDE_COL_SHARE_QUOTATION_DATE")
     costing_template_path: str = Field(default="", alias="COSTING_TEMPLATE_PATH")
     # A OneDrive / SharePoint share link to the master .xlsx — the simplest way:
     # no ids to look up, nothing to paste, and editing the master needs no redeploy.

@@ -13,7 +13,7 @@ from urllib.parse import quote
 
 from .config import Settings
 from .schema import InputPayload, OutputPayload, QueryPayload, TriageOutputPayload, RfqClassificationInputPayload, RfqClassificationOutputPayload, RfqRegenerateTriageInputPayload, RfqRegenerateTriageOutputPayload, RfqQueryInputPayload, RfqQueryOutputPayload
-from .glide_client import glide_fetch_supplier_shares, glide_set_regenerate_response
+from .glide_client import glide_set_regenerate_response
 from .glide_client import glide_upsert_zai_response_by_rfq_id, glide_update_all_rfq_triage_outputs, glide_update_prospect_rfq_classification, glide_add_zai_regenerate_row, glide_add_product_rows, glide_add_query_rows, glide_fetch_rfq_folder, glide_set_all_rfq_columns
 from .costing_workbook import Commons, build_costing_workbook, tabs_from_extraction
 from .onedrive import download_file, upload_file, upload_configured
@@ -500,12 +500,7 @@ def write_past_quotes(settings: Settings, out: TriageOutputPayload) -> int:
               f"{same} quoted before, {len(found) - same} closely similar")
         if not found:
             return 0
-        try:
-            shares = glide_fetch_supplier_shares(settings, [m.line.rfq_row_id for _, ms in found for m in ms])
-        except Exception as e:
-            print(f"[WARN] run_id={out.run_id} | past quotes | suppliers not read: {type(e).__name__}: {e}")
-            shares = {}
-        text = attach_section(out.triage_text or "", render_section(found, shares))
+        text = attach_section(out.triage_text or "", render_section(found))
         regenerate_row_id = str((out.structured or {}).get("regenerate_row_id") or "")
         if settings.enable_triage_writeback and regenerate_row_id:
             glide_set_regenerate_response(settings, regenerate_row_id, text)

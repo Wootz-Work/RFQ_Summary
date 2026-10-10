@@ -10,12 +10,10 @@ reads that table, cleans it, and for each product of a new RFQ finds:
   similar  — the same kind of part in the same material, one size away
 
 Nothing looser is ever shown: a list of vaguely related parts costs the reader
-more time than it saves. The suppliers each past RFQ was shared with come from
-Strike (see glide_client.glide_fetch_supplier_shares), and the section the
-team reads is rendered at the end of the RFQ summary.
-
-Prices stay in the currency they were quoted in. The customer's name is read
-only to guess a missing currency from their other quotes; it is never shown.
+more time than it saves. The team sees one line per past RFQ at the end of the
+RFQ summary: its title, linked to its OneDrive quotation folder, and which of
+this RFQ's products it matches. The customer's name is read only to guess a
+missing currency from their other quotes; it is never shown.
 """
 from __future__ import annotations
 
@@ -39,7 +37,7 @@ COLUMNS = (
     "row_id", "line_no", "title", "customer_name", "rfq_sequence", "current_status", "quote_margin",
     "final_quote_number", "document_details", "part_name", "part_number", "remarks",
     "unit_of_quantity", "quantity_in_unit", "total_value", "ex_works_unit_price", "currency",
-    "ex_works", "ex_works_unit", "lead_time", "unit_of_lead_time", "created_at",
+    "ex_works", "ex_works_unit", "lead_time", "unit_of_lead_time", "created_at", "quotation_folder_link",
 )
 
 # Lines that are charges on the quote, not products.
@@ -81,6 +79,7 @@ class PastLine:
     margin_pct: Optional[float]
     lead_weeks: Optional[float]
     freight_quoted_separately: bool
+    folder_link: str = ""                             # the RFQ's OneDrive quotation folder
     fp: "Fingerprint" = None  # type: ignore[assignment]
 
 
@@ -176,6 +175,7 @@ def clean_rows(rows: Iterable[Dict[str, Any]]) -> List[PastLine]:
             part_name=name, part_number=_null(r.get("part_number")), remarks=_null(r.get("remarks")),
             qty=qty, unit=unit, unit_price=price, currency=cur, currency_assumed=assumed,
             margin_pct=margin, lead_weeks=lead, freight_quoted_separately=rfq in freight_rfqs,
+            folder_link=link if (link := _null(r.get("quotation_folder_link"))).startswith("http") else "",
         )
         line.fp = fingerprint(f"{name} {line.remarks}", line.part_number, name=name)
         out.append(line)
@@ -589,15 +589,33 @@ _cache: Dict[str, Any] = {"index": None, "at": 0.0}
 _TABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$")
 
 
+def _find_table(conn: Any) -> str:
+    """The one table that has the quote-line columns, when PAST_QUOTES_TABLE is not set."""
+    needed = ("row_id", "part_name", "total_value", "quotation_folder_link", "current_status")
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT table_schema, table_name FROM information_schema.columns WHERE column_name = ANY(%s) "
+            "AND table_schema NOT IN ('pg_catalog', 'information_schema') "
+            "GROUP BY table_schema, table_name HAVING count(DISTINCT column_name) = %s",
+            (list(needed), len(needed)))
+        found = cur.fetchall()
+    if len(found) != 1:
+        raise LookupError(f"set PAST_QUOTES_TABLE — {len(found)} tables have the quote-line columns")
+    return f"{found[0][0]}.{found[0][1]}"
+
+
 def _read_postgres(url: str, table: str) -> List[Dict[str, Any]]:
     import psycopg
     from psycopg import sql
 
-    if not _TABLE.match(table or ""):
-        raise ValueError(f"PAST_QUOTES_TABLE {table!r} is not a plain [schema.]table name")
-    ident = sql.Identifier(*table.split("."))
-    query = sql.SQL("SELECT {} FROM {}").format(sql.SQL(", ").join(sql.Identifier(c) for c in COLUMNS), ident)
-    with psycopg.connect(url, connect_timeout=15, options="-c default_transaction_read_only=on -c statement_timeout=30000") as conn:
+    # The session is read-only whatever the URL's user may do: this code never writes.
+    with psycopg.connect(url, connect_timeout=15,
+                         options="-c default_transaction_read_only=on -c statement_timeout=30000") as conn:
+        table = table or _find_table(conn)
+        if not _TABLE.match(table):
+            raise ValueError(f"PAST_QUOTES_TABLE {table!r} is not a plain [schema.]table name")
+        ident = sql.Identifier(*table.split("."))
+        query = sql.SQL("SELECT {} FROM {}").format(sql.SQL(", ").join(sql.Identifier(c) for c in COLUMNS), ident)
         with conn.cursor() as cur:
             cur.execute(query)
             names = [d.name for d in cur.description]
@@ -608,8 +626,8 @@ def load_index(settings: Any, *, force: bool = False) -> Optional[PastQuoteIndex
     """The cached index, re-read from Postgres when older than PAST_QUOTES_REFRESH_HOURS."""
     url = (getattr(settings, "past_quotes_db_url", "") or "").strip()
     table = (getattr(settings, "past_quotes_table", "") or "").strip()
-    if not url or not table:
-        print("[WARN] past quotes | PAST_QUOTES_DB_URL or PAST_QUOTES_TABLE not set — skipped")
+    if not url:
+        print("[WARN] past quotes | PAST_QUOTES_DB_URL not set — skipped")
         return None
     ttl = float(getattr(settings, "past_quotes_refresh_hours", 24) or 24) * 3600
     with _lock:
@@ -619,7 +637,7 @@ def load_index(settings: Any, *, force: bool = False) -> Optional[PastQuoteIndex
         try:
             rows = _read_postgres(url, table)
         except Exception as e:
-            print(f"[WARN] past quotes | could not read {table}: {type(e).__name__}: {e}")
+            print(f"[WARN] past quotes | could not read {table or 'the quote table'}: {type(e).__name__}: {e}")
             return _cache["index"]          # keep serving the last good copy
         index = PastQuoteIndex(clean_rows(rows))
         _cache.update(index=index, at=time.time())
@@ -631,85 +649,38 @@ def load_index(settings: Any, *, force: bool = False) -> Optional[PastQuoteIndex
 # ----------------------------------------------------------------------------- the section
 
 SECTION_HEADING = "#### 🔁 Quoted before"
-ITEMS_PER_PRODUCT = 5          # a family shows its first five matched items, then a count
+MAX_RFQS = 8                   # past RFQs listed; the rest are counted
 _SECTION_RX = re.compile(r"\n*---\n+" + re.escape(SECTION_HEADING) + r".*?(?=\n</triage>|\Z)", re.DOTALL)
 
 
-def _money(v: Optional[float], cur: str) -> str:
-    if v is None:
-        return "price not on record"
-    s = f"{v:,.4f}".rstrip("0").rstrip(".") if v < 1 else f"{v:,.2f}"
-    return f"{cur} {s}".strip()
-
-
-def _qty(v: Optional[float], unit: str) -> str:
-    if v is None:
-        return "qty not on record"
-    return f"{v:,.0f} {unit}" if float(v).is_integer() else f"{v:,.2f} {unit}"
-
-
-@dataclass
-class SupplierShare:
-    supplier: str
-    status: str
-    quoted: bool
-    quote_links: List[str]
-    product_row_ids: Set[str]
-
-
-def render_section(results: List[Tuple[Wanted, List[Match]]],
-                   shares: Dict[str, List[SupplierShare]]) -> str:
-    """Markdown for the end of the summary; empty when nothing is the same or closely similar."""
-    shown = [(w, ms) for w, ms in results if ms]
-    if not shown:
-        return ""
-    out = ["---", "", SECTION_HEADING, "",
-           "*Our past quotes for the same or closely similar parts. Selling prices, in the currency quoted.*", ""]
-    per_product: Dict[str, int] = Counter(w.product for w, _ in shown)
-    printed: Counter = Counter()
-    for w, ms in shown:
-        printed[w.product] += 1
-        if printed[w.product] > ITEMS_PER_PRODUCT:
-            if printed[w.product] == ITEMS_PER_PRODUCT + 1:
-                more = per_product[w.product] - ITEMS_PER_PRODUCT
-                out.append(f"*…and {more} more item(s) of {w.product} quoted before or closely similar.*")
-                out.append("")
-            continue
-        head = w.product if w.label == w.product else f"{w.product} — {w.label}"
-        out.append(f"**{head}**")
+def render_section(results: List[Tuple[Wanted, List[Match]]]) -> str:
+    """
+    One bullet per past RFQ: its title linked to its OneDrive quotation folder,
+    then which of this RFQ's products it matches. Empty when nothing is the same
+    or closely similar.
+    """
+    rfqs: Dict[str, Dict[str, Any]] = {}
+    for w, ms in results:
         for m in ms:
             ln = m.line
-            when = ln.quote_date.strftime("%b %Y") if ln.quote_date else "date not on record"
-            cur = ln.currency + ("?" if ln.currency_assumed else "")
-            price = _money(ln.unit_price, cur)
-            unit_txt = f" / {ln.unit}" if ln.unit_price is not None and ln.unit else ""
-            if ln.unit_price is not None and ln.unit_price < 1 and not re.search(r"lf|ft|m\b|kg|mt|ton", ln.unit, re.I):
-                unit_txt += f" ({_money(ln.unit_price * 100, cur)} per 100)"
-            bits = [f"{_qty(ln.qty, ln.unit)} @ {price}{unit_txt}"]
-            if ln.margin_pct is not None:
-                bits.append(f"margin {ln.margin_pct:g}%")
-            if ln.incoterm:
-                bits.append(ln.incoterm + ("" if ln.freight_quoted_separately or ln.incoterm in ("EXW", "FCA")
-                                           else " — may include freight"))
-            if ln.lead_weeks:
-                bits.append(f"{ln.lead_weeks:g} wk")
-            label = "Same part" if m.level == SAME else "Similar"
-            out.append(f"- **{label}** · {ln.title} · {when} · *{ln.status or 'status not on record'}*  ")
-            out.append(f"  {ln.part_name[:110]} — " + " · ".join(bits))
-            sup = shares.get(ln.rfq_row_id) or []
-            if sup:
-                quoted = [s for s in sup if s.quoted]
-                rest = [s for s in sup if not s.quoted]
-                parts = []
-                for s in quoted[:6]:
-                    parts.append(f"[{s.supplier}]({s.quote_links[0]}) (quoted)" if s.quote_links else f"{s.supplier} (quoted)")
-                for s in rest[:6]:
-                    parts.append(f"{s.supplier} ({(s.status or 'no response').lower()})")
-                out.append("  Shared with: " + ", ".join(parts))
-        out.append("")
-    if any(m.line.currency_assumed for _, ms in shown for m in ms):
-        out.append("*`?` after a currency: not on the quote — assumed from the customer's other quotes.*")
-    return "\n".join(out).rstrip()
+            r = rfqs.setdefault(ln.rfq_row_id, {"title": ln.title, "link": ln.folder_link, "products": {},
+                                                "date": ln.quote_date or date.min})
+            have = r["products"].get(w.product)
+            if have != SAME:                       # same beats similar for a product
+                r["products"][w.product] = m.level
+    if not rfqs:
+        return ""
+    ranked = sorted(rfqs.values(), key=lambda r: (SAME not in r["products"].values(), -len(r["products"]),
+                                                 -r["date"].toordinal()))
+    out = ["---", "", SECTION_HEADING, ""]
+    for r in ranked[:MAX_RFQS]:
+        title = r["title"] or "Untitled RFQ"
+        head = f"[{title}]({r['link']})" if r["link"] else title
+        products = sorted(r["products"].items(), key=lambda kv: kv[1] != SAME)
+        out.append(f"- {head} — " + ", ".join(f"{name} ({level})" for name, level in products))
+    if len(ranked) > MAX_RFQS:
+        out.append(f"- …and {len(ranked) - MAX_RFQS} more past RFQ(s)")
+    return "\n".join(out)
 
 
 def attach_section(summary: str, section: str) -> str:
