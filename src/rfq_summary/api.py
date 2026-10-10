@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from .config import load_settings, Settings
 from .schema import InputPayload, QueryPayload, RfqClassificationInputPayload, RfqRegenerateTriageInputPayload, RfqQueryInputPayload
 from .task import run_pricing, run_summary, run_all, run_query_triage, run_rfq_classification, run_regenerate_triage, run_regenerate_query, resolve_product_extraction
-from .writer import write_all, write_triage, write_products, write_rfq_classification, write_regenerated_triage, write_regenerated_query
+from .writer import write_all, write_triage, write_products, write_past_quotes, write_rfq_classification, write_regenerated_triage, write_regenerated_query
 from .gsheet_logger import log_job_event, log_progress_event
 
 Mode = Literal["pricing", "summary", "all", "triage", "classify", "regenerate_triage", "query_regenerate"]
@@ -472,6 +472,11 @@ async def _run_job(job: Job) -> None:
                     f"{len(extraction.queries) if extraction else 0} query row(s) handled in "
                     f"{int((time.perf_counter()-t0)*1000)}ms"
                 )
+                if settings.enable_past_quotes:
+                    t0 = time.perf_counter()
+                    referenced = await asyncio.to_thread(write_past_quotes, settings, out)
+                    print(f"[STEP 4/4] run_id={job.run_id} | past quotes: {referenced} item(s) referenced in "
+                          f"{int((time.perf_counter()-t0)*1000)}ms")
 
             elif job.mode == "classify":
                 print(f"[STEP 1/3] run_id={job.run_id} | Validating RFQ classification payload...")

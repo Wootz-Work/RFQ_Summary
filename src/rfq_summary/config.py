@@ -118,6 +118,15 @@ class Settings(BaseSettings):
     # With neither, the workbook is still built — generated tabs only, no
     # Quotation.
     enable_costing_workbook: bool = Field(default=True, alias="ENABLE_COSTING_WORKBOOK")
+
+    # Past quotes: the same or closely similar products we quoted before, shown at
+    # the end of the RFQ summary. Read-only Postgres, one row per quote line; with
+    # PAST_QUOTES_TABLE empty the one table holding those columns is found.
+    enable_past_quotes: bool = Field(default=False, alias="ENABLE_PAST_QUOTES")
+    past_quotes_db_url: str = Field(default="", alias="PAST_QUOTES_DB_URL")
+    past_quotes_table: str = Field(default="", alias="PAST_QUOTES_TABLE")
+    past_quotes_refresh_hours: float = Field(default=24.0, alias="PAST_QUOTES_REFRESH_HOURS")
+    past_quotes_per_product: int = Field(default=3, alias="PAST_QUOTES_PER_PRODUCT")
     costing_template_path: str = Field(default="", alias="COSTING_TEMPLATE_PATH")
     # A OneDrive / SharePoint share link to the master .xlsx — the simplest way:
     # no ids to look up, nothing to paste, and editing the master needs no redeploy.

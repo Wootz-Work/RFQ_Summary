@@ -11,6 +11,8 @@ pymupdf>=1.24
 openpyxl>=3.1
 # Lets openpyxl carry pictures (the costing template's logos) through a round trip
 pillow>=10
+# Past quotes: read-only Postgres
+psycopg[binary]>=3.1
 
 fastapi>=0.115
 uvicorn>=0.30

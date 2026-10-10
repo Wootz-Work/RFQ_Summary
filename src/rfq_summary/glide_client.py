@@ -751,3 +751,19 @@ def glide_fetch_rfq_folder(settings: Settings, rfq_row_id: str) -> RfqFolder:
         return v.strip() if isinstance(v, str) else ""
 
     return RfqFolder(_text(drive_col), _text(folder_col), _text(title_col) if title_col else "")
+
+
+
+def glide_set_regenerate_response(settings: Settings, regenerate_row_id: str, response: str) -> bool:
+    """Rewrite the response text of a ZAI Regenerate row (the summary the team reads)."""
+    table = (settings.glide_zai_regenerate_table or "").strip()
+    col = (settings.glide_col_zai_regenerate_response or "").strip()
+    if not (regenerate_row_id and table and col and settings.glide_api_key and settings.glide_app_id):
+        return False
+    with httpx.Client(timeout=60) as client:
+        r = client.post("https://api.glideapp.io/api/function/mutateTables", headers=_glide_headers(settings), json={
+            "appID": settings.glide_app_id,
+            "mutations": [{"kind": "set-columns-in-row", "tableName": table, "rowID": regenerate_row_id,
+                           "columnValues": {col: response}}]})
+        r.raise_for_status()
+    return True
