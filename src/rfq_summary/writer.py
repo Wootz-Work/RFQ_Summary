@@ -13,6 +13,7 @@ from urllib.parse import quote
 
 from .config import Settings
 from .schema import InputPayload, OutputPayload, QueryPayload, TriageOutputPayload, RfqClassificationInputPayload, RfqClassificationOutputPayload, RfqRegenerateTriageInputPayload, RfqRegenerateTriageOutputPayload, RfqQueryInputPayload, RfqQueryOutputPayload
+from .glide_client import glide_fetch_supplier_shares, glide_set_regenerate_response
 from .glide_client import glide_upsert_zai_response_by_rfq_id, glide_update_all_rfq_triage_outputs, glide_update_prospect_rfq_classification, glide_add_zai_regenerate_row, glide_add_product_rows, glide_add_query_rows, glide_fetch_rfq_folder, glide_set_all_rfq_columns
 from .costing_workbook import Commons, build_costing_workbook, tabs_from_extraction
 from .onedrive import download_file, upload_file, upload_configured
@@ -469,6 +470,54 @@ def write_products(settings: Settings, inp: QueryPayload, out: TriageOutputPaylo
     return products_written
 
 
+def write_past_quotes(settings: Settings, out: TriageOutputPayload) -> int:
+    """
+    Third phase of the triage job: the same or closely similar products quoted
+    before, added at the end of the summary already in Glide.
+
+    Best-effort and silent when there is nothing close: the summary only grows
+    when a past quote is genuinely the same part or one size away. Returns the
+    number of RFQ items that got a past reference.
+    """
+    from .past_quotes import attach_section, load_index, render_section, wanted_from_extraction
+
+    if not settings.enable_past_quotes:
+        return 0
+    extraction = out.product_extraction
+    if extraction is None or not extraction.products:
+        print(f"[INFO] run_id={out.run_id} | past quotes | no products extracted — nothing to look up")
+        return 0
+    try:
+        index = load_index(settings)
+        if index is None:
+            return 0
+        wanted = wanted_from_extraction(extraction)
+        results = [(w, index.find(w.fp, exclude_rfq=out.row_id, limit=max(1, settings.past_quotes_per_product)))
+                   for w in wanted]
+        found = [(w, ms) for w, ms in results if ms]
+        same = sum(1 for _, ms in found if ms[0].level == "same")
+        print(f"[INFO] run_id={out.run_id} | past quotes | {len(wanted)} item(s) looked up: "
+              f"{same} quoted before, {len(found) - same} closely similar")
+        if not found:
+            return 0
+        try:
+            shares = glide_fetch_supplier_shares(settings, [m.line.rfq_row_id for _, ms in found for m in ms])
+        except Exception as e:
+            print(f"[WARN] run_id={out.run_id} | past quotes | suppliers not read: {type(e).__name__}: {e}")
+            shares = {}
+        text = attach_section(out.triage_text or "", render_section(found, shares))
+        regenerate_row_id = str((out.structured or {}).get("regenerate_row_id") or "")
+        if settings.enable_triage_writeback and regenerate_row_id:
+            glide_set_regenerate_response(settings, regenerate_row_id, text)
+        elif settings.enable_triage_writeback:
+            print(f"[WARN] run_id={out.run_id} | past quotes | summary row id unknown — section not written")
+        out.triage_text = text
+        return len(found)
+    except Exception as e:
+        print(f"[WARN] run_id={out.run_id} | past quotes | skipped: {type(e).__name__}: {e}")
+        return 0
+
+
 def _variant_log_fields(products) -> Dict[str, str]:
     """
     Family variants are not written to Glide, so the sheet log is where they live.
@@ -554,7 +603,7 @@ def write_triage(settings: Settings, inp: QueryPayload, out: TriageOutputPayload
         if missing:
             raise RuntimeError(f"Missing ZAI Regenerate triage writeback configuration: {', '.join(missing)}")
 
-        glide_add_zai_regenerate_row(
+        regenerate_row_id = glide_add_zai_regenerate_row(
             settings,
             {
                 settings.glide_col_zai_regenerate_rfq_id: out.row_id,
@@ -566,6 +615,8 @@ def write_triage(settings: Settings, inp: QueryPayload, out: TriageOutputPayload
                 settings.glide_col_zai_regenerate_version: "0",
             },
         )
+        # Kept so the summary can be extended once the products are known (past quotes).
+        out.structured = {**(out.structured or {}), "regenerate_row_id": regenerate_row_id or ""}
         glide_update_all_rfq_triage_outputs(
             settings,
             out.row_id,

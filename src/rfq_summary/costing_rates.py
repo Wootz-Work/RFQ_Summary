@@ -21,7 +21,7 @@ BASIS = "Wootz default (higher side) — confirm"
 MATERIAL_RATES: List[Tuple[str, str, float]] = [
     (r"super\s*duplex|2507|s32750|s32760|1\.4410", "Super duplex SS", 750),
     (r"duplex|2205|s31803|s32205|1\.4462", "Duplex SS", 520),
-    (r"inconel|incoloy|hastelloy|monel|nickel\s*alloy|alloy\s*(600|625|718|825)|\b(718|625)\b", "Nickel alloy", 4500),
+    (r"inconel|incoloy|hastelloy|monel|nickel\s*alloy|alloy\s*(600|625|718|825)|\b(718|625)\b|\bc-?276\b|\bc-?22\b|\bb-?(165|564|575)\b", "Nickel alloy", 4500),
     (r"titanium|\bti-?6al", "Titanium", 3500),
     (r"316|a4\b|a4-\d|1\.440[14]|1\.4571", "SS 316", 380),
     (r"304|a2\b|a2-\d|1\.430[17]|1\.4306|\bss\b|stainless|inox", "SS 304", 280),
@@ -31,10 +31,10 @@ MATERIAL_RATES: List[Tuple[str, str, float]] = [
     (r"copper|\bcu\b|c110|etp", "Copper", 950),
     (r"alumin|\bal\b|6061|6082|6063|5083|7075|2024|lm\d", "Aluminium", 330),
     (r"\bsg\b|ductile|grey\s*iron|gray\s*iron|cast\s*iron|en-gjs|en-gjl|\bfg\s*\d", "Cast iron", 90),
-    (r"42crmo4|4140|4340|en19|en24|a193|b7\b|b16\b|alloy\s*steel|cr-?mo|\b(8\.8|10\.9|12\.9)\b|scm", "Alloy steel", 110),
+    (r"42crmo4|4140|4340|en19|en24|a193|\bb7\b(?![.\d])|\bb16\b(?![.\d])|alloy\s*steel|cr-?mo|\b(8\.8|10\.9|12\.9)\b|scm", "Alloy steel", 110),
     (r"spring\s*steel|en42|en47|65mn|c75|ck67", "Spring steel", 120),
     (r"carbon\s*steel|mild\s*steel|\bms\b|\bcs\b|s235|s275|s355|is\s*2062|a36|a105|a106|a53|a516|"
-     r"c45|en8|en9|1018|1020|1045|ss400|st37|st52|\b(4\.6|4\.8|5\.6|5\.8|6\.8)\b|steel",
+     r"c45|en8|en9|1018|1020|1045|ss400|st37|st52|a234|\bwpb\b|a420|\bwpl6\b|a350|\blf2\b|a333|a671|a672|\b(4\.6|4\.8|5\.6|5\.8|6\.8)\b|steel",
      "Carbon steel", 75),
     (r"ptfe|teflon", "PTFE", 1200),
     (r"peek", "PEEK", 9000),

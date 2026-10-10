@@ -1037,6 +1037,24 @@ def _diff_attachment_ids(prev_ids: List[str], curr_ids: List[str]) -> List[str]:
     return lines
 
 
+def _carry_past_quotes(settings: Settings, run_id: str, payload: Any, triage_text: str) -> str:
+    """
+    A regenerated summary keeps the "Quoted before" section of the version it
+    replaces: the products have not changed, so neither have their past quotes,
+    and the model never sees that section to rewrite it.
+    """
+    from .past_quotes import attach_section, extract_section
+
+    try:
+        previous = (getattr(payload, "previous_response", "") or "").strip() \
+            or glide_fetch_last_regenerate_response(settings, payload.rfq_id)
+        section = extract_section(previous)
+        return attach_section(triage_text, section) if section else triage_text
+    except Exception as e:
+        print(f"[WARN] run_id={run_id} | past quotes not carried over: {type(e).__name__}: {e}")
+        return triage_text
+
+
 def _annotate_new_info(
     settings: Settings,
     run_id: str,
@@ -1198,6 +1216,7 @@ def run_regenerate_triage(
     costing_estimate_reason_text = _unwrap_tagged_output(costing_model_text, "reason")
 
     triage_text = _wrap_tagged_output(model_text, "triage")
+    triage_text = _carry_past_quotes(settings, run_id, payload, triage_text)
     triage_text, raw_diff_text, diff_ms, changed, compared = _annotate_new_info(
         settings, run_id, payload, triage_text
     )
