@@ -11,6 +11,7 @@ Run:
     python test_costing_workbook.py
 """
 import io
+import re
 import sys
 import zipfile
 
@@ -186,11 +187,16 @@ check("generated tabs sit after Back-end, before the insights",
 q = book["Quotation"]
 check("every line is on the Quotation", [q[f"A{r}"].value for r in range(13, 20)] ==
       [f"M{8 + i} Flat Washer" for i in range(6)] + ["Cover"], str([q[f"A{r}"].value for r in range(13, 20)]))
-check("price comes from the line's own tab", "'(Zai) Washers'!" in str(q["B13"].value), str(q["B13"].value))
-check("an unknown qty shows blank, not 0", str(q["C19"].value).startswith('=IF('), str(q["C19"].value))
+check("the Quotation shows name and qty only: qty in column B, from the line's own tab",
+      q["B12"].value == "Qty" and "'(Zai) Washers'!" in str(q["B13"].value) and str(q["B19"].value).startswith('=IF('),
+      f'{q["B12"].value} {q["B13"].value}')
+check("the price columns are gone from the item table",
+      all(q.cell(r, c).value is None for r in range(12, 20) for c in (3, 4, 5)))
+check("no price anywhere on the Quotation", not any(
+    re.search(r"price|ex-works|\bEXW\b|freight|total", str(c.value or ""), re.I) for row in q.iter_rows() for c in row),
+    str([c.value for row in q.iter_rows() for c in row if c.value and re.search(r"price|freight|total", str(c.value), re.I)]))
 check("the old name lookup into Costing is gone", not any("Costing!" in str(c.value) for row in q.iter_rows() for c in row))
-check("freight follows the table", q["A20"].value == "Freight" and q["D20"].value == 25, f"{q['A20'].value} {q['D20'].value}")
-check("the total sums every line plus freight", q["D21"].value == "=SUM(D13:D19)+N(D20)", str(q["D21"].value))
+check("the freight line and the total are emptied", all(q.cell(r, c).value is None for r in (20, 21) for c in range(1, 6)))
 check("terms moved down with their merge", q["A23"].value == "TERMS OF DELIVERY" and "A23:E23" in {str(m) for m in q.merged_cells.ranges})
 check("the Back-end lookup and its A4 reference did not move",
       q["B24"].value == "=IFERROR(VLOOKUP(A4, 'Back-end'!F2:K6, 6, FALSE), \"\")", str(q["B24"].value))
@@ -210,8 +216,9 @@ check("a picture below the table moved with it", "<row>25</row>" in qd and "<row
 
 few = build_costing_workbook([fastener_tab(2)], template=template_bytes())
 q = openpyxl.load_workbook(io.BytesIO(few))["Quotation"]
-check("a short RFQ leaves the table in place", q["A17"].value == "Freight" and q["A14"].value == "M9 Flat Washer")
-check("unused template rows are cleared", q["C15"].value is None and q["C16"].value is None)
+check("a short RFQ leaves the table in place", q["A17"].value is None and q["A14"].value == "M9 Flat Washer"
+      and q["A20"].value == "TERMS OF DELIVERY")
+check("unused template rows are cleared", all(q[f"{c}{r}"].value is None for c in "ABC" for r in (15, 16)))
 
 # ---- a server without Pillow still gets every template tab --------------------
 import openpyxl.drawing.image as _oimg

@@ -703,7 +703,11 @@ def _shift_down(ws, start: int, k: int) -> None:
 
 def _wire_quotation(ws, entries: List[Tuple[str, str, int, Dict[str, str]]], currency: str,
                     template_dvs: List[Tuple[str, str]], items_name: str) -> Tuple[int, int]:
-    """Point the Quotation's item table at the generated tabs. Returns (start, rows inserted)."""
+    """
+    Point the Quotation's item table at the generated tabs: item name and quantity
+    only. No price goes on this sheet — the price columns, the freight line and
+    the total are emptied, so nothing priced travels with it. Returns (start, rows inserted).
+    """
     head = _find_row(ws, "Item Name")
     if head is None:
         return 0, 0
@@ -715,29 +719,36 @@ def _wire_quotation(ws, entries: List[Tuple[str, str, int, Dict[str, str]]], cur
     if k:
         _shift_down(ws, freight, k)
     template_row = first + 1 if capacity > 1 else first
-    styles = {c: ws.cell(template_row, c)._style for c in range(1, 6)}
+    styles = {c: ws.cell(template_row, c)._style for c in range(1, 3)}
+
+    def blank(r: int, cols=range(3, 6)) -> None:
+        for c in cols:
+            cell = ws.cell(r, c)
+            cell.value = None
+            cell.style = "Normal"
+
+    ws.cell(head, 2).value = "Qty"
+    blank(head)
     for i in range(max(n, capacity)):
         r = first + i
-        for c in range(1, 6):
+        for c in range(1, 3):
             cell = ws.cell(r, c)
             cell.value = None
             if i >= capacity:
                 cell._style = styles[c]
+        blank(r)
         if i >= n:
             continue
         label, sheet, row, col = entries[i]
-        s = f"'{sheet}'"
-        exw = f"{s}!{col[f'Ex-works / pc ({currency})']}{row}"
+        qty = f"'{sheet}'!{col['Annual qty']}{row}"
         ws.cell(r, 1).value = label
-        ws.cell(r, 2).value = f'=IF({exw}="","",{exw}*100)'
-        qty = f"{s}!{col['Annual qty']}{row}"
-        ws.cell(r, 3).value = f'=IF({qty}="","",{qty})'
-        ws.cell(r, 4).value = f'=IF(B{r}="","",C{r}*B{r}/100)'
+        ws.cell(r, 2).value = f'=IF({qty}="","",{qty})'
     last = first + max(n, 1) - 1
+    # The freight line and the total are prices: emptied, labels included.
     total = _find_row(ws, "Total", freight + k)
-    if total:
-        # Item prices are ex-works; the template's Freight line is what turns the sum into DAP.
-        ws.cell(total, 4).value = f"=SUM(D{first}:D{last})+N(D{freight + k})"
+    for r in (freight + k, total):
+        if r:
+            blank(r, range(1, 6))
 
     for f, sq in template_dvs:
         if "Costing!" in f:
