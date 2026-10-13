@@ -479,7 +479,9 @@ def write_past_quotes(settings: Settings, out: TriageOutputPayload) -> int:
     when a past quote is genuinely the same part or one size away. Returns the
     number of RFQ items that got a past reference.
     """
-    from .past_quotes import attach_section, load_index, render_section, wanted_from_extraction
+    from . import capabilities as cap
+    from .past_quotes import (apply_tags, attach_section, load_index, products_from_extraction,
+                              render_section, wanted_from_extraction)
 
     if not settings.enable_past_quotes:
         return 0
@@ -491,23 +493,40 @@ def write_past_quotes(settings: Settings, out: TriageOutputPayload) -> int:
         index = load_index(settings)
         if index is None:
             return 0
+        # Capability tags for this RFQ's products (cached; skipped entirely when switched off).
+        product_tags: Dict[str, Any] = {}
+        if settings.enable_past_quotes_capability:
+            keyed = {cap.text_key(text): (name, text) for name, text in products_from_extraction(extraction)}
+            got = cap.tag_texts(settings, {k: t for k, (_, t) in keyed.items()}, run_id=out.run_id)
+            product_tags = {keyed[k][0]: v for k, v in got.items()}
         wanted = wanted_from_extraction(extraction)
+        for w in wanted:
+            apply_tags(w.fp, product_tags.get(w.product))
         results = [(w, index.find(w.fp, exclude_rfq=out.row_id, limit=max(1, settings.past_quotes_per_product)))
                    for w in wanted]
         found = [(w, ms) for w, ms in results if ms]
+        # Who can make it: only for products with no same part on record.
+        capability = []
+        for name, tags in product_tags.items():
+            mine = [m for w, ms in found if w.product == name for m in ms]
+            if any(m.level == "same" for m in mine):
+                continue
+            skip = {m.line.rfq_row_id for m in mine} | {out.row_id}
+            capability += [(name, cm) for cm in index.find_capability(tags, exclude_rfqs=skip, limit=2)]
         same = sum(1 for _, ms in found if ms[0].level == "same")
         print(f"[INFO] run_id={out.run_id} | past quotes | {len(wanted)} item(s) looked up: "
-              f"{same} quoted before, {len(found) - same} closely similar")
-        if not found:
+              f"{same} quoted before, {len(found) - same} closely similar, "
+              f"{len({n for n, _ in capability})} with a capability lead")
+        if not found and not capability:
             return 0
-        text = attach_section(out.triage_text or "", render_section(found))
+        text = attach_section(out.triage_text or "", render_section(found, capability))
         regenerate_row_id = str((out.structured or {}).get("regenerate_row_id") or "")
         if settings.enable_triage_writeback and regenerate_row_id:
             glide_set_regenerate_response(settings, regenerate_row_id, text)
         elif settings.enable_triage_writeback:
             print(f"[WARN] run_id={out.run_id} | past quotes | summary row id unknown — section not written")
         out.triage_text = text
-        return len(found)
+        return len(found) + len({n for n, _ in capability})
     except Exception as e:
         print(f"[WARN] run_id={out.run_id} | past quotes | skipped: {type(e).__name__}: {e}")
         return 0
