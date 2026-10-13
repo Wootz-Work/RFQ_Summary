@@ -25,7 +25,7 @@ import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from . import capabilities as cap
 from .costing_rates import material_rate
@@ -532,11 +532,6 @@ class CapMatch:
     shared: List[str]          # the capability tags the past part and the new one have in common
 
 
-# A shared tag counts as a lead only if few past RFQs carry it: "cnc turning"
-# on a third of all RFQs narrows nothing, "rubber moulding" on two does.
-DISTINCTIVE_SHARE = 0.15
-
-
 class PastQuoteIndex:
     def __init__(self, lines: List[PastLine]):
         self.lines = lines
@@ -546,15 +541,12 @@ class PastQuoteIndex:
             self.by_type[ln.fp.ptype].append(ln)
             for c in ln.fp.codes:
                 self.by_code[c].append(ln)
-        self.n_rfqs = max(1, len({ln.rfq_row_id for ln in lines}))
         self.by_token: Dict[str, List[PastLine]] = defaultdict(list)
-        self.tag_rfqs: Dict[str, Set[str]] = defaultdict(set)
 
     # ---- capability
     def apply_tags(self, tags_by_key: Dict[str, Dict[str, List[str]]]) -> int:
         """Attach known tags to the lines and rebuild the capability lookup. Returns lines tagged."""
         self.by_token = defaultdict(list)
-        self.tag_rfqs = defaultdict(set)
         n = 0
         for ln in self.lines:
             tags = tags_by_key.get(ln.tag_key)
@@ -564,27 +556,28 @@ class PastQuoteIndex:
             apply_tags(ln.fp, tags)
             n += 1
             for t in cap.all_tags(tags):
-                self.tag_rfqs[t].add(ln.rfq_row_id)
                 for tok in cap.tag_tokens(t):
                     self.by_token[tok].append(ln)
         return n
 
-    def _rfq_share(self, tag: str) -> float:
-        """Share of past RFQs carrying this tag or one it matches."""
-        rfqs: Set[str] = set()
-        for t, rs in self.tag_rfqs.items():
-            if cap.tags_match(tag, t):
-                rfqs |= rs
-        return len(rfqs) / self.n_rfqs
+    def find_capability(self, tags: Optional[Dict[str, List[str]]], level: Callable[[str], str], *,
+                        exclude_rfqs: Set[str] = frozenset(), limit: int = 2) -> List[CapMatch]:
+        """
+        Past parts whose suppliers can do what this part needs — any part type.
 
-    def find_capability(self, tags: Optional[Dict[str, List[str]]], *, exclude_rfqs: Set[str] = frozenset(),
-                        limit: int = 2) -> List[CapMatch]:
-        """Past parts whose suppliers have the same distinctive capability — any part type."""
+        A past part is a lead when it shares a capability that is specialist or
+        rare among suppliers (judged on the market, not on how often we quote it),
+        or when it shares the part's whole combination of process, material and
+        coating. A part with a special feature needs a supplier who made that
+        feature. Leads rank by how much specialist capability they share, then a
+        won quote, then the most recent.
+        """
         wanted = sorted(cap.all_tags(tags))
         if not wanted:
             return []
-        share = {t: self._rfq_share(t) for t in wanted}
         features = set((tags or {}).get("feature") or [])
+        combo = {t for kind in ("process", "material", "coating") for t in (tags or {}).get(kind) or []}
+        weight = {"rare": 3, "specialist": 2}
         cands: Dict[int, PastLine] = {}
         for t in wanted:
             for tok in cap.tag_tokens(t):
@@ -596,19 +589,20 @@ class PastQuoteIndex:
                 continue
             have = cap.all_tags(ln.tags)
             shared = [t for t in wanted if any(cap.tags_match(t, h) for h in have)]
-            distinctive = [t for t in shared if 0 < share[t] <= DISTINCTIVE_SHARE]
-            if not distinctive:
+            if not shared:
                 continue
-            # A part with a special feature (weld projections, nylon insert …) needs a
-            # supplier who has made that feature — sharing only a general process is not a lead.
             if features and not any(t in features for t in shared):
                 continue
-            # Rarer shared capabilities weigh more; a won quote edges ahead of an equal one.
-            score = sum(math.log(1 / max(share[t], 1 / self.n_rfqs)) for t in shared) \
-                + 0.1 * (ln.status.lower() == "won")
+            special = [t for t in shared if weight.get(level(t))]
+            whole_combo = len(combo) >= 2 and combo <= set(shared)
+            if not special and not whole_combo:
+                continue
+            age = ((date.today() - ln.quote_date).days / 365) if ln.quote_date else 3
+            score = sum(weight.get(level(t), 0) for t in shared) + 0.5 * len(shared) \
+                + 0.3 * (ln.status.lower() == "won") - 0.1 * min(age, 3)
             cur = best.get(ln.rfq_row_id)
             if cur is None or score > cur.score:
-                best[ln.rfq_row_id] = CapMatch(ln, score, distinctive)
+                best[ln.rfq_row_id] = CapMatch(ln, score, special or shared)
         return sorted(best.values(), key=lambda m: -m.score)[:limit]
 
     def find(self, q: Fingerprint, *, exclude_rfq: str = "", limit: int = 3) -> List[Match]:
@@ -644,9 +638,7 @@ class PastQuoteIndex:
             if have is None or (ln.quote_date or date.min) > (have.line.quote_date or date.min):
                 latest[key2] = m
         ranked = sorted(latest.values(), key=lambda m: (m.level != SAME, -m.score))
-        if any(m.level == SAME for m in ranked):        # the same part first; similar only beside it
-            ranked = [m for m in ranked if m.level == SAME] + [m for m in ranked if m.level != SAME][:1]
-        return ranked[:limit]
+        return ranked[:limit]                      # the same part first, then closely similar
 
 
 # ----------------------------------------------------------------------------- a new RFQ's products
@@ -774,7 +766,9 @@ _backfill_lock = threading.Lock()
 def _start_backfill(settings: Any, index: "PastQuoteIndex") -> None:
     """Tag the past lines that have no tags yet, in the background; matching uses whatever is ready."""
     todo = {ln.tag_key: ln.tag_text for ln in index.lines if ln.tags is None}
-    if not todo or not _backfill_lock.acquire(blocking=False):
+    levels = cap.levels_for(settings)
+    unrated = any(not levels.level(t) for ln in index.lines for t in cap.all_tags(ln.tags))
+    if not (todo or unrated) or not _backfill_lock.acquire(blocking=False):
         return
 
     def run():
@@ -782,6 +776,8 @@ def _start_backfill(settings: Any, index: "PastQuoteIndex") -> None:
             print(f"[INFO] past quotes | tagging {len(todo)} past line(s) with capabilities in the background")
             found = cap.tag_texts(settings, todo, run_id="past-quotes-backfill")
             n = index.apply_tags(cap.store_for(settings).tags)
+            cap.rate_tags(settings, {t for ln in index.lines for t in cap.all_tags(ln.tags)},
+                          run_id="past-quotes-backfill")
             print(f"[INFO] past quotes | capability tags ready: {n} of {len(index.lines)} line(s) "
                   f"({len(found)} tagged now)")
         finally:
@@ -793,7 +789,7 @@ def _start_backfill(settings: Any, index: "PastQuoteIndex") -> None:
 # ----------------------------------------------------------------------------- the section
 
 SECTION_HEADING = "#### 🔁 Quoted before"
-MAX_RFQS = 8                   # past RFQs listed; the rest are counted
+MAX_RFQS = 15                  # past RFQs listed in the section; the rest are counted
 _SECTION_RX = re.compile(r"\n*---\n+" + re.escape(SECTION_HEADING) + r".*?(?=\n</triage>|\Z)", re.DOTALL)
 
 

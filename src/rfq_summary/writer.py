@@ -499,20 +499,26 @@ def write_past_quotes(settings: Settings, out: TriageOutputPayload) -> int:
             keyed = {cap.text_key(text): (name, text) for name, text in products_from_extraction(extraction)}
             got = cap.tag_texts(settings, {k: t for k, (_, t) in keyed.items()}, run_id=out.run_id)
             product_tags = {keyed[k][0]: v for k, v in got.items()}
+            cap.rate_tags(settings, {t for tags in product_tags.values() for t in cap.all_tags(tags)},
+                          run_id=out.run_id)
         wanted = wanted_from_extraction(extraction)
         for w in wanted:
             apply_tags(w.fp, product_tags.get(w.product))
-        results = [(w, index.find(w.fp, exclude_rfq=out.row_id, limit=max(1, settings.past_quotes_per_product)))
-                   for w in wanted]
+        per_product = max(1, settings.past_quotes_per_product)
+        results = [(w, index.find(w.fp, exclude_rfq=out.row_id, limit=per_product)) for w in wanted]
         found = [(w, ms) for w, ms in results if ms]
-        # Who can make it: only for products with no same part on record.
+        # Who can make it: only for products with no same part on record, and only
+        # up to the per-product limit — never padded with leads that do not qualify.
         capability = []
+        level = cap.levels_for(settings).level if product_tags else (lambda t: "")
         for name, tags in product_tags.items():
             mine = [m for w, ms in found if w.product == name for m in ms]
-            if any(m.level == "same" for m in mine):
+            rfqs = {m.line.rfq_row_id for m in mine}
+            room = per_product - len(rfqs)
+            if any(m.level == "same" for m in mine) or room <= 0:
                 continue
-            skip = {m.line.rfq_row_id for m in mine} | {out.row_id}
-            capability += [(name, cm) for cm in index.find_capability(tags, exclude_rfqs=skip, limit=2)]
+            capability += [(name, cm) for cm in index.find_capability(tags, level, exclude_rfqs=rfqs | {out.row_id},
+                                                                      limit=room)]
         same = sum(1 for _, ms in found if ms[0].level == "same")
         print(f"[INFO] run_id={out.run_id} | past quotes | {len(wanted)} item(s) looked up: "
               f"{same} quoted before, {len(found) - same} closely similar, "
