@@ -114,8 +114,9 @@ check("the same bolt is found as the same part, the won quote first",
       ms and ms[0].level == "same" and ms[0].line.rfq_row_id == "R1", str([(m.level, m.line.rfq_row_id) for m in ms]))
 check("the same part in stainless is not the same part", all(m.line.rfq_row_id != "R6" for m in ms))
 check("a socket head cap screw is not a hex bolt", all("Socket" not in m.line.part_name for m in ms))
-check("at most one similar item is shown beside the same part",
-      sum(m.level == "similar" for m in ms) <= 1 and any(m.line.rfq_row_id == "R2" and m.level == "similar" for m in ms),
+check("the same part first, then the closely similar one",
+      [m.level for m in ms] == sorted([m.level for m in ms], key=lambda x: x != "same")
+      and any(m.line.rfq_row_id == "R2" and m.level == "similar" for m in ms),
       str([(m.level, m.line.rfq_row_id) for m in ms]))
 only_similar = index.find(pq.fingerprint('M12 x 110 Hex Bolt DIN 931 8.8 HDG'), exclude_rfq="R2")
 check("one size away is similar, not the same", only_similar and all(m.level == "similar" for m in only_similar),
@@ -157,8 +158,8 @@ check("a past RFQ without a folder link shows its title plain",
 check("nothing close means no section at all", pq.render_section([(w, [])]) == "")
 lots = [(pq.Wanted(f"P{i}", f"P{i}", w.fp), [pq.Match("same", pq.PastLine(**{**by[("R1", "M10 x 120 Hex Bolt D")].__dict__,
                                                                          "rfq_row_id": f"X{i}", "title": f"T{i}"}), 2, "x")])
-        for i in range(11)]
-check("at most eight past RFQs, then a count", pq.render_section(lots).count("\n- [T") == 8
+        for i in range(18)]
+check("at most fifteen past RFQs, then a count", pq.render_section(lots).count("\n- [T") == 15
       and "and 3 more past RFQ(s)" in pq.render_section(lots))
 
 summary = "<triage>\n**Two lines.**\n\n| a | b |\n</triage>"
@@ -295,22 +296,59 @@ for ln in cl:
     store[ln.tag_key] = cap.clean_tags(t)
 cidx = pq.PastQuoteIndex(cl)
 check("known tags are attached to past lines", cidx.apply_tags(store) == len(cl))
+# How hard each capability is to find among suppliers — the market, not our history.
+LEVEL = {"rubber moulding": "specialist", "rubber compression moulding": "specialist", "rubber to metal bonding": "rare",
+         "plastic injection moulding": "specialist", "epdm rubber": "specialist", "nbr rubber": "specialist",
+         "projection weld nut": "specialist", "hastelloy": "rare", "cold heading": "common", "zinc plating": "common",
+         "cnc turning": "common", "stamping": "common", "hdpe": "common", "free cutting brass": "common",
+         "chrome plating": "common"}
+level = lambda t: LEVEL.get(t, "")
 
 rubber = cap.clean_tags({"process": ["rubber compression moulding"], "material": ["nbr rubber"]})
-leads = cidx.find_capability(rubber)
+leads = cidx.find_capability(rubber, level)
 check("a moulded rubber part finds the rubber moulders, best first",
       [m.line.title for m in leads] == ["Shakti 27 - Aluminium Boxes", "Entai 24 - Rubber-metal bonded component"]
       or [m.line.title for m in leads] == ["Entai 24 - Rubber-metal bonded component", "Shakti 27 - Aluminium Boxes"],
       str([(m.line.title, m.shared) for m in leads]))
 check("…not the plastic moulder or the screw with a rubber washer",
       not any("HDPE" in m.line.title or "Woodgrip" in m.line.title for m in leads))
-check("a capability most past RFQs share is not a lead",
-      cidx.find_capability(cap.clean_tags({"process": ["cnc turning"]})) == [])
+check("a common capability alone is not a lead", cidx.find_capability(cap.clean_tags({"process": ["cnc turning"]}), level) == [])
 weld = cap.clean_tags({"process": ["stamping"], "feature": ["projection weld nut"]})
-wl = cidx.find_capability(weld, exclude_rfqs={"G5"})
+wl = cidx.find_capability(weld, level, exclude_rfqs={"G5"})
 check("a weld washer is led to the weld nut supplier, not the flat washer",
       wl and wl[0].line.title == "Weld 2 - Weld nuts" and all("Flat" not in m.line.title for m in wl),
       str([(m.line.title, m.shared) for m in wl]))
+
+
+# The two cases the DB-frequency rule got wrong.
+many = pq.clean_rows([crow(f"H{i}", f"Hastelloy C276 part {i}", f"Trump {i} - Hastelloy") for i in range(10)] +
+                     [crow("B1", "Brass turned bush", "Baba 1 - Brass")] +
+                     [crow(f"S{i}", f"Steel bracket {i}", f"Steel {i} - Brackets") for i in range(5)])
+mstore = {}
+for ln in many:
+    if "Hastelloy" in ln.part_name:
+        t = {"process": ["cnc turning"], "material": ["hastelloy"]}
+    elif "Brass" in ln.part_name:
+        t = {"process": ["cnc turning"], "material": ["free cutting brass"], "coating": ["chrome plating"]}
+    else:
+        t = {"process": ["sheet metal fabrication"]}
+    mstore[ln.tag_key] = cap.clean_tags(t)
+midx = pq.PastQuoteIndex(many)
+midx.apply_tags(mstore)
+hl = midx.find_capability(cap.clean_tags({"process": ["cnc milling"], "material": ["hastelloy"]}), level, limit=5)
+check("rare in the market but frequent in our quotes: still a lead (Hastelloy on 10 of 16 RFQs)",
+      len(hl) == 5 and all("Hastelloy" in m.line.title for m in hl), str([m.line.title for m in hl]))
+check("common in the market but rare in our quotes: not a lead (CNC turning on one RFQ)",
+      midx.find_capability(cap.clean_tags({"process": ["cnc turning"], "material": ["mild steel"]}), level) == [])
+combo = cap.clean_tags({"process": ["cnc turning"], "material": ["free cutting brass"], "coating": ["chrome plating"]})
+check("the whole combination of common capabilities is a lead (turned, brass, chrome plated)",
+      [m.line.title for m in midx.find_capability(combo, level)] == ["Baba 1 - Brass"])
+check("…but part of the combination is not",
+      midx.find_capability(cap.clean_tags({"process": ["cnc turning"], "material": ["free cutting brass"],
+                                           "coating": ["nickel plating"]}), level) == [])
+check("up to the limit, and only leads that qualify",
+      len(midx.find_capability(cap.clean_tags({"material": ["hastelloy"]}), level, limit=5)) == 5
+      and len(midx.find_capability(combo, level, limit=5)) == 1)
 
 qf = pq.fingerprint("M6 Weld Washer"); pq.apply_tags(qf, weld)
 ff = by_flat = next(l for l in cl if l.part_name == "M6 Flat Washer DIN 125").fp
@@ -332,6 +370,18 @@ with tempfile.TemporaryDirectory() as d:
     deep = cap.TagStore(os.path.join(d, "disk", "sub", "tags.json"))
     deep.put({"k": cap.clean_tags({"process": ["x y"]})})
     check("a cache folder that does not exist yet is created", os.path.exists(os.path.join(d, "disk", "sub", "tags.json")))
+    st_l = _settings(PAST_QUOTES_TAG_CACHE_PATH=os.path.join(d, "lv", "tags.json"))
+    rated = []
+    orig_lv = cap._ask_levels
+    cap._ask_levels = lambda s, tags, run_id: rated.append(list(tags)) or {t: "specialist" for t in tags}
+    try:
+        cap.rate_tags(st_l, ["rubber moulding", "zinc flake coating"])
+        cap.rate_tags(st_l, ["rubber moulding", "zinc flake"])       # 'zinc flake' matches a rated tag
+    finally:
+        cap._ask_levels = orig_lv
+    check("each capability is rated once; a matching tag reuses the rating", len(rated) == 1, str(rated))
+    check("ratings survive a restart", cap.LevelStore(os.path.join(d, "lv", "tags_scarcity.json")).level("rubber moulding")
+          == "specialist")
 
     calls = []
     orig_ask = cap._ask_model
@@ -351,14 +401,17 @@ def run_cap(enabled, tagger):
     out.product_extraction = ProductExtractionResult(products=[ExtractedProduct(
         index=1, name="Moulded Rubber Part Ø38", structure="single", quantity="500 pcs",
         specs={"material": "NBR", "grade_standard": "60 Shore A"})])
-    orig = (pq.load_index, writer.glide_set_regenerate_response, cap.tag_texts)
+    orig = (pq.load_index, writer.glide_set_regenerate_response, cap.tag_texts, cap.rate_tags)
     pq.load_index = lambda s, **k: cidx
     writer.glide_set_regenerate_response = lambda s, rid, text: calls["set"].append(text) or True
     cap.tag_texts = tagger
+    st = _settings(ENABLE_PAST_QUOTES_CAPABILITY=str(enabled).lower(), PAST_QUOTES_TAG_CACHE_PATH="")
+    cap.rate_tags = lambda s, tags, **k: (no_model() if not enabled else cap.levels_for(st).put(
+        {t: LEVEL[t] for t in tags if t in LEVEL}))
     try:
-        n = writer.write_past_quotes(_settings(ENABLE_PAST_QUOTES_CAPABILITY=str(enabled).lower()), out)
+        n = writer.write_past_quotes(st, out)
     finally:
-        pq.load_index, writer.glide_set_regenerate_response, cap.tag_texts = orig
+        pq.load_index, writer.glide_set_regenerate_response, cap.tag_texts, cap.rate_tags = orig
     return n, calls
 
 

@@ -186,3 +186,99 @@ def tag_texts(settings: Any, texts: Dict[str, str], *, run_id: str = "", batch: 
         for found in pool.map(one, chunks):
             out.update(found)
     return out
+
+
+# ----------------------------------------------------------------------------- scarcity
+#
+# Whether a shared capability is a lead depends on how hard it is to find among
+# suppliers — not on how often it appears in our own quotes. Hastelloy is a lead
+# however many Hastelloy RFQs we have handled; CNC turning is not one however
+# few. Each tag is rated once by the model and cached next to the line tags.
+
+LEVELS = ("common", "specialist", "rare")
+
+
+def _scarcity_path(settings: Any) -> str:
+    path = (getattr(settings, "past_quotes_tag_cache_path", "") or "").strip()
+    if not path:
+        return ""
+    root, ext = os.path.splitext(path)
+    return f"{root}_scarcity{ext or '.json'}"
+
+
+class LevelStore:
+    def __init__(self, path: str = ""):
+        self.path = path
+        self.lock = threading.Lock()
+        self.levels: Dict[str, str] = {}
+        if path and os.path.exists(path):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    self.levels = {str(k): str(v) for k, v in (json.load(f) or {}).items() if v in LEVELS}
+            except Exception as e:
+                print(f"[WARN] capabilities | scarcity cache {path} unreadable, starting empty: {type(e).__name__}: {e}")
+
+    def level(self, tag: str) -> str:
+        """The tag's level, or that of a rated tag it matches; '' when unknown."""
+        with self.lock:
+            if tag in self.levels:
+                return self.levels[tag]
+            for t, lv in self.levels.items():
+                if tags_match(tag, t):
+                    return lv
+        return ""
+
+    def put(self, found: Dict[str, str]) -> None:
+        with self.lock:
+            self.levels.update({k: v for k, v in found.items() if v in LEVELS})
+            data = json.dumps(self.levels)
+        if not self.path:
+            return
+        try:
+            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+            with open(self.path + ".tmp", "w", encoding="utf-8") as f:
+                f.write(data)
+            os.replace(self.path + ".tmp", self.path)
+        except Exception as e:
+            print(f"[WARN] capabilities | scarcity cache not saved: {type(e).__name__}: {e}")
+
+
+_level_stores: Dict[str, LevelStore] = {}
+
+
+def levels_for(settings: Any) -> LevelStore:
+    path = _scarcity_path(settings)
+    with _stores_lock:
+        if path not in _level_stores:
+            _level_stores[path] = LevelStore(path)
+        return _level_stores[path]
+
+
+def _ask_levels(settings: Any, tags: List[str], run_id: str) -> Dict[str, str]:
+    from .llm import generate_text, load_prompt_file
+
+    model = (getattr(settings, "past_quotes_tag_model", "") or "").strip()
+    s = settings.model_copy(update={"anthropic_model": model, "anthropic_model_fallbacks": ""}) if model else settings
+    system = load_prompt_file(getattr(settings, "prompt_capability_scarcity_file", "")
+                              or "prompts/capability_scarcity.md")
+    reply = generate_text(s, system, json.dumps(tags, ensure_ascii=False), max_tokens=8000,
+                          thinking=True, effort="low", run_id=run_id, label="capability_scarcity")
+    start, end = (reply or "").find("{"), (reply or "").rfind("}")
+    try:
+        data = json.loads(reply[start:end + 1]) if 0 <= start < end else {}
+    except ValueError:
+        data = {}
+    return {str(k).strip().lower(): str(v).strip().lower() for k, v in (data or {}).items()
+            if str(v).strip().lower() in LEVELS}
+
+
+def rate_tags(settings: Any, tags: Iterable[str], *, run_id: str = "", batch: int = 150) -> None:
+    """Rate every tag not yet rated (or matched by a rated one)."""
+    store = levels_for(settings)
+    todo = sorted({t for t in tags if t and not store.level(t)})
+    for i in range(0, len(todo), batch):
+        chunk = todo[i:i + batch]
+        try:
+            store.put(_ask_levels(settings, chunk, run_id))
+        except Exception as e:
+            print(f"[WARN] capabilities | {len(chunk)} tag(s) not rated: {type(e).__name__}: {e}")
