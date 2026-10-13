@@ -119,6 +119,7 @@ class TagStore:
         try:
             with self.lock:
                 data = json.dumps(self.tags)
+            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
             tmp = self.path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 f.write(data)

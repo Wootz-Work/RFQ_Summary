@@ -329,6 +329,9 @@ with tempfile.TemporaryDirectory() as d:
     s1 = cap.TagStore(path)
     s1.put({"k": cap.clean_tags({"process": ["rubber moulding"]})})
     check("the tag cache survives a restart", cap.TagStore(path).get("k")["process"] == ["rubber moulding"])
+    deep = cap.TagStore(os.path.join(d, "disk", "sub", "tags.json"))
+    deep.put({"k": cap.clean_tags({"process": ["x y"]})})
+    check("a cache folder that does not exist yet is created", os.path.exists(os.path.join(d, "disk", "sub", "tags.json")))
 
     calls = []
     orig_ask = cap._ask_model
