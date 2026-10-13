@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
+from . import capabilities as cap
 from .costing_rates import material_rate
 
 # ----------------------------------------------------------------------------- the table
@@ -81,6 +82,16 @@ class PastLine:
     freight_quoted_separately: bool
     folder_link: str = ""                             # the RFQ's OneDrive quotation folder
     fp: "Fingerprint" = None  # type: ignore[assignment]
+    tags: Optional[Dict[str, List[str]]] = None       # capability tags, once the model has given them
+
+    @property
+    def tag_text(self) -> str:
+        """What the model is shown to tag this line — the RFQ title gives the part its context."""
+        return f"RFQ: {self.title} — {self.part_name} | {self.remarks}"[:400]
+
+    @property
+    def tag_key(self) -> str:
+        return cap.text_key(self.tag_text)
 
 
 _INVISIBLE = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
@@ -328,6 +339,8 @@ class Fingerprint:
     length_mm: Optional[float] = None
     system: str = ""                                  # "metric" | "inch" — threads and nominal sizes
     name_words: Set[str] = field(default_factory=set)
+    tagged: bool = False                              # capability tags known
+    features: Set[str] = field(default_factory=set)   # special features (weld nut, nylon insert …) from the tags
     words: Set[str] = field(default_factory=set)
 
 
@@ -414,6 +427,16 @@ def fingerprint(text: str, part_number: str = "", material: str = "", finish: st
     return fp
 
 
+def _features_agree(a: Set[str], b: Set[str]) -> bool:
+    return all(any(cap.tags_match(x, y) for y in b) for x in a) and all(any(cap.tags_match(y, x) for x in a) for y in b)
+
+
+def apply_tags(fp: Fingerprint, tags: Optional[Dict[str, List[str]]]) -> None:
+    if tags is not None:
+        fp.tagged = True
+        fp.features = set(tags.get("feature") or [])
+
+
 def _jaccard(a: Set[str], b: Set[str]) -> float:
     return len(a & b) / len(a | b) if a and b else 0.0
 
@@ -438,6 +461,10 @@ def compare(q: Fingerprint, p: Fingerprint) -> Optional[Tuple[str, float, str]]:
         return SAME, 3.0, f"same part number {sorted(shared_codes)[0]}"
     if q.codes and p.codes:
         return None                            # two different part numbers are two different parts
+    # A special feature one has and the other lacks (weld washer vs flat washer,
+    # nylon-insert vs plain nut) makes them different parts, whatever the words say.
+    if q.tagged and p.tagged and not _features_agree(q.features, p.features):
+        return None
     words = _jaccard(q.words, p.words)
     names = _jaccard(q.name_words, p.name_words)
     if (names >= 0.85 and len(q.name_words) >= 3 and (q.sizes or q.material or q.codes)
@@ -498,6 +525,18 @@ def compare(q: Fingerprint, p: Fingerprint) -> Optional[Tuple[str, float, str]]:
     return SIMILAR, score, "same type and material" + (f"; differs in {', '.join(diff)}" if diff else "")
 
 
+@dataclass
+class CapMatch:
+    line: PastLine
+    score: float
+    shared: List[str]          # the capability tags the past part and the new one have in common
+
+
+# A shared tag counts as a lead only if few past RFQs carry it: "cnc turning"
+# on a third of all RFQs narrows nothing, "rubber moulding" on two does.
+DISTINCTIVE_SHARE = 0.15
+
+
 class PastQuoteIndex:
     def __init__(self, lines: List[PastLine]):
         self.lines = lines
@@ -507,6 +546,70 @@ class PastQuoteIndex:
             self.by_type[ln.fp.ptype].append(ln)
             for c in ln.fp.codes:
                 self.by_code[c].append(ln)
+        self.n_rfqs = max(1, len({ln.rfq_row_id for ln in lines}))
+        self.by_token: Dict[str, List[PastLine]] = defaultdict(list)
+        self.tag_rfqs: Dict[str, Set[str]] = defaultdict(set)
+
+    # ---- capability
+    def apply_tags(self, tags_by_key: Dict[str, Dict[str, List[str]]]) -> int:
+        """Attach known tags to the lines and rebuild the capability lookup. Returns lines tagged."""
+        self.by_token = defaultdict(list)
+        self.tag_rfqs = defaultdict(set)
+        n = 0
+        for ln in self.lines:
+            tags = tags_by_key.get(ln.tag_key)
+            if tags is None:
+                continue
+            ln.tags = tags
+            apply_tags(ln.fp, tags)
+            n += 1
+            for t in cap.all_tags(tags):
+                self.tag_rfqs[t].add(ln.rfq_row_id)
+                for tok in cap.tag_tokens(t):
+                    self.by_token[tok].append(ln)
+        return n
+
+    def _rfq_share(self, tag: str) -> float:
+        """Share of past RFQs carrying this tag or one it matches."""
+        rfqs: Set[str] = set()
+        for t, rs in self.tag_rfqs.items():
+            if cap.tags_match(tag, t):
+                rfqs |= rs
+        return len(rfqs) / self.n_rfqs
+
+    def find_capability(self, tags: Optional[Dict[str, List[str]]], *, exclude_rfqs: Set[str] = frozenset(),
+                        limit: int = 2) -> List[CapMatch]:
+        """Past parts whose suppliers have the same distinctive capability — any part type."""
+        wanted = sorted(cap.all_tags(tags))
+        if not wanted:
+            return []
+        share = {t: self._rfq_share(t) for t in wanted}
+        features = set((tags or {}).get("feature") or [])
+        cands: Dict[int, PastLine] = {}
+        for t in wanted:
+            for tok in cap.tag_tokens(t):
+                for ln in self.by_token.get(tok, []):
+                    cands[id(ln)] = ln
+        best: Dict[str, CapMatch] = {}
+        for ln in cands.values():
+            if ln.rfq_row_id in exclude_rfqs:
+                continue
+            have = cap.all_tags(ln.tags)
+            shared = [t for t in wanted if any(cap.tags_match(t, h) for h in have)]
+            distinctive = [t for t in shared if 0 < share[t] <= DISTINCTIVE_SHARE]
+            if not distinctive:
+                continue
+            # A part with a special feature (weld projections, nylon insert …) needs a
+            # supplier who has made that feature — sharing only a general process is not a lead.
+            if features and not any(t in features for t in shared):
+                continue
+            # Rarer shared capabilities weigh more; a won quote edges ahead of an equal one.
+            score = sum(math.log(1 / max(share[t], 1 / self.n_rfqs)) for t in shared) \
+                + 0.1 * (ln.status.lower() == "won")
+            cur = best.get(ln.rfq_row_id)
+            if cur is None or score > cur.score:
+                best[ln.rfq_row_id] = CapMatch(ln, score, distinctive)
+        return sorted(best.values(), key=lambda m: -m.score)[:limit]
 
     def find(self, q: Fingerprint, *, exclude_rfq: str = "", limit: int = 3) -> List[Match]:
         cands: Dict[int, PastLine] = {}
@@ -582,6 +685,20 @@ def wanted_from_extraction(extraction: Any, max_family_rows: int = 60) -> List[W
     return out
 
 
+def products_from_extraction(extraction: Any) -> List[Tuple[str, str]]:
+    """(product name, text to tag) — one per product line; a family's rows share its capability."""
+    out = []
+    for p in getattr(extraction, "products", None) or []:
+        name = str(getattr(p, "name", "") or "").strip()
+        specs = getattr(p, "specs", None)
+        bits = [name]
+        if specs:
+            bits += [str(getattr(specs, k, "") or "") for k in ("material", "grade_standard", "finish")]
+            bits += [", ".join(getattr(specs, "processes", None) or [])]
+        out.append((name, " | ".join(b for b in bits if b)[:400]))
+    return out
+
+
 # ----------------------------------------------------------------------------- loading
 
 _lock = threading.Lock()
@@ -643,7 +760,34 @@ def load_index(settings: Any, *, force: bool = False) -> Optional[PastQuoteIndex
         _cache.update(index=index, at=time.time())
         print(f"[INFO] past quotes | loaded {len(index.lines)} product line(s) from {len(rows)} row(s) "
               f"in {int((time.perf_counter() - t0) * 1000)} ms")
+        tagged = index.apply_tags(cap.store_for(settings).tags)
+        if tagged:
+            print(f"[INFO] past quotes | capability tags known for {tagged} of {len(index.lines)} line(s)")
+        if getattr(settings, "enable_past_quotes_capability", False):
+            _start_backfill(settings, index)
         return index
+
+
+_backfill_lock = threading.Lock()
+
+
+def _start_backfill(settings: Any, index: "PastQuoteIndex") -> None:
+    """Tag the past lines that have no tags yet, in the background; matching uses whatever is ready."""
+    todo = {ln.tag_key: ln.tag_text for ln in index.lines if ln.tags is None}
+    if not todo or not _backfill_lock.acquire(blocking=False):
+        return
+
+    def run():
+        try:
+            print(f"[INFO] past quotes | tagging {len(todo)} past line(s) with capabilities in the background")
+            found = cap.tag_texts(settings, todo, run_id="past-quotes-backfill")
+            n = index.apply_tags(cap.store_for(settings).tags)
+            print(f"[INFO] past quotes | capability tags ready: {n} of {len(index.lines)} line(s) "
+                  f"({len(found)} tagged now)")
+        finally:
+            _backfill_lock.release()
+
+    threading.Thread(target=run, name="past-quotes-backfill", daemon=True).start()
 
 
 # ----------------------------------------------------------------------------- the section
@@ -653,7 +797,8 @@ MAX_RFQS = 8                   # past RFQs listed; the rest are counted
 _SECTION_RX = re.compile(r"\n*---\n+" + re.escape(SECTION_HEADING) + r".*?(?=\n</triage>|\Z)", re.DOTALL)
 
 
-def render_section(results: List[Tuple[Wanted, List[Match]]]) -> str:
+def render_section(results: List[Tuple[Wanted, List[Match]]],
+                   capability: Sequence[Tuple[str, CapMatch]] = ()) -> str:
     """
     One bullet per past RFQ: its title linked to its OneDrive quotation folder,
     then which of this RFQ's products it matches. Empty when nothing is the same
@@ -668,15 +813,21 @@ def render_section(results: List[Tuple[Wanted, List[Match]]]) -> str:
             have = r["products"].get(w.product)
             if have != SAME:                       # same beats similar for a product
                 r["products"][w.product] = m.level
+    for product, cm in capability:
+        ln = cm.line
+        r = rfqs.setdefault(ln.rfq_row_id, {"title": ln.title, "link": ln.folder_link, "products": {},
+                                            "date": ln.quote_date or date.min})
+        r["products"].setdefault(product, "capability: " + ", ".join(cm.shared[:2]))
     if not rfqs:
         return ""
-    ranked = sorted(rfqs.values(), key=lambda r: (SAME not in r["products"].values(), -len(r["products"]),
-                                                 -r["date"].toordinal()))
+    rank = {SAME: 0, SIMILAR: 1}
+    ranked = sorted(rfqs.values(), key=lambda r: (min(rank.get(v, 2) for v in r["products"].values()),
+                                                 -len(r["products"]), -r["date"].toordinal()))
     out = ["---", "", SECTION_HEADING, ""]
     for r in ranked[:MAX_RFQS]:
         title = r["title"] or "Untitled RFQ"
         head = f"[{title}]({r['link']})" if r["link"] else title
-        products = sorted(r["products"].items(), key=lambda kv: kv[1] != SAME)
+        products = sorted(r["products"].items(), key=lambda kv: rank.get(kv[1], 2))
         out.append(f"- {head} — " + ", ".join(f"{name} ({level})" for name, level in products))
     if len(ranked) > MAX_RFQS:
         out.append(f"- …and {len(ranked) - MAX_RFQS} more past RFQ(s)")

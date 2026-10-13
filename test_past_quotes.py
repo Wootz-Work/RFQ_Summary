@@ -258,4 +258,119 @@ check("a regenerated summary keeps the Quoted before section",
 check("…and stays as it was when the previous version had none",
       task._carry_past_quotes(_settings(), "r2", types.SimpleNamespace(previous_response=summary, rfq_id="NEW"), fresh) == fresh)
 
+# ---- capability: who can make it -------------------------------------------------------
+import os
+import tempfile
+from rfq_summary import capabilities as cap
+
+check("capability tags match loosely, never across different things",
+      cap.tags_match("rubber moulding", "rubber compression moulding") and cap.tags_match("zinc flake", "zinc flake coating")
+      and cap.tags_match("molded rubber", "rubber moulding") and not cap.tags_match("rubber moulding", "plastic injection moulding")
+      and not cap.tags_match("cnc turning", "cnc milling"))
+check("a reply is read as JSON, with generic tags dropped",
+      cap.parse_reply('noise {"a": {"process": ["Rubber Moulding", "fastener"], "material": "NBR rubber"}} tail')
+      == {"a": {"process": ["rubber moulding"], "feature": [], "coating": [], "material": ["nbr rubber"]}})
+check("an unreadable reply tags nothing", cap.parse_reply("sorry") == {})
+
+crow = lambda rfq, name, title: row(rfq, name, title=title, folder=f"https://onedrive.example/{rfq}")
+CAP_ROWS = [crow("G1", "Gasket, moulded rubber", "Shakti 27 - Aluminium Boxes"),
+            crow("G2", "Bushing- Rubber Fully Bonded", "Entai 24 - Rubber-metal bonded component"),
+            crow("G3", "HDPE moulded part", "FRUITLAND 34 - HDPE Molded Part"),
+            crow("G4", "Woodgrip screw with bonded neoprene washer", "Entai 10 - Woodgrip Screws"),
+            crow("G5", "M6 Weld Washer", "Weld 1 - Weld washers"),
+            crow("G6", "M6 Flat Washer DIN 125", "Flat 1 - Washers"),
+            crow("G7", "M6 Square Weld Nut", "Weld 2 - Weld nuts")] + \
+           [crow(f"T{i}", f"Turned bush {i}", f"Turn {i} - Turned parts") for i in range(8)]
+cl = pq.clean_rows(CAP_ROWS)
+TAGS = {"Gasket, moulded rubber": {"process": ["rubber moulding"], "material": ["epdm rubber"]},
+        "Bushing- Rubber Fully Bonded": {"process": ["rubber to metal bonding", "rubber moulding"]},
+        "HDPE moulded part": {"process": ["plastic injection moulding"], "material": ["hdpe"]},
+        "Woodgrip screw with bonded neoprene washer": {"process": ["cold heading"], "coating": ["zinc plating"]},
+        "M6 Weld Washer": {"process": ["stamping"], "feature": ["projection weld nut"]},
+        "M6 Flat Washer DIN 125": {"process": ["stamping"]},
+        "M6 Square Weld Nut": {"process": ["cold heading"], "feature": ["projection weld nut"]}}
+store = {}
+for ln in cl:
+    t = TAGS.get(ln.part_name, {"process": ["cnc turning"]})
+    store[ln.tag_key] = cap.clean_tags(t)
+cidx = pq.PastQuoteIndex(cl)
+check("known tags are attached to past lines", cidx.apply_tags(store) == len(cl))
+
+rubber = cap.clean_tags({"process": ["rubber compression moulding"], "material": ["nbr rubber"]})
+leads = cidx.find_capability(rubber)
+check("a moulded rubber part finds the rubber moulders, best first",
+      [m.line.title for m in leads] == ["Shakti 27 - Aluminium Boxes", "Entai 24 - Rubber-metal bonded component"]
+      or [m.line.title for m in leads] == ["Entai 24 - Rubber-metal bonded component", "Shakti 27 - Aluminium Boxes"],
+      str([(m.line.title, m.shared) for m in leads]))
+check("…not the plastic moulder or the screw with a rubber washer",
+      not any("HDPE" in m.line.title or "Woodgrip" in m.line.title for m in leads))
+check("a capability most past RFQs share is not a lead",
+      cidx.find_capability(cap.clean_tags({"process": ["cnc turning"]})) == [])
+weld = cap.clean_tags({"process": ["stamping"], "feature": ["projection weld nut"]})
+wl = cidx.find_capability(weld, exclude_rfqs={"G5"})
+check("a weld washer is led to the weld nut supplier, not the flat washer",
+      wl and wl[0].line.title == "Weld 2 - Weld nuts" and all("Flat" not in m.line.title for m in wl),
+      str([(m.line.title, m.shared) for m in wl]))
+
+qf = pq.fingerprint("M6 Weld Washer"); pq.apply_tags(qf, weld)
+ff = by_flat = next(l for l in cl if l.part_name == "M6 Flat Washer DIN 125").fp
+check("a special feature one part lacks makes it a different part", pq.compare(qf, ff) is None)
+check("…while the same feature on both still matches", pq.compare(qf, next(l for l in cl if l.part_name == "M6 Weld Washer").fp)
+      is not None)
+
+wr = pq.Wanted("Moulded Rubber Part Ø38", "Moulded Rubber Part Ø38", pq.fingerprint("Moulded Rubber Part Ø38 NBR 60 Shore A"))
+csec = pq.render_section([(wr, [])], [("Moulded Rubber Part Ø38", m) for m in leads])
+check("capability leads are shown with the shared capability",
+      "[Shakti 27 - Aluminium Boxes](https://onedrive.example/G1) — Moulded Rubber Part Ø38 (capability: rubber compression moulding)"
+      in csec, csec)
+
+with tempfile.TemporaryDirectory() as d:
+    path = os.path.join(d, "tags.json")
+    s1 = cap.TagStore(path)
+    s1.put({"k": cap.clean_tags({"process": ["rubber moulding"]})})
+    check("the tag cache survives a restart", cap.TagStore(path).get("k")["process"] == ["rubber moulding"])
+    deep = cap.TagStore(os.path.join(d, "disk", "sub", "tags.json"))
+    deep.put({"k": cap.clean_tags({"process": ["x y"]})})
+    check("a cache folder that does not exist yet is created", os.path.exists(os.path.join(d, "disk", "sub", "tags.json")))
+
+    calls = []
+    orig_ask = cap._ask_model
+    cap._ask_model = lambda s, items, run_id: calls.append(len(items)) or {i["id"]: cap.clean_tags({"process": ["x y"]}) for i in items}
+    try:
+        st = _settings(PAST_QUOTES_TAG_CACHE_PATH=os.path.join(d, "t2.json"))
+        cap.tag_texts(st, {"a": "one", "b": "two"})
+        cap.tag_texts(st, {"a": "one", "b": "two", "c": "three"})
+    finally:
+        cap._ask_model = orig_ask
+    check("each text is tagged once; the cache answers after that", calls == [2, 1], str(calls))
+
+
+def run_cap(enabled, tagger):
+    calls = {"set": []}
+    out = TriageOutputPayload(run_id="r9", row_id="NEW", triage_text=summary, structured={"regenerate_row_id": "REGEN9"})
+    out.product_extraction = ProductExtractionResult(products=[ExtractedProduct(
+        index=1, name="Moulded Rubber Part Ø38", structure="single", quantity="500 pcs",
+        specs={"material": "NBR", "grade_standard": "60 Shore A"})])
+    orig = (pq.load_index, writer.glide_set_regenerate_response, cap.tag_texts)
+    pq.load_index = lambda s, **k: cidx
+    writer.glide_set_regenerate_response = lambda s, rid, text: calls["set"].append(text) or True
+    cap.tag_texts = tagger
+    try:
+        n = writer.write_past_quotes(_settings(ENABLE_PAST_QUOTES_CAPABILITY=str(enabled).lower()), out)
+    finally:
+        pq.load_index, writer.glide_set_regenerate_response, cap.tag_texts = orig
+    return n, calls
+
+
+def no_model(*a, **k):
+    raise AssertionError("the model must not be called while capability is switched off")
+
+
+n, calls = run_cap(False, no_model)
+check("capability switched off: no model call, and this item shows nothing", n == 0 and not calls["set"])
+n, calls = run_cap(True, lambda s, texts, **k: {key: rubber for key in texts})
+check("capability on: the rubber moulders reach the summary", n == 1 and calls["set"]
+      and "capability: rubber compression moulding" in calls["set"][0], str(calls))
+check("capability is off by default", not Settings().enable_past_quotes_capability)
+
 print("\nALL PASSED" if ok else "\nFAILURES ABOVE")

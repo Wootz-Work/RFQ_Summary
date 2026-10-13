@@ -127,6 +127,13 @@ class Settings(BaseSettings):
     past_quotes_table: str = Field(default="", alias="PAST_QUOTES_TABLE")
     past_quotes_refresh_hours: float = Field(default=24.0, alias="PAST_QUOTES_REFRESH_HOURS")
     past_quotes_per_product: int = Field(default=3, alias="PAST_QUOTES_PER_PRODUCT")
+    # Capability leads ("who can make it"): needs every past line tagged once by the
+    # model — off until the cost is agreed. Off means no model calls at all.
+    enable_past_quotes_capability: bool = Field(default=False, alias="ENABLE_PAST_QUOTES_CAPABILITY")
+    past_quotes_tag_model: str = Field(default="", alias="PAST_QUOTES_TAG_MODEL")   # "" = ANTHROPIC_MODEL
+    past_quotes_tag_cache_path: str = Field(default="/tmp/past_quote_tags.json", alias="PAST_QUOTES_TAG_CACHE_PATH")
+    prompt_past_quote_capabilities_file: str = Field(default="prompts/past_quote_capabilities.md",
+                                                     alias="PROMPT_PAST_QUOTE_CAPABILITIES_FILE")
     costing_template_path: str = Field(default="", alias="COSTING_TEMPLATE_PATH")
     # A OneDrive / SharePoint share link to the master .xlsx — the simplest way:
     # no ids to look up, nothing to paste, and editing the master needs no redeploy.
