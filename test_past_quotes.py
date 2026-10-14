@@ -28,6 +28,7 @@ sys.modules["googleapiclient.discovery"].build = lambda *a, **k: None
 sys.modules["googleapiclient.http"].MediaIoBaseDownload = object
 sys.modules["googleapiclient.errors"].HttpError = Exception
 
+from rfq_summary import capabilities as cap
 from rfq_summary import past_quotes as pq
 from rfq_summary import writer
 from rfq_summary.config import Settings
@@ -71,17 +72,46 @@ ROWS = [
     row("R5", "Deckel", part_number="MT_BGR00110836-brushed", qty="50", price="12.5", cur="EUR"),
     row("R6", "Cover plate", part_number="MT_BGR00110836-brushed", qty="80", price="11.9", cur="EUR"),
     row("R6", 'M10 x 120 Hex Bolt DIN 931 8.8 HDG', remarks="MOC- A4 Stainless Steel", qty="300", total="600", cur="GBP"),
+    row("R7", "Bolzen MT_WST00122480", qty="40", total="80", cur="EUR"),
 ]
 lines = pq.clean_rows(ROWS)
 by = {(l.rfq_row_id, l.part_name[:20]): l for l in lines}
 
+
+def P(part_type="", material="", standards=(), part_code="", charge=False, **caps):
+    """A profile as the model returns it."""
+    return cap.clean_profile(dict(part_type=part_type, material=material, standards=list(standards),
+                                  part_code=part_code, charge=charge, **{k: list(v) for k, v in caps.items()}))
+
+
+def Q(text, profile=None, code=""):
+    """A new RFQ item: its measurements, and the model's reading when given."""
+    fp = pq.fingerprint(text, code)
+    pq.apply_profile(fp, profile)
+    return fp
+
+
+BOLT = P("hex bolt", "alloy steel 8.8", ["din 931"], process=["cold heading"], coating=["hot dip galvanising"])
+WN = P("weld neck flange", "carbon steel a105", ["asme b16.5"], process=["forging", "cnc turning"])
+# The model's reading of each past line (what capabilities.tag_texts would return).
+READINGS = {
+    ("R1", "M10 x 120 Hex Bolt D"): BOLT, ("R2", "M12 x 120 Hex Bolt D"): BOLT, ("R3", "M10 x 120 Hex Bolt D"): BOLT,
+    ("R1", "Air Freight"): P(charge=True), ("R1", "One -Time Tooling Co"): P(charge=True),
+    ("R3", "M10 x 120 Socket Hea"): P("socket head cap screw", "alloy steel 12.9", ["din 912"], process=["cold heading"]),
+    ("R4", '4" WN RF Flange, AST'): WN,
+    ("R4", '4" SO RF Flange, AST'): P("slip-on flange", "carbon steel a105", ["asme b16.5"], process=["forging"]),
+    ("R5", "Deckel"): P("machined cover", "aluminium 6061", process=["cnc milling"]),
+    ("R6", "Cover plate"): P("machined cover", "aluminium 6061", process=["cnc milling"]),
+    ("R6", "M10 x 120 Hex Bolt D"): P("hex bolt", "stainless steel a4-80", ["din 931"], process=["cold heading"]),
+    ("R7", "Bolzen MT_WST0012248"): P("pin", "steel", part_code="MT_WST00122480", process=["cnc turning"]),
+}
+profiles = {l.tag_key: READINGS[(l.rfq_row_id, l.part_name[:20])] for l in lines}
+
 # ---- cleaning ----------------------------------------------------------------
-check("freight and tooling lines are not products", not any(l.part_name in ("Air Freight", "One -Time Tooling Cost") for l in lines))
 r1 = by[("R1", "M10 x 120 Hex Bolt D")]
 check("the swapped quantity columns are read by what they hold", r1.qty == 1000 and r1.unit == "nos")
 check("the RFQ's OneDrive quotation folder is kept", r1.folder_link == "https://onedrive.example/R1")
 check("a missing unit price is total ÷ quantity", abs(r1.unit_price - 0.25) < 1e-9)
-check("an RFQ with a freight line is marked as quoting freight separately", r1.freight_quoted_separately)
 r2 = by[("R2", "M12 x 120 Hex Bolt D")]
 check("a missing currency takes the customer's usual one, marked as assumed",
       r2.currency == "EUR" and r2.currency_assumed, f"{r2.currency} {r2.currency_assumed}")
@@ -92,51 +122,86 @@ check("the quote date comes from the quote document", r1.quote_date.isoformat() 
 check("the customer's name is not kept on a past line", not hasattr(r1, "customer_name"))
 check("invisible direction marks from PDFs are cleaned out of names",
       pq.clean_rows([row("R9", "Brass\u202dHex\u202dFull\u202dNut M8")])[0].part_name == "Brass Hex Full Nut M8")
+check("the model is shown the RFQ title with the part", r1.tag_text.startswith("RFQ: Proj R1 - Parts — M10 x 120 Hex Bolt"))
 
-# ---- what a part is ------------------------------------------------------------
+# ---- measurements: the only rules ---------------------------------------------------
 fp = pq.fingerprint('M10 x 120 Hex Bolt DIN 931 8.8 HDG')
-check("type, material, finish, sizes and standard are read from the text",
-      fp.ptype == "bolt" and fp.material == "Alloy steel" and fp.finish == "HDG"
-      and {"m10", "l120", "pc8.8"} <= fp.sizes and "din931" in fp.standards, str(fp))
+check("thread size and length are measured", {"m10", "l120"} <= fp.sizes and fp.main_mm == 10 and fp.system == "metric",
+      str(fp.sizes))
+check("…and every number is kept, so 8.8 and 10.9 never read the same", fp.numbers == {"10", "120", "931", "8.8"},
+      str(fp.numbers))
 rod = pq.fingerprint("Spherical Rod End 5/16-24 Female LH, Zinc")
-check("inch threads are sized and typed", rod.ptype == "rod end" and "0.3125in" in rod.sizes and rod.system == "inch", str(rod.sizes))
-check("grades and standards are not taken for part numbers",
-      not pq.fingerprint('8" PIPE, SCH. 10S, ASTM A312, GR. TP316L, ASME B36.10M').codes)
-check("a real part code in the text is", "MTWST00122480" in pq.fingerprint("Bolzen MT_WST00122480").codes)
+check("inch threads are sized", "0.3125in" in rod.sizes and rod.system == "inch", str(rod.sizes))
 check("STD and schedule 40 are the same wall", "sch40" in pq.fingerprint('2" Tee STD').sizes
       and "sch40" in pq.fingerprint('2" Tee SCH 40').sizes)
-check("ASME B16.5 is not the bolt grade B16", pq.fingerprint('4" Blind Flange A105 ASME B16.5 Carbon Steel').material == "Carbon steel")
+check("a diameter mark is millimetres", "38mm" in pq.fingerprint("Moulded Rubber Part Ø38").sizes)
+check("pressure class is measured", "cl150" in pq.fingerprint('4" Flange 150#').sizes
+      and "cl300" in pq.fingerprint("Flange Class 300").sizes)
+check("grades and standards in the text are not taken for part numbers",
+      not pq.fingerprint('8" PIPE, SCH. 10S, ASTM A312, GR. TP316L, ASME B36.10M').codes)
+check("the part number column is", "MTBGR00110836BRUSHED" in by[("R5", "Deckel")].fp.codes)
+check("no list of part types, materials or finishes is left in the matcher",
+      not any(hasattr(pq, n) for n in ("_TYPES", "_SUBTYPES", "_FINISHES", "_NOT_A_PRODUCT", "_STOP", "material_rate")))
 
-# ---- matching --------------------------------------------------------------------
+# ---- before the model has read the lines -------------------------------------------
+raw = pq.PastQuoteIndex(pq.clean_rows(ROWS))
+ms = raw.find(Q('M10 x 120 Hex Bolt DIN 931 8.8 HDG'))
+check("unread, the same description is found as the same part",
+      {m.line.rfq_row_id for m in ms} == {"R1", "R3"} and all(m.level == "same" for m in ms),
+      str([(m.level, m.line.rfq_row_id) for m in ms]))
+check("…but not the stainless one, whose remarks differ, nor the M12", all(m.line.rfq_row_id not in ("R6", "R2") for m in ms))
+check("unread, one number different is a different description",
+      not raw.find(Q('M10 x 120 Hex Bolt DIN 931 10.9 HDG')))
+check("unread, the same part number still matches", {m.line.rfq_row_id for m in raw.find(Q("Lid", code="MT-BGR00110836-brushed"))}
+      == {"R5", "R6"})
+check("unread, nothing looser: a similar size is not offered", not raw.find(Q('M12 x 110 Hex Bolt DIN 931 8.8 HDG')))
+
+# ---- once read ---------------------------------------------------------------------------
 index = pq.PastQuoteIndex(lines)
-ms = index.find(pq.fingerprint('M10 x 120 Hex Bolt DIN 931 Grade 8.8 Hot dip galvanised'))
+check("the model's readings are attached to every line", index.apply_tags(profiles) == len(lines))
+freight = by[("R1", "Air Freight")]
+check("a line the model reads as a charge is never a product", freight.fp.charge and pq.compare(freight.fp, freight.fp) is None)
+ms = index.find(Q('M10 x 120 Hex Bolt DIN 931 Grade 8.8 Hot dip galvanised', BOLT))
 check("the same bolt is found as the same part, the won quote first",
       ms and ms[0].level == "same" and ms[0].line.rfq_row_id == "R1", str([(m.level, m.line.rfq_row_id) for m in ms]))
-check("the same part in stainless is not the same part", all(m.line.rfq_row_id != "R6" for m in ms))
+check("the same part in another grade is not the same part", all(m.line.rfq_row_id != "R6" for m in ms))
 check("a socket head cap screw is not a hex bolt", all("Socket" not in m.line.part_name for m in ms))
 check("the same part first, then the closely similar one",
       [m.level for m in ms] == sorted([m.level for m in ms], key=lambda x: x != "same")
       and any(m.line.rfq_row_id == "R2" and m.level == "similar" for m in ms),
       str([(m.level, m.line.rfq_row_id) for m in ms]))
-only_similar = index.find(pq.fingerprint('M12 x 110 Hex Bolt DIN 931 8.8 HDG'), exclude_rfq="R2")
+only_similar = index.find(Q('M12 x 110 Hex Bolt DIN 931 8.8 HDG', BOLT), exclude_rfq="R2")
 check("one size away is similar, not the same", only_similar and all(m.level == "similar" for m in only_similar),
       str([(m.level, m.line.part_name) for m in only_similar]))
-check("two sizes away is not shown", not index.find(pq.fingerprint('M20 x 120 Hex Bolt DIN 931 8.8 HDG')))
-fl = index.find(pq.fingerprint('4" Weld Neck Flange RF 150# A105 B16.5'))
+check("two sizes away is not shown", not index.find(Q('M20 x 120 Hex Bolt DIN 931 8.8 HDG', BOLT)))
+check("another strength class is another part",
+      not index.find(Q('M10 x 120 Hex Bolt DIN 931 10.9 HDG', P("hex bolt", "alloy steel 10.9", ["din 931"]))))
+loose = index.find(Q('M10 x 120 Hex Bolt DIN 931', P("hex bolt", "alloy steel", ["din 931"])))
+check("a grade stated on one side only is at most similar",
+      loose and all(m.level == "similar" and "material" in m.why for m in loose), str([(m.level, m.why) for m in loose]))
+check("another product standard is another part",
+      not index.find(Q('M10 x 120 Hex Bolt ISO 4017 8.8 HDG', P("hex bolt", "alloy steel 8.8", ["iso 4017"]))))
+fl = index.find(Q('4" Weld Neck Flange RF 150# A105 B16.5', WN))
 check("flange style and pressure class must agree",
       [m.line.part_name for m in fl] == ['4" WN RF Flange, ASTM A105, Class 150, ASME B16.5'], str([m.line.part_name for m in fl]))
-code = index.find(pq.fingerprint("Lid", "MT-BGR00110836-brushed"))
+code = index.find(Q("Lid", P("machined cover", "aluminium 6061"), code="MT-BGR00110836-brushed"))
 check("the same part number is the same part, whatever it is called",
       {m.line.rfq_row_id for m in code} == {"R5", "R6"} and all(m.level == "same" for m in code))
 check("two different part numbers are never the same part",
-      not index.find(pq.fingerprint("Deckel", "MT_BGR00999999")))
+      not index.find(Q("Deckel", P("machined cover", "aluminium 6061"), code="MT_BGR00999999")))
+check("a part number the model found in the name is matched too",
+      [m.line.rfq_row_id for m in index.find(Q("Pin", code="MT-WST00122480"))] == ["R7"])
 check("the RFQ being quoted is left out of its own past", all(m.line.rfq_row_id != "R1" for m in
-      index.find(pq.fingerprint('M10 x 120 Hex Bolt DIN 931 8.8 HDG'), exclude_rfq="R1")))
-check("a vague name matches nothing", not index.find(pq.fingerprint("Hex Head Cap Screw")))
+      index.find(Q('M10 x 120 Hex Bolt DIN 931 8.8 HDG', BOLT), exclude_rfq="R1")))
+check("a vague name matches nothing", not index.find(Q("Hex Head Cap Screw", P("hex bolt", "alloy steel 8.8"))))
+check("names relate by their words: a style added is close, a different grade or standard is not",
+      cap.relation("rod end", "spherical rod end") == "close" and cap.relation("hex bolt", "hex bolt") == "same"
+      and cap.relation("alloy steel 8.8", "alloy steel 10.9") == "different"
+      and cap.relation("asme b16.5", "asme b16.9") == "different" and cap.relation("", "x y") == "")
 
 # ---- the section ------------------------------------------------------------------
-w = pq.Wanted("Hex Bolts M10", "Hex Bolts M10", pq.fingerprint('M10 x 120 Hex Bolt DIN 931 8.8 HDG'))
-w2 = pq.Wanted("Flanges (family)", "4in WN", pq.fingerprint('4" Weld Neck Flange RF 150# A105 B16.5'))
+w = pq.Wanted("Hex Bolts M10", "Hex Bolts M10", Q('M10 x 120 Hex Bolt DIN 931 8.8 HDG', BOLT))
+w2 = pq.Wanted("Flanges (family)", "4in WN", Q('4" Weld Neck Flange RF 150# A105 B16.5', WN))
 sec = pq.render_section([(w, index.find(w.fp)), (w2, index.find(w2.fp))])
 bullets = [x for x in sec.splitlines() if x.startswith("- ")]
 check("one bullet per past RFQ, under the heading", sec.startswith("---") and pq.SECTION_HEADING in sec
@@ -182,39 +247,63 @@ ext = ProductExtractionResult(products=[
 wanted = pq.wanted_from_extraction(ext)
 check("a single product is one lookup, a family one per row", [x.product for x in wanted] == [
     "Hex Bolt M10 x 120 — 8.8 HDG", "Flanges (family)"])
-check("specs feed the lookup", wanted[0].fp.material == "Alloy steel" and "m10" in wanted[0].fp.sizes
-      and wanted[1].fp.material == "Carbon steel" and "wn" in wanted[1].fp.subtypes, str(wanted[1].fp))
+check("the model is shown each item with its specs", "material: Alloy steel" in wanted[0].text
+      and "finish: HDG" in wanted[0].text and '4" WN RF Flange Class 150 B16.5 A105' in wanted[1].text, str(wanted[1].text))
+check("…and its measurements are read, without the quantity", "m10" in wanted[0].fp.sizes
+      and {"4.0000in", "cl150"} <= wanted[1].fp.sizes and "10" not in wanted[1].fp.numbers, str(wanted[1].fp.numbers))
+READ_NEW = {wanted[0].key: BOLT, wanted[1].key: WN}
 
 
 # ---- the writeback step -------------------------------------------------------------
 def _settings(**kw):
     base = dict(GLIDE_API_KEY="k", GLIDE_APP_ID="a", GLIDE_ZAI_REGENERATE_TABLE="t",
                 GLIDE_COL_ZAI_REGENERATE_RESPONSE="resp", ENABLE_PAST_QUOTES="true",
-                PAST_QUOTES_DB_URL="postgresql://x", PAST_QUOTES_TABLE="public.quotes")
+                PAST_QUOTES_DB_URL="postgresql://x", PAST_QUOTES_TABLE="public.quotes", PAST_QUOTES_TAG_CACHE_PATH="")
     base.update(kw)
     return Settings(**base)
 
 
-def run(settings, *, index_obj=index, ext_obj=ext):
-    calls = {"set": []}
+def no_model(*a, **k):
+    raise AssertionError("the model must not be called while capability is switched off")
+
+
+def run(settings, *, index_obj=index, ext_obj=ext, reader=no_model, levels=None):
+    calls = {"set": [], "read": []}
     out = TriageOutputPayload(run_id="r1", row_id="NEW", triage_text=summary,
                               structured={"regenerate_row_id": "REGEN1"})
     out.product_extraction = ext_obj
-    orig = (pq.load_index, writer.glide_set_regenerate_response)
+    orig = (pq.load_index, writer.glide_set_regenerate_response, cap.tag_texts, cap.rate_tags)
     pq.load_index = lambda s, **k: index_obj
     writer.glide_set_regenerate_response = lambda s, rid, text: calls["set"].append((rid, text)) or True
+    cap.tag_texts = lambda s, texts, **k: calls["read"].append(dict(texts)) or reader(s, texts, **k)
+    cap.rate_tags = lambda s, tags, **k: cap.levels_for(s).put({t: (levels or {}).get(t, "common") for t in tags})
     try:
         n = writer.write_past_quotes(settings, out)
     finally:
-        pq.load_index, writer.glide_set_regenerate_response = orig
+        pq.load_index, writer.glide_set_regenerate_response, cap.tag_texts, cap.rate_tags = orig
     return n, out, calls
 
 
 n, out, calls = run(_settings())
-check("matches are written onto the summary row already in Glide",
-      n == 2 and calls["set"] and calls["set"][0][0] == "REGEN1" and pq.SECTION_HEADING in calls["set"][0][1],
-      str((n, calls)))
+check("capability off: no model call, and only the same description matches (the bolt)",
+      n == 1 and not calls["read"] and "Proj R1 - Parts" in calls["set"][0][1] and "Proj R4" not in calls["set"][0][1],
+      str((n, calls["set"])))
+n, out, calls = run(_settings(ENABLE_PAST_QUOTES_CAPABILITY="true"),
+                    reader=lambda s, texts, **k: {key: READ_NEW[key] for key in texts if key in READ_NEW})
+check("capability on: each item is read once, by its own text",
+      len(calls["read"]) == 1 and set(calls["read"][0]) == set(READ_NEW), str(calls["read"]))
+check("…and its reading finds the same parts, written onto the summary row already in Glide",
+      n == 2 and calls["set"] and calls["set"][0][0] == "REGEN1" and pq.SECTION_HEADING in calls["set"][0][1]
+      and "Proj R4 - Parts" in calls["set"][0][1], str((n, calls["set"])))
 check("…and kept on the run's output", pq.SECTION_HEADING in out.triage_text)
+fam = ProductExtractionResult(products=[ExtractedProduct(
+    index=1, name="Hex bolts (family)", structure="family", quantity="As per annexure",
+    annexure=ProductAnnexure(required=True, columns=["description"],
+                             rows=[["M10 x 120 Hex Bolt DIN 931 8.8 HDG"], ["M12 x 120 Hex Bolt DIN 931 8.8 HDG"]]))])
+n, out, calls = run(_settings(PAST_QUOTES_PER_PRODUCT="1"), ext_obj=fam)
+check("the per-product limit holds across a family's rows, the same part first",
+      n >= 1 and len([x for x in calls["set"][0][1].splitlines() if x.startswith("- ")]) == 1
+      and "Proj R1 - Parts" in calls["set"][0][1], calls["set"][0][1][-300:] if calls["set"] else str(n))
 n, out, calls = run(_settings(ENABLE_PAST_QUOTES="false"))
 check("switched off: nothing looked up, nothing written", n == 0 and not calls["set"] and out.triage_text == summary)
 n, out, calls = run(_settings(), index_obj=None)
@@ -260,18 +349,20 @@ check("…and stays as it was when the previous version had none",
       task._carry_past_quotes(_settings(), "r2", types.SimpleNamespace(previous_response=summary, rfq_id="NEW"), fresh) == fresh)
 
 # ---- capability: who can make it -------------------------------------------------------
+import json
 import os
 import tempfile
-from rfq_summary import capabilities as cap
 
-check("capability tags match loosely, never across different things",
+check("capability names match loosely, never across different things",
       cap.tags_match("rubber moulding", "rubber compression moulding") and cap.tags_match("zinc flake", "zinc flake coating")
-      and cap.tags_match("molded rubber", "rubber moulding") and not cap.tags_match("rubber moulding", "plastic injection moulding")
+      and not cap.tags_match("rubber moulding", "plastic injection moulding")
       and not cap.tags_match("cnc turning", "cnc milling"))
-check("a reply is read as JSON, with generic tags dropped",
-      cap.parse_reply('noise {"a": {"process": ["Rubber Moulding", "fastener"], "material": "NBR rubber"}} tail')
-      == {"a": {"process": ["rubber moulding"], "feature": [], "coating": [], "material": ["nbr rubber"]}})
-check("an unreadable reply tags nothing", cap.parse_reply("sorry") == {})
+check("a reply is read as JSON, lower-cased, with nothing dropped by a list",
+      cap.parse_reply('noise {"a": {"part_type": "Weld Washer", "material": "Mild Steel", "charge": "false", '
+                      '"process": ["Stamping", "fastener"]}} tail')
+      == {"a": {"part_type": "weld washer", "material": "mild steel", "standards": [], "part_code": "", "charge": False,
+                "process": ["stamping", "fastener"], "feature": [], "coating": [], "special_material": []}})
+check("an unreadable reply reads nothing", cap.parse_reply("sorry") == {})
 
 crow = lambda rfq, name, title: row(rfq, name, title=title, folder=f"https://onedrive.example/{rfq}")
 CAP_ROWS = [crow("G1", "Gasket, moulded rubber", "Shakti 27 - Aluminium Boxes"),
@@ -283,19 +374,21 @@ CAP_ROWS = [crow("G1", "Gasket, moulded rubber", "Shakti 27 - Aluminium Boxes"),
             crow("G7", "M6 Square Weld Nut", "Weld 2 - Weld nuts")] + \
            [crow(f"T{i}", f"Turned bush {i}", f"Turn {i} - Turned parts") for i in range(8)]
 cl = pq.clean_rows(CAP_ROWS)
-TAGS = {"Gasket, moulded rubber": {"process": ["rubber moulding"], "material": ["epdm rubber"]},
-        "Bushing- Rubber Fully Bonded": {"process": ["rubber to metal bonding", "rubber moulding"]},
-        "HDPE moulded part": {"process": ["plastic injection moulding"], "material": ["hdpe"]},
-        "Woodgrip screw with bonded neoprene washer": {"process": ["cold heading"], "coating": ["zinc plating"]},
-        "M6 Weld Washer": {"process": ["stamping"], "feature": ["projection weld nut"]},
-        "M6 Flat Washer DIN 125": {"process": ["stamping"]},
-        "M6 Square Weld Nut": {"process": ["cold heading"], "feature": ["projection weld nut"]}}
-store = {}
-for ln in cl:
-    t = TAGS.get(ln.part_name, {"process": ["cnc turning"]})
-    store[ln.tag_key] = cap.clean_tags(t)
+CAP_READ = {
+    "Gasket, moulded rubber": P("gasket", "epdm rubber", process=["rubber moulding"], special_material=["epdm rubber"]),
+    "Bushing- Rubber Fully Bonded": P("bonded rubber bush", "natural rubber",
+                                      process=["rubber to metal bonding", "rubber moulding"]),
+    "HDPE moulded part": P("moulded part", "hdpe", process=["plastic injection moulding"], special_material=["hdpe"]),
+    "Woodgrip screw with bonded neoprene washer": P("woodgrip screw", "carbon steel", process=["cold heading"],
+                                                    coating=["zinc plating"]),
+    "M6 Weld Washer": P("weld washer", "mild steel", process=["stamping"], feature=["projection weld nut"]),
+    "M6 Flat Washer DIN 125": P("flat washer", "mild steel", ["din 125"], process=["stamping"]),
+    "M6 Square Weld Nut": P("square weld nut", "mild steel", process=["cold heading"], feature=["projection weld nut"]),
+}
+store = {ln.tag_key: CAP_READ.get(ln.part_name, P("turned bush", "free cutting steel", process=["cnc turning"]))
+         for ln in cl}
 cidx = pq.PastQuoteIndex(cl)
-check("known tags are attached to past lines", cidx.apply_tags(store) == len(cl))
+check("known readings are attached to past lines", cidx.apply_tags(store) == len(cl))
 # How hard each capability is to find among suppliers — the market, not our history.
 LEVEL = {"rubber moulding": "specialist", "rubber compression moulding": "specialist", "rubber to metal bonding": "rare",
          "plastic injection moulding": "specialist", "epdm rubber": "specialist", "nbr rubber": "specialist",
@@ -304,21 +397,20 @@ LEVEL = {"rubber moulding": "specialist", "rubber compression moulding": "specia
          "chrome plating": "common"}
 level = lambda t: LEVEL.get(t, "")
 
-rubber = cap.clean_tags({"process": ["rubber compression moulding"], "material": ["nbr rubber"]})
+rubber = P("moulded rubber part", "nbr rubber", process=["rubber compression moulding"], special_material=["nbr rubber"])
 leads = cidx.find_capability(rubber, level)
 check("a moulded rubber part finds the rubber moulders, best first",
-      [m.line.title for m in leads] == ["Shakti 27 - Aluminium Boxes", "Entai 24 - Rubber-metal bonded component"]
-      or [m.line.title for m in leads] == ["Entai 24 - Rubber-metal bonded component", "Shakti 27 - Aluminium Boxes"],
+      sorted(m.line.title for m in leads) == ["Entai 24 - Rubber-metal bonded component", "Shakti 27 - Aluminium Boxes"],
       str([(m.line.title, m.shared) for m in leads]))
 check("…not the plastic moulder or the screw with a rubber washer",
       not any("HDPE" in m.line.title or "Woodgrip" in m.line.title for m in leads))
-check("a common capability alone is not a lead", cidx.find_capability(cap.clean_tags({"process": ["cnc turning"]}), level) == [])
-weld = cap.clean_tags({"process": ["stamping"], "feature": ["projection weld nut"]})
+check("a common capability alone is not a lead",
+      cidx.find_capability(P("turned bush", "steel", process=["cnc turning"]), level) == [])
+weld = P("weld washer", "mild steel", process=["stamping"], feature=["projection weld nut"])
 wl = cidx.find_capability(weld, level, exclude_rfqs={"G5"})
 check("a weld washer is led to the weld nut supplier, not the flat washer",
       wl and wl[0].line.title == "Weld 2 - Weld nuts" and all("Flat" not in m.line.title for m in wl),
       str([(m.line.title, m.shared) for m in wl]))
-
 
 # The two cases the DB-frequency rule got wrong.
 many = pq.clean_rows([crow(f"H{i}", f"Hastelloy C276 part {i}", f"Trump {i} - Hastelloy") for i in range(10)] +
@@ -327,75 +419,114 @@ many = pq.clean_rows([crow(f"H{i}", f"Hastelloy C276 part {i}", f"Trump {i} - Ha
 mstore = {}
 for ln in many:
     if "Hastelloy" in ln.part_name:
-        t = {"process": ["cnc turning"], "material": ["hastelloy"]}
+        t = P("machined part", "hastelloy c276", process=["cnc turning"], special_material=["hastelloy"])
     elif "Brass" in ln.part_name:
-        t = {"process": ["cnc turning"], "material": ["free cutting brass"], "coating": ["chrome plating"]}
+        t = P("turned bush", "free cutting brass", process=["cnc turning"], special_material=["free cutting brass"],
+              coating=["chrome plating"])
     else:
-        t = {"process": ["sheet metal fabrication"]}
-    mstore[ln.tag_key] = cap.clean_tags(t)
+        t = P("bracket", "mild steel", process=["sheet metal fabrication"])
+    mstore[ln.tag_key] = t
 midx = pq.PastQuoteIndex(many)
 midx.apply_tags(mstore)
-hl = midx.find_capability(cap.clean_tags({"process": ["cnc milling"], "material": ["hastelloy"]}), level, limit=5)
+hl = midx.find_capability(P("machined part", "hastelloy c276", process=["cnc milling"], special_material=["hastelloy"]),
+                          level, limit=5)
 check("rare in the market but frequent in our quotes: still a lead (Hastelloy on 10 of 16 RFQs)",
       len(hl) == 5 and all("Hastelloy" in m.line.title for m in hl), str([m.line.title for m in hl]))
 check("common in the market but rare in our quotes: not a lead (CNC turning on one RFQ)",
-      midx.find_capability(cap.clean_tags({"process": ["cnc turning"], "material": ["mild steel"]}), level) == [])
-combo = cap.clean_tags({"process": ["cnc turning"], "material": ["free cutting brass"], "coating": ["chrome plating"]})
+      midx.find_capability(P("pin", "mild steel", process=["cnc turning"]), level) == [])
+combo = P("bush", "free cutting brass", process=["cnc turning"], special_material=["free cutting brass"],
+          coating=["chrome plating"])
 check("the whole combination of common capabilities is a lead (turned, brass, chrome plated)",
       [m.line.title for m in midx.find_capability(combo, level)] == ["Baba 1 - Brass"])
 check("…but part of the combination is not",
-      midx.find_capability(cap.clean_tags({"process": ["cnc turning"], "material": ["free cutting brass"],
-                                           "coating": ["nickel plating"]}), level) == [])
+      midx.find_capability(P("bush", "free cutting brass", process=["cnc turning"], special_material=["free cutting brass"],
+                             coating=["nickel plating"]), level) == [])
 check("up to the limit, and only leads that qualify",
-      len(midx.find_capability(cap.clean_tags({"material": ["hastelloy"]}), level, limit=5)) == 5
+      len(midx.find_capability(P("part", "hastelloy", special_material=["hastelloy"]), level, limit=5)) == 5
       and len(midx.find_capability(combo, level, limit=5)) == 1)
 
-qf = pq.fingerprint("M6 Weld Washer"); pq.apply_tags(qf, weld)
-ff = by_flat = next(l for l in cl if l.part_name == "M6 Flat Washer DIN 125").fp
+qf = Q("M6 Weld Washer", weld)
+ff = next(l for l in cl if l.part_name == "M6 Flat Washer DIN 125").fp
 check("a special feature one part lacks makes it a different part", pq.compare(qf, ff) is None)
-check("…while the same feature on both still matches", pq.compare(qf, next(l for l in cl if l.part_name == "M6 Weld Washer").fp)
-      is not None)
+check("…while the same part with the same feature still matches",
+      pq.compare(qf, next(l for l in cl if l.part_name == "M6 Weld Washer").fp) is not None)
 
-wr = pq.Wanted("Moulded Rubber Part Ø38", "Moulded Rubber Part Ø38", pq.fingerprint("Moulded Rubber Part Ø38 NBR 60 Shore A"))
+wr = pq.Wanted("Moulded Rubber Part Ø38", "Moulded Rubber Part Ø38", Q("Moulded Rubber Part Ø38 NBR 60 Shore A", rubber))
 csec = pq.render_section([(wr, [])], [("Moulded Rubber Part Ø38", m) for m in leads])
 check("capability leads are shown with the shared capability",
       "[Shakti 27 - Aluminium Boxes](https://onedrive.example/G1) — Moulded Rubber Part Ø38 (capability: rubber compression moulding)"
       in csec, csec)
 
+# ---- the model's readings: cached, named consistently, never from a fixed list ------------
 with tempfile.TemporaryDirectory() as d:
     path = os.path.join(d, "tags.json")
     s1 = cap.TagStore(path)
-    s1.put({"k": cap.clean_tags({"process": ["rubber moulding"]})})
-    check("the tag cache survives a restart", cap.TagStore(path).get("k")["process"] == ["rubber moulding"])
+    s1.put({"k": P("gasket", "epdm rubber", process=["rubber moulding"])})
+    check("the reading cache survives a restart", cap.TagStore(path).get("k")["process"] == ["rubber moulding"])
+    old = os.path.join(d, "old.json")
+    with open(old, "w") as f:
+        json.dump({"k": {"process": ["rubber moulding"], "material": ["epdm rubber"]}}, f)
+    check("a cache in the older format is read again rather than half-understood", cap.TagStore(old).get("k") is None)
     deep = cap.TagStore(os.path.join(d, "disk", "sub", "tags.json"))
-    deep.put({"k": cap.clean_tags({"process": ["x y"]})})
+    deep.put({"k": P(process=["x y"])})
     check("a cache folder that does not exist yet is created", os.path.exists(os.path.join(d, "disk", "sub", "tags.json")))
+
+    vs = cap.TagStore("")
+    vs.put({"a": P("weld washer", "mild steel", process=["stamping"]), "b": P("weld washer", "mild steel"),
+            "c": P("hex bolt", "alloy steel 8.8", process=["cold heading"]), "d": P(charge=True)})
+    voc = vs.vocabulary()
+    check("the names in use are the history's own, most used first",
+          voc["part_type"] == ["weld washer", "hex bolt"] and voc["material"][0] == "mild steel"
+          and set(voc["process"]) == {"stamping", "cold heading"}, str(voc))
+
+    import rfq_summary.llm as llm
+    seen = {}
+    orig_llm = (llm.generate_text, llm.load_prompt_file)
+    llm.load_prompt_file = lambda path: open(path, encoding="utf-8").read()
+    llm.generate_text = lambda st, system, user, **k: seen.update(system=system, user=user, k=k) or \
+        '{"x1": {"part_type": "weld washer", "material": "mild steel"}}'
+    try:
+        got = cap._ask_model(_settings(), [{"id": "x1", "text": "M8 weld washer"}], "r", voc)
+    finally:
+        llm.generate_text, llm.load_prompt_file = orig_llm
+    check("the model is shown the names in use, in place of the placeholder",
+          "{{vocabulary}}" not in seen["system"] and '"weld washer"' in seen["system"]
+          and got["x1"]["part_type"] == "weld washer", seen.get("system", "")[-300:])
+
     st_l = _settings(PAST_QUOTES_TAG_CACHE_PATH=os.path.join(d, "lv", "tags.json"))
     rated = []
     orig_lv = cap._ask_levels
     cap._ask_levels = lambda s, tags, run_id: rated.append(list(tags)) or {t: "specialist" for t in tags}
     try:
         cap.rate_tags(st_l, ["rubber moulding", "zinc flake coating"])
-        cap.rate_tags(st_l, ["rubber moulding", "zinc flake"])       # 'zinc flake' matches a rated tag
+        cap.rate_tags(st_l, ["rubber moulding", "zinc flake"])       # 'zinc flake' matches a rated name
     finally:
         cap._ask_levels = orig_lv
-    check("each capability is rated once; a matching tag reuses the rating", len(rated) == 1, str(rated))
+    check("each capability is rated once; a matching name reuses the rating", len(rated) == 1, str(rated))
     check("ratings survive a restart", cap.LevelStore(os.path.join(d, "lv", "tags_scarcity.json")).level("rubber moulding")
           == "specialist")
 
     calls = []
     orig_ask = cap._ask_model
-    cap._ask_model = lambda s, items, run_id: calls.append(len(items)) or {i["id"]: cap.clean_tags({"process": ["x y"]}) for i in items}
+    cap._ask_model = lambda s, items, run_id, vocabulary=None: calls.append((len(items), dict(vocabulary or {}))) or \
+        {i["id"]: P(f"part {i['text']}", "steel") for i in items}
     try:
         st = _settings(PAST_QUOTES_TAG_CACHE_PATH=os.path.join(d, "t2.json"))
         cap.tag_texts(st, {"a": "one", "b": "two"})
         cap.tag_texts(st, {"a": "one", "b": "two", "c": "three"})
+        st3 = _settings(PAST_QUOTES_TAG_CACHE_PATH=os.path.join(d, "t3.json"))
+        first = len(calls)
+        cap.tag_texts(st3, {k: k for k in "pqrs"}, batch=1)
     finally:
         cap._ask_model = orig_ask
-    check("each text is tagged once; the cache answers after that", calls == [2, 1], str(calls))
+    check("each text is read once; the cache answers after that", [n for n, _ in calls[:first]] == [2, 1], str(calls))
+    later = calls[first:]
+    check("the first batch is read alone, and the rest are shown the names it chose",
+          len(later) == 4 and not later[0][1] and all("part p" in v.get("part_type", []) for _, v in later[1:]),
+          str(later))
 
 
-def run_cap(enabled, tagger):
+def run_cap(enabled, reader):
     calls = {"set": []}
     out = TriageOutputPayload(run_id="r9", row_id="NEW", triage_text=summary, structured={"regenerate_row_id": "REGEN9"})
     out.product_extraction = ProductExtractionResult(products=[ExtractedProduct(
@@ -404,10 +535,9 @@ def run_cap(enabled, tagger):
     orig = (pq.load_index, writer.glide_set_regenerate_response, cap.tag_texts, cap.rate_tags)
     pq.load_index = lambda s, **k: cidx
     writer.glide_set_regenerate_response = lambda s, rid, text: calls["set"].append(text) or True
-    cap.tag_texts = tagger
-    st = _settings(ENABLE_PAST_QUOTES_CAPABILITY=str(enabled).lower(), PAST_QUOTES_TAG_CACHE_PATH="")
-    cap.rate_tags = lambda s, tags, **k: (no_model() if not enabled else cap.levels_for(st).put(
-        {t: LEVEL[t] for t in tags if t in LEVEL}))
+    cap.tag_texts = reader
+    st = _settings(ENABLE_PAST_QUOTES_CAPABILITY=str(enabled).lower())
+    cap.rate_tags = lambda s, tags, **k: cap.levels_for(st).put({t: LEVEL[t] for t in tags if t in LEVEL})
     try:
         n = writer.write_past_quotes(st, out)
     finally:
@@ -415,10 +545,7 @@ def run_cap(enabled, tagger):
     return n, calls
 
 
-def no_model(*a, **k):
-    raise AssertionError("the model must not be called while capability is switched off")
-
-
+cap.levels_for(_settings()).put({t: v for t, v in LEVEL.items()})
 n, calls = run_cap(False, no_model)
 check("capability switched off: no model call, and this item shows nothing", n == 0 and not calls["set"])
 n, calls = run_cap(True, lambda s, texts, **k: {key: rubber for key in texts})

@@ -1,19 +1,27 @@
 """
-past_quotes.py — the same or closely similar products we have quoted before.
+past_quotes.py — the same or closely similar products we have quoted before,
+and the past suppliers who could make the new ones.
 
 The past quotes live in one Postgres table: a row per line of every quotation
-we sent (part name, quantity, our price, margin, the RFQ's status). This module
-reads that table, cleans it, and for each product of a new RFQ finds:
+we sent. This module reads it and, for each product of a new RFQ, finds:
 
-  same     — the part we quoted before: the same part number, or the same
-             type, size, standard, material and finish
-  similar  — the same kind of part in the same material, one size away
+  same        the part we quoted before: the same part number, or the same
+              part type, size, material and finish
+  similar     the same part type and material, one size step away
+  capability  a different part whose supplier has the capability this one
+              needs (a rubber moulder for a moulded rubber part)
 
-Nothing looser is ever shown: a list of vaguely related parts costs the reader
-more time than it saves. The team sees one line per past RFQ at the end of the
-RFQ summary: its title, linked to its OneDrive quotation folder, and which of
-this RFQ's products it matches. The customer's name is read only to guess a
-missing currency from their other quotes; it is never shown.
+There is no hand-written list of part types, styles, materials or finishes
+anywhere in this module. What a part *is* comes from the model's reading of
+each line (capabilities.py); the only rules here read measurements — thread
+and nominal sizes, lengths, schedules, pressure and property classes — and
+compare them. Until a line has been read, it can still match on its part
+number or a near-identical description, nothing looser.
+
+The team sees one line per past RFQ at the end of the RFQ summary: its title,
+linked to its OneDrive quotation folder, and which of this RFQ's products it
+matches. The customer's name is read only to guess a missing currency from
+their other quotes; it is never shown.
 """
 from __future__ import annotations
 
@@ -28,7 +36,6 @@ from datetime import date, datetime
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from . import capabilities as cap
-from .costing_rates import material_rate
 
 # ----------------------------------------------------------------------------- the table
 
@@ -40,24 +47,6 @@ COLUMNS = (
     "unit_of_quantity", "quantity_in_unit", "total_value", "ex_works_unit_price", "currency",
     "ex_works", "ex_works_unit", "lead_time", "unit_of_lead_time", "created_at", "quotation_folder_link",
 )
-
-# Lines that are charges on the quote, not products.
-_NOT_A_PRODUCT = re.compile(
-    r"^\s*(air|sea|ocean|road|inland|local)?\s*(freight|shipping|transport(ation)?|courier|logistics|"
-    r"duty|duties|customs|insurance|packing|packaging|pallet(isation|ization)?|handling|"
-    r"inspection charges?|testing charges?|documentation|bank charges?|discount|sub-?total|grand total|total|"
-    r"tooling( cost| charges?)?|die cost|mou?ld cost|setup|set-up|ddp charges?|dap charges?|cif charges?|"
-    r"one[\s-]*time\b.*\b(tool|cost|charge)|ppap|first article|fai\b|sample charges?|certification charges?)\b",
-    re.IGNORECASE,
-)
-
-
-_CHARGE_WORD = re.compile(r"\b(freight|shipping|courier|duty|duties|customs|insurance|tooling|ppap|logistics)\b", re.I)
-
-
-def is_charge(name: str) -> bool:
-    """A quote line that is a charge, not a product: freight, duty, tooling, PPAP …"""
-    return bool(_NOT_A_PRODUCT.match(name) or (len(name.split()) <= 5 and _CHARGE_WORD.search(name)))
 
 
 @dataclass
@@ -79,14 +68,13 @@ class PastLine:
     currency_assumed: bool
     margin_pct: Optional[float]
     lead_weeks: Optional[float]
-    freight_quoted_separately: bool
     folder_link: str = ""                             # the RFQ's OneDrive quotation folder
     fp: "Fingerprint" = None  # type: ignore[assignment]
-    tags: Optional[Dict[str, List[str]]] = None       # capability tags, once the model has given them
+    tags: Optional[Dict[str, Any]] = None             # the model's profile, once read
 
     @property
     def tag_text(self) -> str:
-        """What the model is shown to tag this line — the RFQ title gives the part its context."""
+        """What the model is shown — the RFQ title gives the part its context."""
         return f"RFQ: {self.title} — {self.part_name} | {self.remarks}"[:400]
 
     @property
@@ -94,7 +82,7 @@ class PastLine:
         return cap.text_key(self.tag_text)
 
 
-_INVISIBLE = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
+_INVISIBLE = re.compile(r"[​-‏‪-‮⁠-⁩﻿]")
 
 
 def _null(v: Any) -> str:
@@ -131,26 +119,22 @@ def _date(v: Any) -> Optional[date]:
 
 
 def clean_rows(rows: Iterable[Dict[str, Any]]) -> List[PastLine]:
-    """Raw table rows -> product lines with a unit price, a currency and a date."""
+    """Raw table rows -> quote lines with a unit price, a currency and a date."""
     rows = [dict(r) for r in rows]
     # Currency fallbacks: the RFQ's totals block, then its other lines, then the
     # customer's usual currency (marked as an assumption).
     by_rfq: Dict[str, Counter] = defaultdict(Counter)
     by_customer: Dict[str, Counter] = defaultdict(Counter)
-    freight_rfqs: Set[str] = set()
     for r in rows:
         cur = _null(r.get("currency")).upper()
         if cur:
             by_rfq[_null(r.get("row_id"))][cur] += 1
             by_customer[_null(r.get("customer_name")).lower()][cur] += 1
-        if is_charge(_null(r.get("part_name"))) and re.search(
-                r"freight|shipping|transport|courier|duty|duties|customs|ddp|dap|cif", _null(r.get("part_name")), re.I):
-            freight_rfqs.add(_null(r.get("row_id")))
 
     out: List[PastLine] = []
     for r in rows:
         name = _null(r.get("part_name"))
-        if not name or is_charge(name):
+        if not name:
             continue
         rfq = _null(r.get("row_id"))
         d = _details(r.get("document_details"))
@@ -185,129 +169,33 @@ def clean_rows(rows: Iterable[Dict[str, Any]]) -> List[PastLine]:
             line_no=int(line_no) if line_no is not None else None,
             part_name=name, part_number=_null(r.get("part_number")), remarks=_null(r.get("remarks")),
             qty=qty, unit=unit, unit_price=price, currency=cur, currency_assumed=assumed,
-            margin_pct=margin, lead_weeks=lead, freight_quoted_separately=rfq in freight_rfqs,
+            margin_pct=margin, lead_weeks=lead,
             folder_link=link if (link := _null(r.get("quotation_folder_link"))).startswith("http") else "",
         )
-        line.fp = fingerprint(f"{name} {line.remarks}", line.part_number, name=name)
+        line.fp = fingerprint(f"{name} {line.remarks}", line.part_number)
         out.append(line)
     return out
 
 
-# ----------------------------------------------------------------------------- what a part is
+# ----------------------------------------------------------------------------- measurements
+#
+# The only rules in this module: reading sizes. They are measurements, not
+# categories — a thread is M10 whatever the part is called. Strength and
+# property classes (8.8, A4-80) are part of the material, read by the model.
 
-# Part types, most specific first. One text gets one primary type: the first
-# that matches. Names are what the reader sees in the section.
-_TYPES: Sequence[Tuple[str, str]] = (
-    ("rod end", r"rod[\s-]*ends?|heim joints?|spherical (plain )?bearings?"),
-    ("eye bolt", r"eye[\s-]*bolts?"),
-    ("u-bolt", r"u[\s-]*bolts?"),
-    ("anchor", r"anchor( bolt)?s?|wedge anchors?|chemical anchors?"),
-    ("threaded rod", r"threaded (rod|bar)s?|studding|all[\s-]*thread"),
-    ("stud", r"stud bolts?|studs?\b"),
-    ("rivet", r"rivets?"),
-    ("standoff", r"stand[\s-]*offs?|spacers?|pcb spacers?"),
-    ("insert", r"inserts?|rivet nuts?|nutserts?|pem\b"),
-    ("nut", r"\bnuts?\b"),
-    ("washer", r"washers?"),
-    ("screw", r"screws?"),
-    ("bolt", r"bolts?"),
-    ("pin", r"\bpins?\b|dowels?"),
-    ("elbow", r"elbows?|\bbends?\b"),
-    ("tee", r"\btees?\b"),
-    ("reducer", r"reducers?|reducing"),
-    ("flange", r"flanges?"),
-    ("gasket", r"gaskets?"),
-    ("coupling", r"couplings?|couplers?"),
-    ("union", r"\bunions?\b"),
-    ("nipple", r"nipples?"),
-    ("cap", r"\bcaps?\b|end caps?"),
-    ("plug", r"\bplugs?\b"),
-    ("valve", r"valves?"),
-    ("pipe", r"\bpipes?\b|\btubes?\b|tubing"),
-    ("saddle", r"saddles?"),
-    ("clamp", r"clamps?|clips?"),
-    ("bracket", r"brackets?"),
-    ("hinge", r"hinges?"),
-    ("bush", r"bush(es|ing|ings)?\b"),
-    ("bearing", r"bearings?"),
-    ("spring", r"springs?"),
-    ("shaft", r"shafts?|axles?"),
-    ("gear", r"gears?|sprockets?|pulleys?"),
-    ("hook", r"hooks?|shackles?"),
-    ("channel", r"channels?|strut"),
-    ("angle", r"\bangles?\b"),
-    ("plate", r"plates?|sheets?"),
-    ("extrusion", r"extrusions?|profiles?"),
-    ("housing", r"housings?|enclosures?|boxes?|cabinets?"),
-    ("casting", r"castings?"),
-    ("forging", r"forgings?"),
-    ("conduit fitting", r"conduit"),
-    ("frame", r"frames?|structures?|skids?"),
-)
-_TYPE_RX = [(name, re.compile(rf"\b(?:{rx})", re.IGNORECASE)) for name, rx in _TYPES]
-
-_FINISHES: Sequence[Tuple[str, str]] = (
-    ("zinc flake", r"zinc[\s-]*flake|geomet|dacromet|delta[\s-]*(protekt|tone)|magni"),
-    ("pre-galvanised", r"pre[\s-]*galv"),
-    ("HDG", r"\bhdg\b|hot[\s-]*dip|galvani[sz]ed|galvanis|galvaniz|\bgalv\b"),
-    ("zinc", r"\bzinc\b|\bbzp\b|\bzp\b|\bznp?\b|zinc[\s-]*plat|electro[\s-]*galv|yellow zinc|clear zinc"),
-    ("PVD", r"\bpvd\b"),
-    ("black oxide", r"black[\s-]*oxide|blackodi|\bblacken"),
-    ("anodised", r"anodi[sz]"),
-    ("powder coated", r"powder[\s-]*coat"),
-    ("painted", r"\bpaint"),
-    ("nickel", r"nickel[\s-]*plat|\benp\b|electroless"),
-    ("chrome", r"chrom(e|ium)[\s-]*plat"),
-    ("passivated", r"passivat|pickl"),
-    ("brushed", r"brushed"),
-    ("plain", r"\bplain\b|self[\s-]*colou?r|uncoated|no (finish|coating|anodising)|machined finish|mill finish"),
-)
-_FINISH_RX = [(name, re.compile(rx, re.IGNORECASE)) for name, rx in _FINISHES]
-
-# What makes two parts of one type different products: flange style, elbow angle,
-# head and drive, washer and nut kind. Equal when both name one.
-_SUBTYPES: Sequence[Tuple[str, str]] = (
-    ("wn", r"\b(rf|ff)?wn(rf|ff)?\b|weld(ing)?[\s-]*neck"), ("so", r"\b(rf|ff)?so(rf|ff)?\b|slip[\s-]*on"),
-    ("blind", r"\bblind\b|\b(rf)?bl(rf)?\b"),
-    ("lap", r"lap[\s-]*joint"), ("sw", r"\bsw\b|socket[\s-]*weld"), ("thd", r"\bthd\b|\bnpt\b|threaded|screwed"),
-    ("bw", r"\bbw\b|butt[\s-]*weld|\bbe\b|bevel"),
-    ("90", r"\b90\b|90°|90 ?deg"), ("45", r"\b45\b|45°|45 ?deg"), ("lr", r"\blr\b|long radius"), ("sr", r"\bsr\b|short radius"),
-    ("equal", r"equal tee|straight tee"), ("reducing", r"reducing"), ("conc", r"concentric"), ("ecc", r"eccentric"),
-    ("hex", r"\bhex|hexagon"), ("socket head", r"socket[\s-]*(head|cap)|\bshcs\b|allen"), ("pan", r"\bpan\b"),
-    ("csk", r"countersunk|\bcsk\b|flat head"), ("button", r"button"), ("cheese", r"cheese"),
-    ("shoulder", r"shoulder (screw|bolt)"), ("set screw", r"set[\s-]*screw|grub"), ("cap screw", r"cap[\s-]*screw"),
-    ("machine screw", r"machine[\s-]*screw"), ("self tapping", r"self[\s-]*tap|tapping screw|tek screw"),
-    ("wood screw", r"wood[\s-]*screw"), ("hex sets", r"hex sets"),
-    ("flat", r"\bflat washer|plain washer"), ("spring", r"spring washer|split washer|lock washer"),
-    ("fender", r"fender|penny"), ("nyloc", r"nyloc|nylon insert|lock ?nut"), ("flange nut", r"flange nut|serrated"),
-    ("dome", r"dome|acorn"), ("wing", r"\bwing\b"), ("heavy", r"\bheavy\b"),
-    ("smls", r"\bsmls\b|seamless"), ("welded", r"\berw\b|\befw\b|welded"),
-)
-_SUBTYPE_RX = [(name, re.compile(rx, re.IGNORECASE)) for name, rx in _SUBTYPES]
-_DIMENSIONAL_ORGS = ("asme", "ansi", "din", "iso", "en", "bs", "jis", "mssp", "is")
-
-_STANDARD = re.compile(
-    r"\b(din|iso|en|astm|asme|ansi|bs|is|jis|mss[\s-]*sp)\s*[-:]?\s*([a-z]?\d+(?:[.\-/]\d+)*[a-z]?)", re.IGNORECASE)
-_NUT_CLASS = re.compile(r"\b(?:class|grade|gr|cl)\.?\s*[-:]?\s*(4|5|6|8|10|12)\b(?![.\d])", re.IGNORECASE)
-_PROPERTY_CLASS = re.compile(r"\b(4\.6|4\.8|5\.6|5\.8|6\.8|8\.8|10\.9|12\.9|a[24]-?(?:50|70|80))\b", re.IGNORECASE)
 _METRIC = re.compile(r"\bm\s?(\d{1,3}(?:\.\d+)?)(?:\s*[x×]\s*(\d+(?:\.\d+)?)(?:\s*mm)?)?(?:\s*[x×]\s*(\d{2,4}(?:\.\d+)?)(?:\s*mm)?)?(?![\w.])",
                      re.IGNORECASE)
 _INCH = re.compile(r"(?<![\d/.])(\d+(?:[\s-]+\d+/\d+)?|\d+/\d+|\d*\.\d+)\s*(?:\"|”|″|''|in\b|inch(?:es)?\b|-(?=\d+\s*(?:unc|unf|un|tpi)\b))",
                    re.IGNORECASE)
 _THREAD_INCH = re.compile(r"(?<![\d/.])(\d+(?:[\s-]+\d+/\d+)?|\d+/\d+)\s*-\s*([4-9]|[1-8]\d)(?![/\d.])(?!\s*mm)", re.IGNORECASE)
 _MM = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)\s*mm\b", re.IGNORECASE)
+_DIA = re.compile(r"[Øø⌀]\s*(\d+(?:\.\d+)?)(?!\s*(?:\"|in\b))")       # Ø38 is millimetres
 _DN = re.compile(r"\b(?:dn|nb)\s*(\d{1,4})\b", re.IGNORECASE)
 _SCHEDULE = re.compile(r"\bsch(?:edule)?\.?\s*(\d{1,3}s?|xxs|xs|std)\b|\b(std|xs|xxs)\b", re.IGNORECASE)
-# STD = 40 and XS = 80 up to 10"; the S suffix only says stainless.
+# Pipe wall: STD is schedule 40 and XS schedule 80 up to 10" (a unit equivalence,
+# like inches to millimetres); the S suffix only says stainless.
 _SCHEDULE_SAME = {"std": "40", "xs": "80", "xxs": "160"}
-_RATING = re.compile(r"(?:\bclass|\bcl\.?|#)\s*(150|300|400|600|900|1500|2500|3000|6000|9000)\b|\b(150|300|600|900|1500|2500|3000|6000)\s*(?:#|lbs?\b)",
-                     re.IGNORECASE)
-_CODE = re.compile(r"\b[A-Z0-9][A-Z0-9_./-]{6,}\b")
-# Grades, standards and dimensions look like codes but are not part numbers.
-_NOT_CODE = re.compile(r"^(M\d|\d+(\.\d+)?X\d)|X\d+(\.\d+)?$|^(ASTM|ASME|ANSI|DIN|ISO|EN|BS|JIS|IS)\d|^(MOC|GR|GRADE|SCH|CL|CLASS)", re.I)
-_STOP = set("""a an and as at by for from in into of on or per the to with without x mm inch nos pcs pc each ea
-               set sets type grade class qty quantity size sizes material moc finish as per drawing dwg rev
-               std standard complete assembly incl inclusive including supply""".split())
+_RATING = re.compile(r"(?:\bclass|\bcl\.?|#)\s*(\d{3,4})\b|\b(\d{3,4})\s*(?:#|lbs?\b)", re.IGNORECASE)
 
 
 def _inch(text: str) -> Optional[float]:
@@ -328,20 +216,22 @@ def _inch(text: str) -> Optional[float]:
 @dataclass
 class Fingerprint:
     text: str
+    # measured from the text
+    sizes: Set[str] = field(default_factory=set)       # m10, l120, 0.3125in, sch40, cl150 …
+    main_mm: Optional[float] = None                   # the one size that says how big the part is
+    length_mm: Optional[float] = None
+    system: str = ""                                  # "metric" | "inch"
+    words: Set[str] = field(default_factory=set)       # the description's words
+    numbers: Set[str] = field(default_factory=set)     # every number in it: sizes, grades, standards
+    codes: Set[str] = field(default_factory=set)      # the customer's part / drawing numbers, normalised
+    # from the model's reading (apply_profile)
+    tagged: bool = False
+    charge: bool = False
     ptype: str = ""
     material: str = ""
     finish: str = ""
     standards: Set[str] = field(default_factory=set)
-    sizes: Set[str] = field(default_factory=set)       # exact size tokens: m10, l120, 0.3125in, sch40, cl150 …
-    main_mm: Optional[float] = None                   # the one size that says how big the part is
-    codes: Set[str] = field(default_factory=set)      # part / drawing numbers, normalised
-    subtypes: Set[str] = field(default_factory=set)
-    length_mm: Optional[float] = None
-    system: str = ""                                  # "metric" | "inch" — threads and nominal sizes
-    name_words: Set[str] = field(default_factory=set)
-    tagged: bool = False                              # capability tags known
-    features: Set[str] = field(default_factory=set)   # special features (weld nut, nylon insert …) from the tags
-    words: Set[str] = field(default_factory=set)
+    features: Set[str] = field(default_factory=set)
 
 
 def norm_code(code: str) -> str:
@@ -350,30 +240,24 @@ def norm_code(code: str) -> str:
     return re.sub(r"[^A-Z0-9]", "", c.upper())
 
 
-def fingerprint(text: str, part_number: str = "", material: str = "", finish: str = "",
-                name: str = "") -> Fingerprint:
-    name_text = name                    # the loops below reuse `name`
+def _add_code(fp: Fingerprint, code: str) -> None:
+    n = norm_code(code)
+    # A part number is long enough to be specific: a bare "77" is a line reference.
+    if len(n) >= 6 and not n.isdigit() or len(n) >= 8:
+        fp.codes.add(n)
+
+
+def _number(n: str) -> str:
+    """'08' and '8', '8.80' and '8.8' are the same number."""
+    whole, _, frac = n.partition(".")
+    return (whole.lstrip("0") or "0") + ("." + frac.rstrip("0") if frac.rstrip("0") else "")
+
+
+def fingerprint(text: str, part_number: str = "") -> Fingerprint:
+    """The measurements, words and numbers of a description, and its part number."""
     raw = re.sub(r"\s+", " ", str(text or "")).strip()
     t = raw.replace("×", "x").replace("”", '"').replace("″", '"').replace(",", " ")
     fp = Fingerprint(text=raw)
-    for name, rx in _TYPE_RX:
-        if rx.search(t):
-            fp.ptype = name
-            break
-    moc = re.search(r"\b(?:moc|material)\s*[-:–]?\s*([^|\n;]+)", t, re.IGNORECASE)
-    hit = material_rate(material or (moc.group(1) if moc else "")) or material_rate(t)
-    fp.material = hit[0] if hit else ""
-    for name, rx in _FINISH_RX:
-        if rx.search(finish or "") or (not finish and rx.search(t)):
-            fp.finish = name
-            break
-    fp.subtypes = {name for name, rx in _SUBTYPE_RX if rx.search(t)}
-    for org, num in _STANDARD.findall(t):
-        fp.standards.add(re.sub(r"[\s-]", "", org.lower()) + num.lower().replace("-", "."))
-    for pc in _PROPERTY_CLASS.findall(t):
-        fp.sizes.add("pc" + pc.lower().replace("-", ""))
-    for pc in _NUT_CLASS.findall(t):
-        fp.sizes.add("pc" + pc)
     sizes_mm: List[float] = []
     for d, pitch, length in _METRIC.findall(t):
         fp.sizes.add(f"m{float(d):g}")
@@ -393,14 +277,16 @@ def fingerprint(text: str, part_number: str = "", material: str = "", finish: st
         if v and 0 < v < 200:
             fp.sizes.add(f"{v:.4f}in")
             sizes_mm.append(v * 25.4)
-    for m in _MM.findall(t):
-        fp.sizes.add(f"{float(m):g}mm")
-        sizes_mm.append(float(m))
+    for m in _MM.findall(t) + _DIA.findall(t):
+        if f"{float(m):g}mm" not in fp.sizes:
+            fp.sizes.add(f"{float(m):g}mm")
+            sizes_mm.append(float(m))
     for m in _DN.findall(t):
         fp.sizes.add(f"dn{int(m)}")
         sizes_mm.append(float(m))
     for a, b in _SCHEDULE.findall(t):
-        v = (a or b).lower().rstrip("s") if (a or b).lower() not in ("xs", "xxs") else (a or b).lower()
+        v = (a or b).lower()
+        v = v if v in ("xs", "xxs") else v.rstrip("s")
         fp.sizes.add("sch" + _SCHEDULE_SAME.get(v, v))
     for a, b in _RATING.findall(t):
         fp.sizes.add("cl" + (a or b))
@@ -409,32 +295,37 @@ def fingerprint(text: str, part_number: str = "", material: str = "", finish: st
         fp.system = "metric"
     elif any(x.endswith("in") for x in fp.sizes):
         fp.system = "inch"
-    if fp.ptype in ("tee", "reducer") or "reducing" in fp.subtypes:
-        nominal = {x for x in fp.sizes if x.endswith("in")} | {x for x in fp.sizes if x.startswith("dn")}
-        if fp.ptype == "tee":
-            fp.subtypes.add("reducing" if len(nominal) >= 2 or "reducing" in fp.subtypes else "equal")
-    pn = norm_code(part_number)
-    if len(pn) >= 6 and not pn.isdigit() or len(pn) >= 8:
-        fp.codes.add(pn)
-    for c in _CODE.findall(raw.upper()):
-        n = norm_code(c)
-        # A code in free text needs five or more digits: that keeps out grades
-        # (WP316L, S355JR), standards (B36.10M) and short sizes.
-        if sum(ch.isdigit() for ch in n) >= 5 and len(n) >= 8 and not _NOT_CODE.search(c):
-            fp.codes.add(n)
-    fp.words = {w for w in re.findall(r"[a-z][a-z0-9]+", t.lower()) if w not in _STOP and len(w) > 1}
-    fp.name_words = {w for w in re.findall(r"[a-z][a-z0-9]+", (name_text or t).lower()) if w not in _STOP and len(w) > 1}
+    _add_code(fp, part_number)
+    fp.words = {w for w in re.findall(r"[a-z][a-z0-9]+", t.lower()) if len(w) > 2}
+    fp.numbers = {_number(n) for n in re.findall(r"(?<![\d.])\d+(?:\.\d+)?", t)}
     return fp
 
 
+def apply_profile(fp: Fingerprint, profile: Optional[Dict[str, Any]]) -> None:
+    """What the model read about the part: its type, grade, finish, standards, features."""
+    if profile is None:
+        return
+    fp.tagged = True
+    fp.charge = bool(profile.get("charge"))
+    fp.ptype = profile.get("part_type") or ""
+    fp.material = profile.get("material") or ""
+    fp.finish = (profile.get("coating") or [""])[0]
+    fp.standards = set(profile.get("standards") or [])
+    fp.features = set(profile.get("feature") or [])
+    if profile.get("part_code"):
+        _add_code(fp, profile["part_code"])
+
+
+apply_tags = apply_profile          # older name
+
+
+def _standards_agree(a: Set[str], b: Set[str]) -> bool:
+    return not (a and b) or any(cap.relation(x, y) in ("same", "close") for x in a for y in b)
+
+
 def _features_agree(a: Set[str], b: Set[str]) -> bool:
-    return all(any(cap.tags_match(x, y) for y in b) for x in a) and all(any(cap.tags_match(y, x) for x in a) for y in b)
-
-
-def apply_tags(fp: Fingerprint, tags: Optional[Dict[str, List[str]]]) -> None:
-    if tags is not None:
-        fp.tagged = True
-        fp.features = set(tags.get("feature") or [])
+    return all(any(cap.tags_match(x, y) for y in b) for x in a) and \
+        all(any(cap.tags_match(y, x) for x in a) for y in b)
 
 
 def _jaccard(a: Set[str], b: Set[str]) -> float:
@@ -455,112 +346,151 @@ class Match:
 
 
 def compare(q: Fingerprint, p: Fingerprint) -> Optional[Tuple[str, float, str]]:
-    """(level, score, why) when p is the same or a closely similar part to q; else None."""
+    """
+    (level, score, why) when p is the same or a closely similar part to q; else None.
+
+    What the parts are comes from the model's reading: the same part type and
+    grade is the same part when every measurement agrees, and a similar one a
+    size step away. Before both lines have been read, only a shared part number
+    or a near-identical description (the same words and every number equal)
+    counts.
+    """
+    if q.charge or p.charge:
+        return None
     shared_codes = q.codes & p.codes
     if shared_codes:
         return SAME, 3.0, f"same part number {sorted(shared_codes)[0]}"
     if q.codes and p.codes:
         return None                            # two different part numbers are two different parts
-    # A special feature one has and the other lacks (weld washer vs flat washer,
-    # nylon-insert vs plain nut) makes them different parts, whatever the words say.
-    if q.tagged and p.tagged and not _features_agree(q.features, p.features):
-        return None
-    words = _jaccard(q.words, p.words)
-    names = _jaccard(q.name_words, p.name_words)
-    if (names >= 0.85 and len(q.name_words) >= 3 and (q.sizes or q.material or q.codes)
-            and q.sizes == p.sizes and q.ptype == p.ptype and q.material == p.material
-            and not (q.finish and p.finish and q.finish != p.finish)):
-        return SAME, 2.0 + names, "same description"
     if q.system and p.system and q.system != p.system:
         return None                            # an inch part is not a metric part
-    if not q.ptype or q.ptype != p.ptype:
-        return None
-    if q.material and p.material and q.material != p.material:
-        return None
-    qd = {s for s in q.standards if s.startswith(_DIMENSIONAL_ORGS)}
-    pd = {s for s in p.standards if s.startswith(_DIMENSIONAL_ORGS)}
-    if qd and pd and not (qd & pd):
-        return None
-    # Different style (WN vs SO flange, 90 vs 45 elbow, hex vs socket head) is a different product.
-    for group in (("wn", "so", "blind", "lap", "sw", "thd"), ("90", "45"), ("lr", "sr"), ("equal", "reducing"),
-                  ("conc", "ecc"), ("hex", "socket head", "pan", "csk", "button", "cheese"),
-                  ("shoulder", "set screw", "cap screw", "machine screw", "self tapping", "wood screw"),
-                  ("flat", "spring", "fender"), ("nyloc", "flange nut", "dome", "wing"), ("smls", "welded")):
-        a, b = q.subtypes & set(group), p.subtypes & set(group)
-        if a and b and not (a & b):
-            return None
-    # Pressure class, schedule and property class must agree when both state one.
-    for prefix in ("cl", "sch", "pc"):
+    # Pressure class and schedule must agree when both state one.
+    for prefix in ("cl", "sch"):
         a = {x for x in q.sizes if x.startswith(prefix)}
         b = {x for x in p.sizes if x.startswith(prefix)}
         if a and b and not (a & b):
             return None
     words = _jaccard(q.words, p.words)
-    finish_ok = not (q.finish and p.finish and q.finish != p.finish)
-    if (q.sizes and q.sizes == p.sizes and q.material and q.material == p.material and finish_ok
-            and words >= 0.4):
-        return SAME, 2.0 + words, "same type, size, material" + (", finish" if q.finish and p.finish else "")
-    # Similar: same type and material, one size step away — never a different size class.
-    if not (q.material and q.material == p.material):
+    if not (q.tagged and p.tagged):
+        if (words >= 0.85 and len(q.words) >= 3 and (q.numbers or q.codes) and q.numbers == p.numbers
+                and q.sizes == p.sizes):
+            return SAME, 2.0 + words, "same description"
         return None
-    if q.main_mm and p.main_mm:
-        ratio = max(q.main_mm, p.main_mm) / max(min(q.main_mm, p.main_mm), 1e-6)
-        if ratio > 1.35:                        # one size step: M10 -> M12, 6" -> 8"
-            return None
-        closeness = 1 - (ratio - 1) / 0.35
-    elif q.sizes or p.sizes:
+    # A special feature one has and the other lacks (weld washer vs flat washer) is a different part.
+    if not _features_agree(q.features, p.features):
         return None
-    else:
-        closeness = 0.5
+    ptype = cap.relation(q.ptype, p.ptype)
+    material = cap.relation(q.material, p.material)
+    if ptype not in ("same", "close") or material == "different":
+        return None
+    if not _standards_agree(q.standards, p.standards):
+        return None
+    finish_known = bool(q.finish and p.finish)
+    finish_ok = not finish_known or cap.tags_match(q.finish, p.finish)
+    if ptype == "same" and material == "same" and q.sizes and q.sizes == p.sizes and finish_ok:
+        return SAME, 2.5 + 0.3 * words, "same part type, size, material" + (", finish" if finish_known else "")
+    # Similar: one size step away (M10 -> M12, 6" -> 8"). Without a size on both
+    # there is nothing to say how close they are.
+    if not (q.main_mm and p.main_mm):
+        return None
+    ratio = max(q.main_mm, p.main_mm) / max(min(q.main_mm, p.main_mm), 1e-6)
+    if ratio > 1.35:
+        return None
     if q.length_mm and p.length_mm and max(q.length_mm, p.length_mm) / min(q.length_mm, p.length_mm) > 1.5:
         return None
-    if words < 0.3:
-        return None
-    score = 1.0 + 0.5 * words + 0.3 * closeness + (0.2 if finish_ok and q.finish and p.finish else 0)
-    diff = []
-    if q.main_mm and p.main_mm and abs(q.main_mm - p.main_mm) > 0.01:
-        diff.append("size")
-    if q.finish and p.finish and q.finish != p.finish:
-        diff.append("finish")
-    return SIMILAR, score, "same type and material" + (f"; differs in {', '.join(diff)}" if diff else "")
+    closeness = 1 - (ratio - 1) / 0.35
+    diff = [x for x, d in (("size", abs(q.main_mm - p.main_mm) > 0.01 or q.sizes != p.sizes),
+                           ("style", ptype != "same"),
+                           ("material", material != "same"),
+                           ("finish", not finish_ok)) if d]
+    score = 1.0 + 0.3 * closeness + 0.3 * words + 0.2 * (ptype == "same") + 0.2 * (material == "same") \
+        + (0.1 if finish_known and finish_ok else 0)
+    return SIMILAR, score, "same part type" + (f"; differs in {', '.join(diff)}" if diff else "")
 
 
 @dataclass
 class CapMatch:
     line: PastLine
     score: float
-    shared: List[str]          # the capability tags the past part and the new one have in common
+    shared: List[str]          # the capabilities the past part and the new one have in common
 
 
 class PastQuoteIndex:
     def __init__(self, lines: List[PastLine]):
         self.lines = lines
-        self.by_type: Dict[str, List[PastLine]] = defaultdict(list)
         self.by_code: Dict[str, List[PastLine]] = defaultdict(list)
+        self.by_word: Dict[str, List[PastLine]] = defaultdict(list)
+        self.by_type: Dict[str, List[PastLine]] = defaultdict(list)
+        self.by_token: Dict[str, List[PastLine]] = defaultdict(list)
         for ln in lines:
-            self.by_type[ln.fp.ptype].append(ln)
             for c in ln.fp.codes:
                 self.by_code[c].append(ln)
-        self.by_token: Dict[str, List[PastLine]] = defaultdict(list)
+            for w in ln.fp.words:
+                self.by_word[w].append(ln)
 
-    # ---- capability
-    def apply_tags(self, tags_by_key: Dict[str, Dict[str, List[str]]]) -> int:
-        """Attach known tags to the lines and rebuild the capability lookup. Returns lines tagged."""
+    def apply_tags(self, profiles: Dict[str, Dict[str, Any]]) -> int:
+        """Attach the model's readings to the lines and rebuild the lookups. Returns lines read."""
+        self.by_type = defaultdict(list)
         self.by_token = defaultdict(list)
         n = 0
         for ln in self.lines:
-            tags = tags_by_key.get(ln.tag_key)
-            if tags is None:
+            prof = profiles.get(ln.tag_key)
+            if prof is None:
                 continue
-            ln.tags = tags
-            apply_tags(ln.fp, tags)
+            ln.tags = prof
+            apply_profile(ln.fp, prof)
+            for c in ln.fp.codes:
+                if ln not in self.by_code[c]:
+                    self.by_code[c].append(ln)
             n += 1
-            for t in cap.all_tags(tags):
+            if ln.fp.charge:
+                continue
+            for tok in cap.tag_tokens(ln.fp.ptype):
+                self.by_type[tok].append(ln)
+            for t in cap.all_tags(prof):
                 for tok in cap.tag_tokens(t):
                     self.by_token[tok].append(ln)
         return n
 
-    def find_capability(self, tags: Optional[Dict[str, List[str]]], level: Callable[[str], str], *,
+    def find(self, q: Fingerprint, *, exclude_rfq: str = "", limit: int = 5) -> List[Match]:
+        cands: Dict[int, PastLine] = {}
+        for c in q.codes:
+            for ln in self.by_code.get(c, []):
+                cands[id(ln)] = ln
+        for w in q.words:                          # near-identical descriptions
+            for ln in self.by_word.get(w, []):
+                cands[id(ln)] = ln
+        for tok in cap.tag_tokens(q.ptype):        # the same part type, once read
+            for ln in self.by_type.get(tok, []):
+                cands[id(ln)] = ln
+        found: List[Match] = []
+        for ln in cands.values():
+            if exclude_rfq and ln.rfq_row_id == exclude_rfq:
+                continue
+            hit = compare(q, ln.fp)
+            if hit:
+                level, score, why = hit
+                age = ((date.today() - ln.quote_date).days / 365) if ln.quote_date else 2
+                score += 0.15 * (ln.status.lower() == "won") - 0.1 * min(age, 3)
+                found.append(Match(level, ln, score, why))
+        # One entry per past RFQ and part: the best line of each.
+        best: Dict[Tuple[str, str], Match] = {}
+        for m in found:
+            key = (m.line.rfq_row_id, m.line.fp.text.lower())
+            if key not in best or m.score > best[key].score:
+                best[key] = m
+        # The same line quoted again unchanged (same part, quantity and price) shows once: the latest.
+        latest: Dict[Tuple[str, Any, Any, str], Match] = {}
+        for m in best.values():
+            ln = m.line
+            key2 = (ln.fp.text.lower(), ln.qty, round(ln.unit_price, 6) if ln.unit_price is not None else None, ln.currency)
+            have = latest.get(key2)
+            if have is None or (ln.quote_date or date.min) > (have.line.quote_date or date.min):
+                latest[key2] = m
+        ranked = sorted(latest.values(), key=lambda m: (m.level != SAME, -m.score))
+        return ranked[:limit]                      # the same part first, then closely similar
+
+    def find_capability(self, tags: Optional[Dict[str, Any]], level: Callable[[str], str], *,
                         exclude_rfqs: Set[str] = frozenset(), limit: int = 2) -> List[CapMatch]:
         """
         Past parts whose suppliers can do what this part needs — any part type.
@@ -576,7 +506,7 @@ class PastQuoteIndex:
         if not wanted:
             return []
         features = set((tags or {}).get("feature") or [])
-        combo = {t for kind in ("process", "material", "coating") for t in (tags or {}).get(kind) or []}
+        combo = {t for kind in ("process", "special_material", "coating") for t in (tags or {}).get(kind) or []}
         weight = {"rare": 3, "specialist": 2}
         cands: Dict[int, PastLine] = {}
         for t in wanted:
@@ -585,7 +515,7 @@ class PastQuoteIndex:
                     cands[id(ln)] = ln
         best: Dict[str, CapMatch] = {}
         for ln in cands.values():
-            if ln.rfq_row_id in exclude_rfqs:
+            if ln.rfq_row_id in exclude_rfqs or ln.fp.charge:
                 continue
             have = cap.all_tags(ln.tags)
             shared = [t for t in wanted if any(cap.tags_match(t, h) for h in have)]
@@ -605,41 +535,6 @@ class PastQuoteIndex:
                 best[ln.rfq_row_id] = CapMatch(ln, score, special or shared)
         return sorted(best.values(), key=lambda m: -m.score)[:limit]
 
-    def find(self, q: Fingerprint, *, exclude_rfq: str = "", limit: int = 3) -> List[Match]:
-        cands: Dict[int, PastLine] = {}
-        for c in q.codes:
-            for ln in self.by_code.get(c, []):
-                cands[id(ln)] = ln
-        # Parts without a recognised type can still match on near-identical text.
-        for ln in self.by_type.get(q.ptype or "", []):
-            cands[id(ln)] = ln
-        found: List[Match] = []
-        for ln in cands.values():
-            if exclude_rfq and ln.rfq_row_id == exclude_rfq:
-                continue
-            hit = compare(q, ln.fp)
-            if hit:
-                level, score, why = hit
-                age = ((date.today() - ln.quote_date).days / 365) if ln.quote_date else 2
-                score += 0.15 * (ln.status.lower() == "won") - 0.1 * min(age, 3) + 0.05 * (ln.unit_price is not None)
-                found.append(Match(level, ln, score, why))
-        # One entry per past RFQ and part: the best line of each.
-        best: Dict[Tuple[str, str], Match] = {}
-        for m in found:
-            key = (m.line.rfq_row_id, m.line.fp.text.lower())
-            if key not in best or m.score > best[key].score:
-                best[key] = m
-        # The same line quoted again unchanged (same part, quantity and price) shows once: the latest.
-        latest: Dict[Tuple[str, Any, Any, str], Match] = {}
-        for m in best.values():
-            ln = m.line
-            key2 = (ln.fp.text.lower(), ln.qty, round(ln.unit_price, 6) if ln.unit_price is not None else None, ln.currency)
-            have = latest.get(key2)
-            if have is None or (ln.quote_date or date.min) > (have.line.quote_date or date.min):
-                latest[key2] = m
-        ranked = sorted(latest.values(), key=lambda m: (m.level != SAME, -m.score))
-        return ranked[:limit]                      # the same part first, then closely similar
-
 
 # ----------------------------------------------------------------------------- a new RFQ's products
 
@@ -649,6 +544,11 @@ class Wanted:
     product: str            # the product line it belongs to
     label: str              # what the reader sees
     fp: Fingerprint
+    text: str = ""          # what the model is shown to read it
+
+    @property
+    def key(self) -> str:
+        return cap.text_key(self.text or self.fp.text)
 
 
 def wanted_from_extraction(extraction: Any, max_family_rows: int = 60) -> List[Wanted]:
@@ -658,6 +558,7 @@ def wanted_from_extraction(extraction: Any, max_family_rows: int = 60) -> List[W
         specs = getattr(p, "specs", None)
         sp = {k: str(getattr(specs, k, "") or "") for k in ("material", "grade_standard", "finish", "key_dimensions", "drawing_no")} \
             if specs else {}
+        spec_text = " | ".join(f"{k.replace('_', ' ')}: {v}" for k, v in sp.items() if v)
         annexure = getattr(p, "annexure", None)
         rows = []
         if annexure is not None:
@@ -666,28 +567,16 @@ def wanted_from_extraction(extraction: Any, max_family_rows: int = 60) -> List[W
                 rows.append(dict(zip(cols, r)) if isinstance(r, (list, tuple)) else dict(r or {}))
         if rows:
             for r in rows:
-                text = " ".join(str(v) for k, v in r.items() if v and not re.search(r"qty|quantity|price|note|doubt|weight", k, re.I))
-                label = str(r.get("description") or r.get("part_number") or text)[:80]
-                out.append(Wanted(name, label, fingerprint(f"{name} {text}", str(r.get("part_number") or r.get("drawing_ref") or ""),
-                                                           str(r.get("material") or sp.get("material", "")),
-                                                           str(r.get("finish") or sp.get("finish", "")))))
+                cells = " ".join(str(v) for k, v in r.items() if v and not re.search(r"qty|quantity|price|note|doubt|weight", k, re.I))
+                label = str(r.get("description") or r.get("part_number") or cells)[:80]
+                code = str(r.get("part_number") or r.get("drawing_ref") or "")
+                # Measured from the row alone (the family's name may span sizes); the model sees both.
+                out.append(Wanted(name, label, fingerprint(cells, code),
+                                  text=f"{name} — {cells} | {spec_text}"[:400]))
         else:
-            text = " ".join([name] + [sp.get(k, "") for k in ("grade_standard", "key_dimensions")])
-            out.append(Wanted(name, name, fingerprint(text, sp.get("drawing_no", ""), sp.get("material", ""), sp.get("finish", ""))))
-    return out
-
-
-def products_from_extraction(extraction: Any) -> List[Tuple[str, str]]:
-    """(product name, text to tag) — one per product line; a family's rows share its capability."""
-    out = []
-    for p in getattr(extraction, "products", None) or []:
-        name = str(getattr(p, "name", "") or "").strip()
-        specs = getattr(p, "specs", None)
-        bits = [name]
-        if specs:
-            bits += [str(getattr(specs, k, "") or "") for k in ("material", "grade_standard", "finish")]
-            bits += [", ".join(getattr(specs, "processes", None) or [])]
-        out.append((name, " | ".join(b for b in bits if b)[:400]))
+            text = " ".join([name, sp.get("grade_standard", ""), sp.get("key_dimensions", "")])
+            out.append(Wanted(name, name, fingerprint(text, sp.get("drawing_no", "")),
+                              text=f"{name} | {spec_text}"[:400]))
     return out
 
 
@@ -731,6 +620,7 @@ def _read_postgres(url: str, table: str) -> List[Dict[str, Any]]:
             return [dict(zip(names, row)) for row in cur.fetchall()]
 
 
+
 def load_index(settings: Any, *, force: bool = False) -> Optional[PastQuoteIndex]:
     """The cached index, re-read from Postgres when older than PAST_QUOTES_REFRESH_HOURS."""
     url = (getattr(settings, "past_quotes_db_url", "") or "").strip()
@@ -741,7 +631,10 @@ def load_index(settings: Any, *, force: bool = False) -> Optional[PastQuoteIndex
     ttl = float(getattr(settings, "past_quotes_refresh_hours", 24) or 24) * 3600
     with _lock:
         if not force and _cache["index"] is not None and time.time() - _cache["at"] < ttl:
-            return _cache["index"]
+            index = _cache["index"]
+            if getattr(settings, "enable_past_quotes_capability", False):
+                _start_backfill(settings, index)        # picks up anything a failed run left unread
+            return index
         t0 = time.perf_counter()
         try:
             rows = _read_postgres(url, table)
@@ -750,36 +643,44 @@ def load_index(settings: Any, *, force: bool = False) -> Optional[PastQuoteIndex
             return _cache["index"]          # keep serving the last good copy
         index = PastQuoteIndex(clean_rows(rows))
         _cache.update(index=index, at=time.time())
-        print(f"[INFO] past quotes | loaded {len(index.lines)} product line(s) from {len(rows)} row(s) "
+        print(f"[INFO] past quotes | loaded {len(index.lines)} line(s) from {len(rows)} row(s) "
               f"in {int((time.perf_counter() - t0) * 1000)} ms")
-        tagged = index.apply_tags(cap.store_for(settings).tags)
-        if tagged:
-            print(f"[INFO] past quotes | capability tags known for {tagged} of {len(index.lines)} line(s)")
+        read = index.apply_tags(cap.store_for(settings).tags)
+        if read:
+            print(f"[INFO] past quotes | model readings known for {read} of {len(index.lines)} line(s)")
         if getattr(settings, "enable_past_quotes_capability", False):
             _start_backfill(settings, index)
         return index
 
 
 _backfill_lock = threading.Lock()
+_backfill_retry_at = {"t": 0.0}
 
 
 def _start_backfill(settings: Any, index: "PastQuoteIndex") -> None:
-    """Tag the past lines that have no tags yet, in the background; matching uses whatever is ready."""
+    """Have the model read the past lines not read yet, in the background; matching uses whatever is ready."""
     todo = {ln.tag_key: ln.tag_text for ln in index.lines if ln.tags is None}
     levels = cap.levels_for(settings)
     unrated = any(not levels.level(t) for ln in index.lines for t in cap.all_tags(ln.tags))
-    if not (todo or unrated) or not _backfill_lock.acquire(blocking=False):
+    if not (todo or unrated) or time.time() < _backfill_retry_at["t"]:
+        return
+    if not _backfill_lock.acquire(blocking=False):
         return
 
     def run():
         try:
-            print(f"[INFO] past quotes | tagging {len(todo)} past line(s) with capabilities in the background")
+            print(f"[INFO] past quotes | reading {len(todo)} past line(s) in the background")
             found = cap.tag_texts(settings, todo, run_id="past-quotes-backfill")
             n = index.apply_tags(cap.store_for(settings).tags)
             cap.rate_tags(settings, {t for ln in index.lines for t in cap.all_tags(ln.tags)},
                           run_id="past-quotes-backfill")
-            print(f"[INFO] past quotes | capability tags ready: {n} of {len(index.lines)} line(s) "
-                  f"({len(found)} tagged now)")
+            print(f"[INFO] past quotes | model readings ready: {n} of {len(index.lines)} line(s) "
+                  f"({len(found)} read now)")
+            for ln in [l for l in index.lines if l.tags and not l.fp.charge][:3]:
+                print(f"[INFO] past quotes | e.g. {ln.part_name[:50]!r} -> type={ln.fp.ptype!r} "
+                      f"material={ln.fp.material!r} capabilities={sorted(cap.all_tags(ln.tags))}")
+            if len(found) < len(todo):
+                _backfill_retry_at["t"] = time.time() + 1800     # some batches failed: try again in 30 min
         finally:
             _backfill_lock.release()
 
@@ -797,8 +698,7 @@ def render_section(results: List[Tuple[Wanted, List[Match]]],
                    capability: Sequence[Tuple[str, CapMatch]] = ()) -> str:
     """
     One bullet per past RFQ: its title linked to its OneDrive quotation folder,
-    then which of this RFQ's products it matches. Empty when nothing is the same
-    or closely similar.
+    then which of this RFQ's products it matches. Empty when nothing qualifies.
     """
     rfqs: Dict[str, Dict[str, Any]] = {}
     for w, ms in results:
