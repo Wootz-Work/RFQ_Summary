@@ -78,9 +78,10 @@ lines = pq.clean_rows(ROWS)
 by = {(l.rfq_row_id, l.part_name[:20]): l for l in lines}
 
 
-def P(part_type="", material="", standards=(), part_code="", charge=False, **caps):
-    """A profile as the model returns it."""
-    return cap.clean_profile(dict(part_type=part_type, material=material, standards=list(standards),
+def P(part_type="", material="", standards=(), part_code="", charge=False, kind=None, **caps):
+    """A profile as the model returns it (the kind defaults to the type's last word)."""
+    kind = part_type.split()[-1] if kind is None and part_type else (kind or "")
+    return cap.clean_profile(dict(kind=kind, part_type=part_type, material=material, standards=list(standards),
                                   part_code=part_code, charge=charge, **{k: list(v) for k, v in caps.items()}))
 
 
@@ -101,7 +102,7 @@ READINGS = {
     ("R4", '4" WN RF Flange, AST'): WN,
     ("R4", '4" SO RF Flange, AST'): P("slip-on flange", "carbon steel a105", ["asme b16.5"], process=["forging"]),
     ("R5", "Deckel"): P("machined cover", "aluminium 6061", process=["cnc milling"]),
-    ("R6", "Cover plate"): P("machined cover", "aluminium 6061", process=["cnc milling"]),
+    ("R6", "Cover plate"): P("cover plate", "aluminium 6061", kind="cover", process=["cnc milling"]),
     ("R6", "M10 x 120 Hex Bolt D"): P("hex bolt", "stainless steel a4-80", ["din 931"], process=["cold heading"]),
     ("R7", "Bolzen MT_WST0012248"): P("pin", "steel", part_code="MT_WST00122480", process=["cnc turning"]),
 }
@@ -162,38 +163,46 @@ check("the model's readings are attached to every line", index.apply_tags(profil
 freight = by[("R1", "Air Freight")]
 check("a line the model reads as a charge is never a product", freight.fp.charge and pq.compare(freight.fp, freight.fp) is None)
 ms = index.find(Q('M10 x 120 Hex Bolt DIN 931 Grade 8.8 Hot dip galvanised', BOLT))
+order = [(m.level, m.line.rfq_row_id) for m in ms]
 check("the same bolt is found as the same part, the won quote first",
-      ms and ms[0].level == "same" and ms[0].line.rfq_row_id == "R1", str([(m.level, m.line.rfq_row_id) for m in ms]))
-check("the same part in another grade is not the same part", all(m.line.rfq_row_id != "R6" for m in ms))
-check("a socket head cap screw is not a hex bolt", all("Socket" not in m.line.part_name for m in ms))
-check("the same part first, then the closely similar one",
-      [m.level for m in ms] == sorted([m.level for m in ms], key=lambda x: x != "same")
-      and any(m.line.rfq_row_id == "R2" and m.level == "similar" for m in ms),
-      str([(m.level, m.line.rfq_row_id) for m in ms]))
-only_similar = index.find(Q('M12 x 110 Hex Bolt DIN 931 8.8 HDG', BOLT), exclude_rfq="R2")
-check("one size away is similar, not the same", only_similar and all(m.level == "similar" for m in only_similar),
-      str([(m.level, m.line.part_name) for m in only_similar]))
-check("two sizes away is not shown", not index.find(Q('M20 x 120 Hex Bolt DIN 931 8.8 HDG', BOLT)))
-check("another strength class is another part",
-      not index.find(Q('M10 x 120 Hex Bolt DIN 931 10.9 HDG', P("hex bolt", "alloy steel 10.9", ["din 931"]))))
+      order[:2] == [("same", "R1"), ("same", "R3")], str(order))
+check("then the closest: one size away ahead of another grade at the same size",
+      order[2:] == [("similar", "R2"), ("similar", "R6")], str(order))
+check("…each saying what differs", [m.why for m in ms[2:]] == ["differs in size", "differs in grade, finish"]
+      or [m.why for m in ms[2:]] == ["differs in size", "differs in grade"], str([m.why for m in ms]))
+check("a socket head cap screw is not a bolt, so it is not shown", all("Socket" not in m.line.part_name for m in ms))
+far = index.find(Q('M20 x 120 Hex Bolt DIN 931 8.8 HDG', BOLT))
+check("two sizes away is still shown, ranked by how close it is (M12 ahead of M10 for an M20)",
+      far and all(m.level == "similar" for m in far) and far[0].line.rfq_row_id == "R2", str([(m.line.rfq_row_id, m.score) for m in far]))
+cls = index.find(Q('M10 x 120 Hex Bolt DIN 931 10.9 HDG', P("hex bolt", "alloy steel 10.9", ["din 931"])))
+check("another strength class is shown as similar, never the same",
+      cls and all(m.level == "similar" and "grade" in m.why for m in cls), str([(m.level, m.why) for m in cls]))
 loose = index.find(Q('M10 x 120 Hex Bolt DIN 931', P("hex bolt", "alloy steel", ["din 931"])))
-check("a grade stated on one side only is at most similar",
-      loose and all(m.level == "similar" and "material" in m.why for m in loose), str([(m.level, m.why) for m in loose]))
-check("another product standard is another part",
-      not index.find(Q('M10 x 120 Hex Bolt ISO 4017 8.8 HDG', P("hex bolt", "alloy steel 8.8", ["iso 4017"]))))
+check("a grade stated on one side only is similar, ranked above another grade",
+      loose and all(m.level == "similar" for m in loose)
+      and [m.line.rfq_row_id for m in loose].index("R6") > [m.line.rfq_row_id for m in loose].index("R1"),
+      str([(m.line.rfq_row_id, m.why) for m in loose]))
+iso = index.find(Q('M10 x 120 Hex Bolt ISO 4017 8.8 HDG', P("hex bolt", "alloy steel 8.8", ["iso 4017"])))
+check("another product standard is similar, not the same",
+      iso and all(m.level == "similar" and "standard" in m.why for m in iso), str([(m.level, m.why) for m in iso]))
 fl = index.find(Q('4" Weld Neck Flange RF 150# A105 B16.5', WN))
-check("flange style and pressure class must agree",
-      [m.line.part_name for m in fl] == ['4" WN RF Flange, ASTM A105, Class 150, ASME B16.5'], str([m.line.part_name for m in fl]))
+check("flanges rank by style and class: the same flange, then another class, then another style",
+      [(m.level, m.line.part_name[:16], m.why) for m in fl] == [
+          ("same", '4" WN RF Flange,', "same part type, size, material"),
+          ("similar", '4" WN RF Flange,', "differs in size, class"),
+          ("similar", '4" SO RF Flange,', "differs in style")], str([(m.level, m.line.part_name, m.why) for m in fl]))
 code = index.find(Q("Lid", P("machined cover", "aluminium 6061"), code="MT-BGR00110836-brushed"))
 check("the same part number is the same part, whatever it is called",
       {m.line.rfq_row_id for m in code} == {"R5", "R6"} and all(m.level == "same" for m in code))
-check("two different part numbers are never the same part",
-      not index.find(Q("Deckel", P("machined cover", "aluminium 6061"), code="MT_BGR00999999")))
+other = index.find(Q("Deckel", P("machined cover", "aluminium 6061"), code="MT_BGR00999999"))
+check("another part number is never the same part — but the same kind of part is still similar",
+      other and all(m.level == "similar" for m in other) and other[0].line.rfq_row_id == "R5",
+      str([(m.level, m.line.rfq_row_id, m.why) for m in other]))
 check("a part number the model found in the name is matched too",
       [m.line.rfq_row_id for m in index.find(Q("Pin", code="MT-WST00122480"))] == ["R7"])
 check("the RFQ being quoted is left out of its own past", all(m.line.rfq_row_id != "R1" for m in
       index.find(Q('M10 x 120 Hex Bolt DIN 931 8.8 HDG', BOLT), exclude_rfq="R1")))
-check("a vague name matches nothing", not index.find(Q("Hex Head Cap Screw", P("hex bolt", "alloy steel 8.8"))))
+check("up to twenty candidates are ranked behind the scenes", pq.CANDIDATES == 20)
 check("names relate by their words: a style added is close, a different grade or standard is not",
       cap.relation("rod end", "spherical rod end") == "close" and cap.relation("hex bolt", "hex bolt") == "same"
       and cap.relation("alloy steel 8.8", "alloy steel 10.9") == "different"
@@ -205,14 +214,15 @@ w2 = pq.Wanted("Flanges (family)", "4in WN", Q('4" Weld Neck Flange RF 150# A105
 sec = pq.render_section([(w, index.find(w.fp)), (w2, index.find(w2.fp))])
 bullets = [x for x in sec.splitlines() if x.startswith("- ")]
 check("one bullet per past RFQ, under the heading", sec.startswith("---") and pq.SECTION_HEADING in sec
-      and len(bullets) == 4, sec)
+      and len(bullets) == 5, sec)
 check("each title links to its OneDrive quotation folder",
       bullets[0].startswith("- [Proj R1 - Parts](https://onedrive.example/R1)"), bullets[0])
 check("…and says which of this RFQ's products match, at product level",
       bullets[0].endswith("— Hex Bolts M10 (same)"), bullets[0])
+check("a similar one says what differs", bullets[3].endswith("— Hex Bolts M10 (similar — differs in size)"), bullets[3])
 check("RFQs with the same part come before those with only a similar one",
       [re.match(r"- \[?(.*?)(\]\(.*?\))? — ", b).group(1) for b in bullets]
-      == ["Proj R1 - Parts", "Proj R3 - Parts", "Proj R4 - Parts", "Proj R2 - Parts"],
+      == ["Proj R1 - Parts", "Proj R3 - Parts", "Proj R4 - Parts", "Proj R2 - Parts", "Proj R6 - Parts"],
       str(bullets))
 check("no prices, quantities or suppliers — just the pointer",
       "EUR" not in sec and "@" not in sec and "margin" not in sec and "Shared with" not in sec, sec)
@@ -252,6 +262,17 @@ check("the model is shown each item with its specs", "material: Alloy steel" in 
 check("…and its measurements are read, without the quantity", "m10" in wanted[0].fp.sizes
       and {"4.0000in", "cl150"} <= wanted[1].fp.sizes and "10" not in wanted[1].fp.numbers, str(wanted[1].fp.numbers))
 READ_NEW = {wanted[0].key: BOLT, wanted[1].key: WN}
+routed = pq.wanted_from_extraction(ProductExtractionResult(products=[ExtractedProduct(
+    index=1, name="Spherical Rod End 5/16-24", structure="single", quantity="200 pcs",
+    specs={"material": "Steel", "processes": ["Cold heading", "Machining", "Swaging"]})]))
+check("the extraction's process route is part of what the model reads",
+      "processes: Cold heading → Machining → Swaging" in routed[0].text, routed[0].text)
+long_family = ProductExtractionResult(products=[ExtractedProduct(
+    index=1, name="Washers (family)", structure="family", quantity="As per annexure",
+    annexure=ProductAnnexure(required=True, columns=["description"], rows=[[f"M{i} washer"] for i in range(120)]))])
+check("every row of a long family is looked up (120 of 120)", len(pq.wanted_from_extraction(long_family)) == 120)
+check("…up to the configured limit", len(pq.wanted_from_extraction(long_family, 50)) == 50
+      and Settings().past_quotes_max_rows == 500)
 
 
 # ---- the writeback step -------------------------------------------------------------
@@ -360,7 +381,7 @@ check("capability names match loosely, never across different things",
 check("a reply is read as JSON, lower-cased, with nothing dropped by a list",
       cap.parse_reply('noise {"a": {"part_type": "Weld Washer", "material": "Mild Steel", "charge": "false", '
                       '"process": ["Stamping", "fastener"]}} tail')
-      == {"a": {"part_type": "weld washer", "material": "mild steel", "standards": [], "part_code": "", "charge": False,
+      == {"a": {"kind": "", "part_type": "weld washer", "material": "mild steel", "standards": [], "part_code": "", "charge": False,
                 "process": ["stamping", "fastener"], "feature": [], "coating": [], "special_material": []}})
 check("an unreadable reply reads nothing", cap.parse_reply("sorry") == {})
 
@@ -378,7 +399,8 @@ CAP_READ = {
     "Gasket, moulded rubber": P("gasket", "epdm rubber", process=["rubber moulding"], special_material=["epdm rubber"]),
     "Bushing- Rubber Fully Bonded": P("bonded rubber bush", "natural rubber",
                                       process=["rubber to metal bonding", "rubber moulding"]),
-    "HDPE moulded part": P("moulded part", "hdpe", process=["plastic injection moulding"], special_material=["hdpe"]),
+    "HDPE moulded part": P("hdpe moulded part", "hdpe", kind="plastic moulding", process=["plastic injection moulding"],
+                           special_material=["hdpe"]),
     "Woodgrip screw with bonded neoprene washer": P("woodgrip screw", "carbon steel", process=["cold heading"],
                                                     coating=["zinc plating"]),
     "M6 Weld Washer": P("weld washer", "mild steel", process=["stamping"], feature=["projection weld nut"]),
@@ -397,7 +419,8 @@ LEVEL = {"rubber moulding": "specialist", "rubber compression moulding": "specia
          "chrome plating": "common"}
 level = lambda t: LEVEL.get(t, "")
 
-rubber = P("moulded rubber part", "nbr rubber", process=["rubber compression moulding"], special_material=["nbr rubber"])
+rubber = P("moulded rubber part", "nbr rubber", kind="rubber moulding", process=["rubber compression moulding"],
+           special_material=["nbr rubber"])
 leads = cidx.find_capability(rubber, level)
 check("a moulded rubber part finds the rubber moulders, best first",
       sorted(m.line.title for m in leads) == ["Entai 24 - Rubber-metal bonded component", "Shakti 27 - Aluminium Boxes"],
@@ -447,9 +470,13 @@ check("up to the limit, and only leads that qualify",
 
 qf = Q("M6 Weld Washer", weld)
 ff = next(l for l in cl if l.part_name == "M6 Flat Washer DIN 125").fp
-check("a special feature one part lacks makes it a different part", pq.compare(qf, ff) is None)
-check("…while the same part with the same feature still matches",
-      pq.compare(qf, next(l for l in cl if l.part_name == "M6 Weld Washer").fp) is not None)
+flat_hit = pq.compare(qf, ff)
+weld_hit = pq.compare(qf, next(l for l in cl if l.part_name == "M6 Weld Washer").fp)
+check("a flat washer is still a washer for a weld washer: similar, saying the style and feature differ",
+      flat_hit and flat_hit[0] == "similar" and flat_hit[2] == "differs in style, feature", str(flat_hit))
+check("…ranked well below a weld washer", weld_hit and weld_hit[1] > flat_hit[1] + 10, str((weld_hit, flat_hit)))
+check("a weld nut is another product: a capability lead, never a similar part",
+      pq.compare(qf, next(l for l in cl if l.part_name == "M6 Square Weld Nut").fp) is None)
 
 wr = pq.Wanted("Moulded Rubber Part Ø38", "Moulded Rubber Part Ø38", Q("Moulded Rubber Part Ø38 NBR 60 Shore A", rubber))
 csec = pq.render_section([(wr, [])], [("Moulded Rubber Part Ø38", m) for m in leads])

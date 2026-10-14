@@ -492,7 +492,7 @@ def write_past_quotes(settings: Settings, out: TriageOutputPayload) -> int:
         index = load_index(settings)
         if index is None:
             return 0
-        wanted = wanted_from_extraction(extraction)
+        wanted = wanted_from_extraction(extraction, max(1, settings.past_quotes_max_rows))
         # The model's reading of each item — what it is and what it takes to make it.
         # Skipped entirely when switched off: then only part numbers and
         # near-identical descriptions can match.
@@ -503,8 +503,9 @@ def write_past_quotes(settings: Settings, out: TriageOutputPayload) -> int:
             for w in wanted:
                 apply_profile(w.fp, profiles.get(w.key))
         per_product = max(1, settings.past_quotes_per_product)
-        results = [(w, index.find(w.fp, exclude_rfq=out.row_id, limit=per_product)) for w in wanted]
-        # The limit is per product: a family's rows share it, best past RFQs first.
+        # Up to 20 candidates per item, ranked; the summary keeps the best few per
+        # product — a family's rows share the limit, the same part first.
+        results = [(w, index.find(w.fp, exclude_rfq=out.row_id)) for w in wanted]
         keep: Dict[str, set] = {}
         for name in dict.fromkeys(w.product for w in wanted):
             ranked = sorted((m for w, ms in results if w.product == name for m in ms),

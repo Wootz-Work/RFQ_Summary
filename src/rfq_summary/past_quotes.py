@@ -7,7 +7,9 @@ we sent. This module reads it and, for each product of a new RFQ, finds:
 
   same        the part we quoted before: the same part number, or the same
               part type, size, material and finish
-  similar     the same part type and material, one size step away
+  similar     the same kind of product, ranked by how close it is: its style
+              first, then a differentiating feature, then size, grade,
+              standard, class and finish
   capability  a different part whose supplier has the capability this one
               needs (a rubber moulder for a moulded rubber part)
 
@@ -75,7 +77,7 @@ class PastLine:
     @property
     def tag_text(self) -> str:
         """What the model is shown — the RFQ title gives the part its context."""
-        return f"RFQ: {self.title} — {self.part_name} | {self.remarks}"[:400]
+        return f"RFQ: {self.title} — {self.part_name} | {self.remarks}"[:cap.TEXT_LIMIT]
 
     @property
     def tag_key(self) -> str:
@@ -227,6 +229,7 @@ class Fingerprint:
     # from the model's reading (apply_profile)
     tagged: bool = False
     charge: bool = False
+    kind: str = ""
     ptype: str = ""
     material: str = ""
     finish: str = ""
@@ -307,6 +310,7 @@ def apply_profile(fp: Fingerprint, profile: Optional[Dict[str, Any]]) -> None:
         return
     fp.tagged = True
     fp.charge = bool(profile.get("charge"))
+    fp.kind = profile.get("kind") or ""
     fp.ptype = profile.get("part_type") or ""
     fp.material = profile.get("material") or ""
     fp.finish = (profile.get("coating") or [""])[0]
@@ -319,8 +323,11 @@ def apply_profile(fp: Fingerprint, profile: Optional[Dict[str, Any]]) -> None:
 apply_tags = apply_profile          # older name
 
 
-def _standards_agree(a: Set[str], b: Set[str]) -> bool:
-    return not (a and b) or any(cap.relation(x, y) in ("same", "close") for x in a for y in b)
+def _agreement(a: Set[str], b: Set[str]) -> str:
+    """'same' when the two lists share a name, '' when either is empty, else 'different'."""
+    if not (a and b):
+        return ""
+    return "same" if any(cap.tags_match(x, y) for x in a for y in b) else "different"
 
 
 def _features_agree(a: Set[str], b: Set[str]) -> bool:
@@ -332,9 +339,25 @@ def _jaccard(a: Set[str], b: Set[str]) -> float:
     return len(a & b) / len(a | b) if a and b else 0.0
 
 
+def _contains(a: str, b: str) -> bool:
+    ta, tb = cap.tag_tokens(a), cap.tag_tokens(b)
+    return bool(ta and tb) and (ta <= tb or tb <= ta)
+
+
+def type_rank(q: "Fingerprint", p: "Fingerprint") -> int:
+    """3 the same part type, 2 one is the other with a style added, 1 the same kind only, 0 another product."""
+    rel = cap.relation(q.ptype, p.ptype)
+    if rel == "same":
+        return 3
+    if rel == "close":
+        return 2
+    return 1 if _contains(q.kind or q.ptype, p.kind or p.ptype) else 0
+
+
 # ----------------------------------------------------------------------------- matching
 
 SAME, SIMILAR = "same", "similar"
+CANDIDATES = 20                # past lines ranked per item; the summary shows the best few
 
 
 @dataclass
@@ -347,65 +370,71 @@ class Match:
 
 def compare(q: Fingerprint, p: Fingerprint) -> Optional[Tuple[str, float, str]]:
     """
-    (level, score, why) when p is the same or a closely similar part to q; else None.
+    (level, score, why) for a past part against a new one; None when it is not
+    the same kind of product.
 
-    What the parts are comes from the model's reading: the same part type and
-    grade is the same part when every measurement agrees, and a similar one a
-    size step away. Before both lines have been read, only a shared part number
-    or a near-identical description (the same words and every number equal)
-    counts.
+    Only the kind of product decides whether a past part is shown. Everything
+    else ranks it, in this order of weight: the product type (the same style
+    ahead of another style of the same kind), then a feature that sets parts
+    apart (a weld projection, a locking insert), then size, grade, standard,
+    class, finish and wording. 'Same' is the part itself — the same part number,
+    or the same type, feature, grade and sizes with nothing else differing.
+    Before both lines have been read, only a shared part number or a
+    near-identical description (the same words and every number equal) counts.
     """
     if q.charge or p.charge:
         return None
     shared_codes = q.codes & p.codes
     if shared_codes:
-        return SAME, 3.0, f"same part number {sorted(shared_codes)[0]}"
-    if q.codes and p.codes:
-        return None                            # two different part numbers are two different parts
-    if q.system and p.system and q.system != p.system:
-        return None                            # an inch part is not a metric part
-    # Pressure class and schedule must agree when both state one.
-    for prefix in ("cl", "sch"):
-        a = {x for x in q.sizes if x.startswith(prefix)}
-        b = {x for x in p.sizes if x.startswith(prefix)}
-        if a and b and not (a & b):
-            return None
+        return SAME, 1000.0, f"same part number {sorted(shared_codes)[0]}"
     words = _jaccard(q.words, p.words)
     if not (q.tagged and p.tagged):
         if (words >= 0.85 and len(q.words) >= 3 and (q.numbers or q.codes) and q.numbers == p.numbers
-                and q.sizes == p.sizes):
-            return SAME, 2.0 + words, "same description"
+                and q.sizes == p.sizes and not (q.codes and p.codes)):
+            return SAME, 900.0 + words, "same description"
         return None
-    # A special feature one has and the other lacks (weld washer vs flat washer) is a different part.
-    if not _features_agree(q.features, p.features):
+    rank = type_rank(q, p)
+    if not rank:
         return None
-    ptype = cap.relation(q.ptype, p.ptype)
+    features = _features_agree(q.features, p.features)
+
+    # Size: how close the main size is (M10 vs M12 closer than M10 vs M20), and the length.
+    sizes_equal = bool(q.sizes) and q.sizes == p.sizes
+    if sizes_equal:
+        size = 1.0
+    elif q.main_mm and p.main_mm:
+        size = 0.7 * min(q.main_mm, p.main_mm) / max(q.main_mm, p.main_mm)
+        size += 0.3 * (min(q.length_mm, p.length_mm) / max(q.length_mm, p.length_mm)
+                       if q.length_mm and p.length_mm else 0.5)
+    else:
+        size = 0.3                             # nothing to compare
+    system = not (q.system and p.system and q.system != p.system)
     material = cap.relation(q.material, p.material)
-    if ptype not in ("same", "close") or material == "different":
-        return None
-    if not _standards_agree(q.standards, p.standards):
-        return None
-    finish_known = bool(q.finish and p.finish)
-    finish_ok = not finish_known or cap.tags_match(q.finish, p.finish)
-    if ptype == "same" and material == "same" and q.sizes and q.sizes == p.sizes and finish_ok:
-        return SAME, 2.5 + 0.3 * words, "same part type, size, material" + (", finish" if finish_known else "")
-    # Similar: one size step away (M10 -> M12, 6" -> 8"). Without a size on both
-    # there is nothing to say how close they are.
-    if not (q.main_mm and p.main_mm):
-        return None
-    ratio = max(q.main_mm, p.main_mm) / max(min(q.main_mm, p.main_mm), 1e-6)
-    if ratio > 1.35:
-        return None
-    if q.length_mm and p.length_mm and max(q.length_mm, p.length_mm) / min(q.length_mm, p.length_mm) > 1.5:
-        return None
-    closeness = 1 - (ratio - 1) / 0.35
-    diff = [x for x, d in (("size", abs(q.main_mm - p.main_mm) > 0.01 or q.sizes != p.sizes),
-                           ("style", ptype != "same"),
-                           ("material", material != "same"),
-                           ("finish", not finish_ok)) if d]
-    score = 1.0 + 0.3 * closeness + 0.3 * words + 0.2 * (ptype == "same") + 0.2 * (material == "same") \
-        + (0.1 if finish_known and finish_ok else 0)
-    return SIMILAR, score, "same part type" + (f"; differs in {', '.join(diff)}" if diff else "")
+    standards = _agreement(q.standards, p.standards)
+    finish = _agreement({q.finish} - {""}, {p.finish} - {""})
+    rating = ""
+    for prefix in ("cl", "sch"):
+        a = {x for x in q.sizes if x.startswith(prefix)}
+        b = {x for x in p.sizes if x.startswith(prefix)}
+        if a and b:
+            rating = "same" if a & b and rating != "different" else "different"
+
+    score = 100.0 * rank + 10.0 * features
+    score += 3.0 * size * (1 if system else 0.6)
+    score += 2.0 * {"same": 1.0, "close": 0.6, "": 0.4}.get(material, 0.0)
+    score += 1.0 * {"same": 1.0, "": 0.5}.get(standards, 0.0)
+    score += 1.0 * (rating != "different")
+    score += 0.5 * {"same": 1.0, "": 0.5}.get(finish, 0.0)
+    score += 1.0 * words
+
+    differs = [name for name, d in (
+        ("style", rank < 3), ("feature", not features), ("size", not sizes_equal and bool(q.sizes or p.sizes)),
+        ("inch/metric", not system), ("grade", material == "different"), ("standard", standards == "different"),
+        ("class", rating == "different"), ("finish", finish == "different")) if d]
+    if (rank == 3 and features and sizes_equal and material == "same" and not differs
+            and not (q.codes and p.codes)):
+        return SAME, 500.0 + score, "same part type, size, material" + (", finish" if finish == "same" else "")
+    return SIMILAR, score, ("differs in " + ", ".join(differs)) if differs else "same part type"
 
 
 @dataclass
@@ -445,14 +474,14 @@ class PastQuoteIndex:
             n += 1
             if ln.fp.charge:
                 continue
-            for tok in cap.tag_tokens(ln.fp.ptype):
+            for tok in cap.tag_tokens(ln.fp.kind) | cap.tag_tokens(ln.fp.ptype):
                 self.by_type[tok].append(ln)
             for t in cap.all_tags(prof):
                 for tok in cap.tag_tokens(t):
                     self.by_token[tok].append(ln)
         return n
 
-    def find(self, q: Fingerprint, *, exclude_rfq: str = "", limit: int = 5) -> List[Match]:
+    def find(self, q: Fingerprint, *, exclude_rfq: str = "", limit: int = CANDIDATES) -> List[Match]:
         cands: Dict[int, PastLine] = {}
         for c in q.codes:
             for ln in self.by_code.get(c, []):
@@ -460,7 +489,7 @@ class PastQuoteIndex:
         for w in q.words:                          # near-identical descriptions
             for ln in self.by_word.get(w, []):
                 cands[id(ln)] = ln
-        for tok in cap.tag_tokens(q.ptype):        # the same part type, once read
+        for tok in cap.tag_tokens(q.kind) | cap.tag_tokens(q.ptype):    # the same kind of product, once read
             for ln in self.by_type.get(tok, []):
                 cands[id(ln)] = ln
         found: List[Match] = []
@@ -488,7 +517,7 @@ class PastQuoteIndex:
             if have is None or (ln.quote_date or date.min) > (have.line.quote_date or date.min):
                 latest[key2] = m
         ranked = sorted(latest.values(), key=lambda m: (m.level != SAME, -m.score))
-        return ranked[:limit]                      # the same part first, then closely similar
+        return ranked[:limit]                      # the same part first, then the closest
 
     def find_capability(self, tags: Optional[Dict[str, Any]], level: Callable[[str], str], *,
                         exclude_rfqs: Set[str] = frozenset(), limit: int = 2) -> List[CapMatch]:
@@ -551,13 +580,16 @@ class Wanted:
         return cap.text_key(self.text or self.fp.text)
 
 
-def wanted_from_extraction(extraction: Any, max_family_rows: int = 60) -> List[Wanted]:
+def wanted_from_extraction(extraction: Any, max_family_rows: int = 500) -> List[Wanted]:
     out: List[Wanted] = []
     for p in getattr(extraction, "products", None) or []:
         name = str(getattr(p, "name", "") or "").strip()
         specs = getattr(p, "specs", None)
         sp = {k: str(getattr(specs, k, "") or "") for k in ("material", "grade_standard", "finish", "key_dimensions", "drawing_no")} \
             if specs else {}
+        processes = [str(x) for x in (getattr(specs, "processes", None) or []) if str(x).strip()] if specs else []
+        if processes:
+            sp["processes"] = " → ".join(processes)
         spec_text = " | ".join(f"{k.replace('_', ' ')}: {v}" for k, v in sp.items() if v)
         annexure = getattr(p, "annexure", None)
         rows = []
@@ -572,11 +604,11 @@ def wanted_from_extraction(extraction: Any, max_family_rows: int = 60) -> List[W
                 code = str(r.get("part_number") or r.get("drawing_ref") or "")
                 # Measured from the row alone (the family's name may span sizes); the model sees both.
                 out.append(Wanted(name, label, fingerprint(cells, code),
-                                  text=f"{name} — {cells} | {spec_text}"[:400]))
+                                  text=f"{name} — {cells} | {spec_text}"[:cap.TEXT_LIMIT]))
         else:
             text = " ".join([name, sp.get("grade_standard", ""), sp.get("key_dimensions", "")])
             out.append(Wanted(name, name, fingerprint(text, sp.get("drawing_no", "")),
-                              text=f"{name} | {spec_text}"[:400]))
+                              text=f"{name} | {spec_text}"[:cap.TEXT_LIMIT]))
     return out
 
 
@@ -698,33 +730,39 @@ def render_section(results: List[Tuple[Wanted, List[Match]]],
                    capability: Sequence[Tuple[str, CapMatch]] = ()) -> str:
     """
     One bullet per past RFQ: its title linked to its OneDrive quotation folder,
-    then which of this RFQ's products it matches. Empty when nothing qualifies.
+    then which of this RFQ's products it matches — and for a similar one, what
+    differs. Empty when nothing qualifies.
     """
+    rank = {SAME: 0, SIMILAR: 1}
     rfqs: Dict[str, Dict[str, Any]] = {}
+
+    def entry(ln: PastLine) -> Dict[str, Any]:
+        return rfqs.setdefault(ln.rfq_row_id, {"title": ln.title, "link": ln.folder_link, "products": {},
+                                               "best": (9, 0.0)})
+
     for w, ms in results:
         for m in ms:
-            ln = m.line
-            r = rfqs.setdefault(ln.rfq_row_id, {"title": ln.title, "link": ln.folder_link, "products": {},
-                                                "date": ln.quote_date or date.min})
+            r = entry(m.line)
             have = r["products"].get(w.product)
-            if have != SAME:                       # same beats similar for a product
-                r["products"][w.product] = m.level
+            key = (rank[m.level], -m.score)
+            if have is None or key < have[0]:          # a product's best match in this RFQ
+                label = m.level if m.level == SAME or not m.why.startswith("differs") else f"{m.level} — {m.why}"
+                r["products"][w.product] = (key, label)
+                r["best"] = min(r["best"], key)
     for product, cm in capability:
-        ln = cm.line
-        r = rfqs.setdefault(ln.rfq_row_id, {"title": ln.title, "link": ln.folder_link, "products": {},
-                                            "date": ln.quote_date or date.min})
-        r["products"].setdefault(product, "capability: " + ", ".join(cm.shared[:2]))
+        r = entry(cm.line)
+        if product not in r["products"]:
+            r["products"][product] = ((2, -cm.score), "capability: " + ", ".join(cm.shared[:2]))
+            r["best"] = min(r["best"], (2, -cm.score))
     if not rfqs:
         return ""
-    rank = {SAME: 0, SIMILAR: 1}
-    ranked = sorted(rfqs.values(), key=lambda r: (min(rank.get(v, 2) for v in r["products"].values()),
-                                                 -len(r["products"]), -r["date"].toordinal()))
+    ranked = sorted(rfqs.values(), key=lambda r: (r["best"][0], -len(r["products"]), r["best"][1]))
     out = ["---", "", SECTION_HEADING, ""]
     for r in ranked[:MAX_RFQS]:
         title = r["title"] or "Untitled RFQ"
         head = f"[{title}]({r['link']})" if r["link"] else title
-        products = sorted(r["products"].items(), key=lambda kv: rank.get(kv[1], 2))
-        out.append(f"- {head} — " + ", ".join(f"{name} ({level})" for name, level in products))
+        products = sorted(r["products"].items(), key=lambda kv: kv[1][0])
+        out.append(f"- {head} — " + ", ".join(f"{name} ({label})" for name, (_, label) in products))
     if len(ranked) > MAX_RFQS:
         out.append(f"- …and {len(ranked) - MAX_RFQS} more past RFQ(s)")
     return "\n".join(out)

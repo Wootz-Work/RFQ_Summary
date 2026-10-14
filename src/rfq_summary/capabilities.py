@@ -5,6 +5,7 @@ Nothing here is a hand-written list of part types, styles, materials or
 finishes. Each quoted line is read once by the model
 (prompts/past_quote_capabilities.md) into a profile:
 
+  kind              the kind of product, without its style (washer, flange)
   part_type         what the part is, including the style that makes it a
                     different product (weld neck vs slip-on flange)
   material          the grade, normalised (316 / 316L / A4 read the same)
@@ -30,6 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Set
 
 KINDS = ("process", "feature", "coating", "special_material")      # capability lists
+TEXT_LIMIT = 600                     # characters of a part's text the model is shown
 Profile = Dict[str, Any]
 
 
@@ -75,10 +77,11 @@ def _name(v: Any) -> str:
 
 
 def clean_profile(raw: Any) -> Profile:
-    out: Profile = {"part_type": "", "material": "", "standards": [], "part_code": "", "charge": False,
+    out: Profile = {"kind": "", "part_type": "", "material": "", "standards": [], "part_code": "", "charge": False,
                     **{k: [] for k in KINDS}}
     if not isinstance(raw, dict):
         return out
+    out["kind"] = _name(raw.get("kind"))
     out["part_type"] = _name(raw.get("part_type"))
     out["material"] = _name(raw.get("material"))
     std = raw.get("standards") or []
@@ -120,7 +123,7 @@ def parse_reply(reply: str) -> Dict[str, Profile]:
 
 # Bumped whenever the profile's fields change: a cache written in an older
 # format is read again from scratch rather than half-understood.
-PROFILE_FORMAT = 2
+PROFILE_FORMAT = 3
 
 
 class TagStore:
@@ -155,11 +158,11 @@ class TagStore:
         """The names in use so far, most used first — what new readings should reuse."""
         with self.lock:
             profiles = list(self.tags.values())
-        counts: Dict[str, Counter] = {f: Counter() for f in ("part_type", "material", *KINDS)}
+        counts: Dict[str, Counter] = {f: Counter() for f in ("kind", "part_type", "material", *KINDS)}
         for p in profiles:
             if p.get("charge"):
                 continue
-            for f in ("part_type", "material"):
+            for f in ("kind", "part_type", "material"):
                 if p.get(f):
                     counts[f][p[f]] += 1
             for kind in KINDS:
@@ -235,7 +238,8 @@ def tag_texts(settings: Any, texts: Dict[str, str], *, run_id: str = "", batch: 
 
     def one(chunk: List[str]) -> Dict[str, Profile]:
         try:
-            found = _ask_model(settings, [{"id": k, "text": todo[k][:400]} for k in chunk], run_id, store.vocabulary())
+            found = _ask_model(settings, [{"id": k, "text": todo[k][:TEXT_LIMIT]} for k in chunk], run_id,
+                               store.vocabulary())
             found = {k: v for k, v in found.items() if k in todo}
             store.put(found)
             return found
