@@ -35,6 +35,7 @@ import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from itertools import zip_longest
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from . import capabilities as cap
@@ -235,6 +236,7 @@ class Fingerprint:
     finish: str = ""
     standards: Set[str] = field(default_factory=set)
     features: Set[str] = field(default_factory=set)
+    profile: Optional[Dict[str, Any]] = None
 
 
 def norm_code(code: str) -> str:
@@ -309,6 +311,7 @@ def apply_profile(fp: Fingerprint, profile: Optional[Dict[str, Any]]) -> None:
     if profile is None:
         return
     fp.tagged = True
+    fp.profile = profile
     fp.charge = bool(profile.get("charge"))
     fp.kind = profile.get("kind") or ""
     fp.ptype = profile.get("part_type") or ""
@@ -356,8 +359,8 @@ def type_rank(q: "Fingerprint", p: "Fingerprint") -> int:
 
 # ----------------------------------------------------------------------------- matching
 
-SAME, SIMILAR = "same", "similar"
-CANDIDATES = 20                # past lines ranked per item; the summary shows the best few
+SAME, SIMILAR, CAPABILITY = "same", "similar", "capability"
+CANDIDATES = 20                # past lines kept per item and group; the summary shows the best few
 
 
 @dataclass
@@ -366,18 +369,53 @@ class Match:
     line: PastLine
     score: float
     why: str
+    group: int = 1
+    shared: List[str] = field(default_factory=list)
 
 
-def compare(q: Fingerprint, p: Fingerprint) -> Optional[Tuple[str, float, str]]:
+def ranked(matches: Iterable[Match]) -> List[Match]:
+    """All matches in the order they are shown (see select), past RFQs not yet collapsed."""
+    groups: Dict[int, List[Match]] = defaultdict(list)
+    for m in matches:
+        groups[m.group].append(m)
+    for g in groups.values():
+        g.sort(key=lambda m: -m.score)
+    mixed = [m for pair in zip_longest(groups[2], groups[3]) for m in pair if m is not None]
+    return groups[0] + groups[1] + mixed + groups[4] + groups[5]
+
+
+def select(matches: Iterable[Match], limit: int) -> List[Match]:
     """
-    (level, score, why) for a past part against a new one; None when it is not
-    the same kind of product.
+    The matches to show, best first, one per past RFQ: the same part; the same
+    kind with the special capability; then, taken in turn so neither crowds the
+    other out, other products made with it and the same part type without it;
+    then the same kind in another style without it; then combination leads.
+    """
+    out: List[Match] = []
+    seen: Set[str] = set()
+    for m in ranked(matches):
+        if m.line.rfq_row_id not in seen:
+            seen.add(m.line.rfq_row_id)
+            out.append(m)
+    return out[:limit]
 
-    Only the kind of product decides whether a past part is shown. Everything
-    else ranks it, in this order of weight: the product type (the same style
-    ahead of another style of the same kind), then a feature that sets parts
-    apart (a weld projection, a locking insert), then size, grade, standard,
-    class, finish and wording. 'Same' is the part itself — the same part number,
+
+def compare(q: Fingerprint, p: Fingerprint, special: Optional[Dict[str, int]] = None
+            ) -> Optional[Tuple[str, float, str, int, List[str]]]:
+    """
+    (level, score, why, group, shared) for a past part against a new one; None
+    when it is neither the same kind of product nor made with what this part
+    specially needs.
+
+    `special` is what decides who can make the new part (special_tags: a weld
+    projection, Hastelloy, rubber-to-metal bonding). The group says where the
+    match ranks (see select): 0 the same part; 1 the same kind with the special
+    capability (or, with none needed, simply the same kind); 2 another product
+    made with it; 3 the same part type without it; 4 the same kind in another
+    style without it; 5 another product sharing the whole common combination of
+    process, material and coating. Within a group: how much of the special
+    capability is shared, the product type, a differentiating feature, then
+    size, grade, standard, class, finish and wording. 'Same' is the part itself — the same part number,
     or the same type, feature, grade and sizes with nothing else differing.
     Before both lines have been read, only a shared part number or a
     near-identical description (the same words and every number equal) counts.
@@ -386,15 +424,25 @@ def compare(q: Fingerprint, p: Fingerprint) -> Optional[Tuple[str, float, str]]:
         return None
     shared_codes = q.codes & p.codes
     if shared_codes:
-        return SAME, 1000.0, f"same part number {sorted(shared_codes)[0]}"
+        return SAME, 10000.0, f"same part number {sorted(shared_codes)[0]}", 0, []
     words = _jaccard(q.words, p.words)
     if not (q.tagged and p.tagged):
         if (words >= 0.85 and len(q.words) >= 3 and (q.numbers or q.codes) and q.numbers == p.numbers
                 and q.sizes == p.sizes and not (q.codes and p.codes)):
-            return SAME, 900.0 + words, "same description"
+            return SAME, 9000.0 + words, "same description", 0, []
         return None
     rank = type_rank(q, p)
-    if not rank:
+    special = special or {}
+    have = cap.all_tags(p.profile)
+    shared = [t for t in special if any(cap.tags_match(t, h) for h in have)]
+    share = sum(special[t] for t in shared) / sum(special.values()) if special else 0.0
+    combo = [t for kind in ("process", "special_material", "coating") for t in (q.profile or {}).get(kind) or []]
+    whole_combo = len(combo) >= 2 and all(any(cap.tags_match(t, h) for h in have) for t in combo)
+    if special:
+        group = (1 if rank else 2) if shared else (3 if rank >= 2 else 4 if rank else 0)
+    else:
+        group = 1 if rank else (5 if whole_combo else 0)
+    if not group:
         return None
     features = _features_agree(q.features, p.features)
 
@@ -419,7 +467,7 @@ def compare(q: Fingerprint, p: Fingerprint) -> Optional[Tuple[str, float, str]]:
         if a and b:
             rating = "same" if a & b and rating != "different" else "different"
 
-    score = 100.0 * rank + 10.0 * features
+    score = 1000.0 * share + 100.0 * rank + 10.0 * features
     score += 3.0 * size * (1 if system else 0.6)
     score += 2.0 * {"same": 1.0, "close": 0.6, "": 0.4}.get(material, 0.0)
     score += 1.0 * {"same": 1.0, "": 0.5}.get(standards, 0.0)
@@ -428,20 +476,15 @@ def compare(q: Fingerprint, p: Fingerprint) -> Optional[Tuple[str, float, str]]:
     score += 1.0 * words
 
     differs = [name for name, d in (
-        ("style", rank < 3), ("feature", not features), ("size", not sizes_equal and bool(q.sizes or p.sizes)),
+        ("style", rank < 3), ("feature", not features or bool(special and not shared)), ("size", not sizes_equal and bool(q.sizes or p.sizes)),
         ("inch/metric", not system), ("grade", material == "different"), ("standard", standards == "different"),
         ("class", rating == "different"), ("finish", finish == "different")) if d]
     if (rank == 3 and features and sizes_equal and material == "same" and not differs
-            and not (q.codes and p.codes)):
-        return SAME, 500.0 + score, "same part type, size, material" + (", finish" if finish == "same" else "")
-    return SIMILAR, score, ("differs in " + ", ".join(differs)) if differs else "same part type"
-
-
-@dataclass
-class CapMatch:
-    line: PastLine
-    score: float
-    shared: List[str]          # the capabilities the past part and the new one have in common
+            and not (q.codes and p.codes) and (not special or share == 1)):
+        return SAME, 5000.0 + score, "same part type, size, material" + (", finish" if finish == "same" else ""), 0, shared
+    if group in (2, 5):
+        return CAPABILITY, score, "capability: " + ", ".join((shared or combo)[:2]), group, shared or combo
+    return SIMILAR, score, ("differs in " + ", ".join(differs)) if differs else "same part type", group, shared
 
 
 class PastQuoteIndex:
@@ -481,7 +524,10 @@ class PastQuoteIndex:
                     self.by_token[tok].append(ln)
         return n
 
-    def find(self, q: Fingerprint, *, exclude_rfq: str = "", limit: int = CANDIDATES) -> List[Match]:
+    def find(self, q: Fingerprint, level: Optional[Callable[[str], str]] = None, *, exclude_rfq: str = "",
+             limit: int = CANDIDATES) -> List[Match]:
+        """Every match worth ranking, up to `limit` per group, in the order select() shows them."""
+        special = cap.special_tags(q.profile, level)
         cands: Dict[int, PastLine] = {}
         for c in q.codes:
             for ln in self.by_code.get(c, []):
@@ -492,16 +538,20 @@ class PastQuoteIndex:
         for tok in cap.tag_tokens(q.kind) | cap.tag_tokens(q.ptype):    # the same kind of product, once read
             for ln in self.by_type.get(tok, []):
                 cands[id(ln)] = ln
+        for t in cap.all_tags(q.profile):          # made the same way
+            for tok in cap.tag_tokens(t):
+                for ln in self.by_token.get(tok, []):
+                    cands[id(ln)] = ln
         found: List[Match] = []
         for ln in cands.values():
             if exclude_rfq and ln.rfq_row_id == exclude_rfq:
                 continue
-            hit = compare(q, ln.fp)
+            hit = compare(q, ln.fp, special)
             if hit:
-                level, score, why = hit
+                lv, score, why, group, shared = hit
                 age = ((date.today() - ln.quote_date).days / 365) if ln.quote_date else 2
                 score += 0.15 * (ln.status.lower() == "won") - 0.1 * min(age, 3)
-                found.append(Match(level, ln, score, why))
+                found.append(Match(lv, ln, score, why, group, shared))
         # One entry per past RFQ and part: the best line of each.
         best: Dict[Tuple[str, str], Match] = {}
         for m in found:
@@ -516,53 +566,12 @@ class PastQuoteIndex:
             have = latest.get(key2)
             if have is None or (ln.quote_date or date.min) > (have.line.quote_date or date.min):
                 latest[key2] = m
-        ranked = sorted(latest.values(), key=lambda m: (m.level != SAME, -m.score))
-        return ranked[:limit]                      # the same part first, then the closest
-
-    def find_capability(self, tags: Optional[Dict[str, Any]], level: Callable[[str], str], *,
-                        exclude_rfqs: Set[str] = frozenset(), limit: int = 2) -> List[CapMatch]:
-        """
-        Past parts whose suppliers can do what this part needs — any part type.
-
-        A past part is a lead when it shares a capability that is specialist or
-        rare among suppliers (judged on the market, not on how often we quote it),
-        or when it shares the part's whole combination of process, material and
-        coating. A part with a special feature needs a supplier who made that
-        feature. Leads rank by how much specialist capability they share, then a
-        won quote, then the most recent.
-        """
-        wanted = sorted(cap.all_tags(tags))
-        if not wanted:
-            return []
-        features = set((tags or {}).get("feature") or [])
-        combo = {t for kind in ("process", "special_material", "coating") for t in (tags or {}).get(kind) or []}
-        weight = {"rare": 3, "specialist": 2}
-        cands: Dict[int, PastLine] = {}
-        for t in wanted:
-            for tok in cap.tag_tokens(t):
-                for ln in self.by_token.get(tok, []):
-                    cands[id(ln)] = ln
-        best: Dict[str, CapMatch] = {}
-        for ln in cands.values():
-            if ln.rfq_row_id in exclude_rfqs or ln.fp.charge:
-                continue
-            have = cap.all_tags(ln.tags)
-            shared = [t for t in wanted if any(cap.tags_match(t, h) for h in have)]
-            if not shared:
-                continue
-            if features and not any(t in features for t in shared):
-                continue
-            special = [t for t in shared if weight.get(level(t))]
-            whole_combo = len(combo) >= 2 and combo <= set(shared)
-            if not special and not whole_combo:
-                continue
-            age = ((date.today() - ln.quote_date).days / 365) if ln.quote_date else 3
-            score = sum(weight.get(level(t), 0) for t in shared) + 0.5 * len(shared) \
-                + 0.3 * (ln.status.lower() == "won") - 0.1 * min(age, 3)
-            cur = best.get(ln.rfq_row_id)
-            if cur is None or score > cur.score:
-                best[ln.rfq_row_id] = CapMatch(ln, score, special or shared)
-        return sorted(best.values(), key=lambda m: -m.score)[:limit]
+        per_group: Dict[int, List[Match]] = defaultdict(list)
+        for m in sorted(latest.values(), key=lambda m: -m.score):
+            if len(per_group[m.group]) < limit:
+                per_group[m.group].append(m)
+        kept = [m for g in per_group.values() for m in g]
+        return ranked(kept)
 
 
 # ----------------------------------------------------------------------------- a new RFQ's products
@@ -722,41 +731,35 @@ def _start_backfill(settings: Any, index: "PastQuoteIndex") -> None:
 # ----------------------------------------------------------------------------- the section
 
 SECTION_HEADING = "#### 🔁 Quoted before"
-MAX_RFQS = 15                  # past RFQs listed in the section; the rest are counted
+MAX_RFQS = 25                  # past RFQs listed in the section; the rest are counted
 _SECTION_RX = re.compile(r"\n*---\n+" + re.escape(SECTION_HEADING) + r".*?(?=\n</triage>|\Z)", re.DOTALL)
 
 
-def render_section(results: List[Tuple[Wanted, List[Match]]],
-                   capability: Sequence[Tuple[str, CapMatch]] = ()) -> str:
+def render_section(results: List[Tuple[Wanted, List[Match]]]) -> str:
     """
     One bullet per past RFQ: its title linked to its OneDrive quotation folder,
-    then which of this RFQ's products it matches — and for a similar one, what
-    differs. Empty when nothing qualifies.
+    then which of this RFQ's products it matches — for a similar one what
+    differs, for a capability lead what it shares. Each product's matches come
+    in the order select() ranked them. Empty when nothing qualifies.
     """
-    rank = {SAME: 0, SIMILAR: 1}
     rfqs: Dict[str, Dict[str, Any]] = {}
-
-    def entry(ln: PastLine) -> Dict[str, Any]:
-        return rfqs.setdefault(ln.rfq_row_id, {"title": ln.title, "link": ln.folder_link, "products": {},
-                                               "best": (9, 0.0)})
-
     for w, ms in results:
-        for m in ms:
-            r = entry(m.line)
-            have = r["products"].get(w.product)
-            key = (rank[m.level], -m.score)
-            if have is None or key < have[0]:          # a product's best match in this RFQ
-                label = m.level if m.level == SAME or not m.why.startswith("differs") else f"{m.level} — {m.why}"
-                r["products"][w.product] = (key, label)
-                r["best"] = min(r["best"], key)
-    for product, cm in capability:
-        r = entry(cm.line)
-        if product not in r["products"]:
-            r["products"][product] = ((2, -cm.score), "capability: " + ", ".join(cm.shared[:2]))
-            r["best"] = min(r["best"], (2, -cm.score))
+        for pos, m in enumerate(ms):
+            r = rfqs.setdefault(m.line.rfq_row_id, {"title": m.line.title, "link": m.line.folder_link,
+                                                    "products": {}, "best": 10 ** 6})
+            if w.product in r["products"] and r["products"][w.product][0] <= pos:
+                continue
+            if m.level == SIMILAR and m.why.startswith("differs"):
+                label = f"{m.level} — {m.why}"
+            elif m.level == CAPABILITY:
+                label = m.why
+            else:
+                label = m.level
+            r["products"][w.product] = (pos, label)
+            r["best"] = min(r["best"], pos)
     if not rfqs:
         return ""
-    ranked = sorted(rfqs.values(), key=lambda r: (r["best"][0], -len(r["products"]), r["best"][1]))
+    ranked = sorted(rfqs.values(), key=lambda r: (r["best"], -len(r["products"])))
     out = ["---", "", SECTION_HEADING, ""]
     for r in ranked[:MAX_RFQS]:
         title = r["title"] or "Untitled RFQ"

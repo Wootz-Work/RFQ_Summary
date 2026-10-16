@@ -108,6 +108,25 @@ def all_tags(profile: Optional[Profile]) -> Set[str]:
     return {t for kind in KINDS for t in (profile or {}).get(kind, []) or []}
 
 
+SPECIAL_WEIGHT = {"rare": 3, "specialist": 2}
+
+
+def special_tags(profile: Optional[Profile], level: Any) -> Dict[str, int]:
+    """
+    What decides who can make a part: its feature, process and special-material
+    names that are specialist or rare among suppliers, with a weight (rare 3,
+    specialist 2). Coatings never count — any maker can have a part plated or
+    coated outside, so a coating ranks only as a finish.
+    """
+    out: Dict[str, int] = {}
+    for kind in ("feature", "process", "special_material"):
+        for t in (profile or {}).get(kind) or []:
+            w = SPECIAL_WEIGHT.get(level(t) if level else "")
+            if w:
+                out[t] = max(out.get(t, 0), w)
+    return out
+
+
 def parse_reply(reply: str) -> Dict[str, Profile]:
     """The model's JSON object → {id: profile}. Anything unreadable is dropped, never guessed."""
     text = reply or ""

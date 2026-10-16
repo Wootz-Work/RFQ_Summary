@@ -202,7 +202,8 @@ check("a part number the model found in the name is matched too",
       [m.line.rfq_row_id for m in index.find(Q("Pin", code="MT-WST00122480"))] == ["R7"])
 check("the RFQ being quoted is left out of its own past", all(m.line.rfq_row_id != "R1" for m in
       index.find(Q('M10 x 120 Hex Bolt DIN 931 8.8 HDG', BOLT), exclude_rfq="R1")))
-check("up to twenty candidates are ranked behind the scenes", pq.CANDIDATES == 20)
+check("up to twenty candidates per group are ranked behind the scenes; ten shown per product",
+      pq.CANDIDATES == 20 and Settings().past_quotes_per_product == 10)
 check("names relate by their words: a style added is close, a different grade or standard is not",
       cap.relation("rod end", "spherical rod end") == "close" and cap.relation("hex bolt", "hex bolt") == "same"
       and cap.relation("alloy steel 8.8", "alloy steel 10.9") == "different"
@@ -222,7 +223,7 @@ check("…and says which of this RFQ's products match, at product level",
 check("a similar one says what differs", bullets[3].endswith("— Hex Bolts M10 (similar — differs in size)"), bullets[3])
 check("RFQs with the same part come before those with only a similar one",
       [re.match(r"- \[?(.*?)(\]\(.*?\))? — ", b).group(1) for b in bullets]
-      == ["Proj R1 - Parts", "Proj R3 - Parts", "Proj R4 - Parts", "Proj R2 - Parts", "Proj R6 - Parts"],
+      == ["Proj R1 - Parts", "Proj R4 - Parts", "Proj R3 - Parts", "Proj R2 - Parts", "Proj R6 - Parts"],
       str(bullets))
 check("no prices, quantities or suppliers — just the pointer",
       "EUR" not in sec and "@" not in sec and "margin" not in sec and "Shared with" not in sec, sec)
@@ -233,8 +234,8 @@ check("a past RFQ without a folder link shows its title plain",
 check("nothing close means no section at all", pq.render_section([(w, [])]) == "")
 lots = [(pq.Wanted(f"P{i}", f"P{i}", w.fp), [pq.Match("same", pq.PastLine(**{**by[("R1", "M10 x 120 Hex Bolt D")].__dict__,
                                                                          "rfq_row_id": f"X{i}", "title": f"T{i}"}), 2, "x")])
-        for i in range(18)]
-check("at most fifteen past RFQs, then a count", pq.render_section(lots).count("\n- [T") == 15
+        for i in range(28)]
+check("at most twenty-five past RFQs, then a count", pq.render_section(lots).count("\n- [T") == 25
       and "and 3 more past RFQ(s)" in pq.render_section(lots))
 
 summary = "<triage>\n**Two lines.**\n\n| a | b |\n</triage>"
@@ -421,19 +422,49 @@ level = lambda t: LEVEL.get(t, "")
 
 rubber = P("moulded rubber part", "nbr rubber", kind="rubber moulding", process=["rubber compression moulding"],
            special_material=["nbr rubber"])
-leads = cidx.find_capability(rubber, level)
-check("a moulded rubber part finds the rubber moulders, best first",
-      sorted(m.line.title for m in leads) == ["Entai 24 - Rubber-metal bonded component", "Shakti 27 - Aluminium Boxes"],
-      str([(m.line.title, m.shared) for m in leads]))
+
+
+def top(idx, text, profile, limit=10, **kw):
+    """What the summary would show for one item: up to `limit` past RFQs, best first."""
+    return pq.select(idx.find(Q(text, profile), level, **kw), limit)
+
+
+leads = top(cidx, "Moulded Rubber Part Ø38 NBR 60 Shore A", rubber)
+check("a moulded rubber part finds the rubber moulders, as capability leads",
+      sorted(m.line.title for m in leads) == ["Entai 24 - Rubber-metal bonded component", "Shakti 27 - Aluminium Boxes"]
+      and all(m.level == "capability" for m in leads), str([(m.line.title, m.level, m.shared) for m in leads]))
 check("…not the plastic moulder or the screw with a rubber washer",
       not any("HDPE" in m.line.title or "Woodgrip" in m.line.title for m in leads))
-check("a common capability alone is not a lead",
-      cidx.find_capability(P("turned bush", "steel", process=["cnc turning"]), level) == [])
+check("a common capability alone brings in no other products",
+      all(m.level != "capability" for m in top(cidx, "Turned bush 20", P("turned bush", "steel", process=["cnc turning"]))))
 weld = P("weld washer", "mild steel", process=["stamping"], feature=["projection weld nut"])
-wl = cidx.find_capability(weld, level, exclude_rfqs={"G5"})
-check("a weld washer is led to the weld nut supplier, not the flat washer",
-      wl and wl[0].line.title == "Weld 2 - Weld nuts" and all("Flat" not in m.line.title for m in wl),
-      str([(m.line.title, m.shared) for m in wl]))
+wl = top(cidx, "M6 Weld Washer", weld)
+check("a weld washer: the weld washer, then the weld nut maker, then the flat washer last",
+      [(m.line.title, m.level) for m in wl] == [("Weld 1 - Weld washers", "same"), ("Weld 2 - Weld nuts", "capability"),
+                                               ("Flat 1 - Washers", "similar")], str([(m.line.title, m.level, m.why) for m in wl]))
+check("…the flat washer saying what it lacks", wl[-1].why == "differs in style, feature", wl[-1].why)
+
+# A Hastelloy flange: suppliers who work Hastelloy first, mixed with the same flange in another material.
+hrows = [crow("HF", '4" WN RF Flange Hastelloy C276 Class 150', "Hast 0 - Flanges")] + \
+        [crow(f"H{i}", f"Hastelloy C276 machined part {i}", f"Hast {i + 1} - Machined") for i in range(10)] + \
+        [crow(f"C{i}", f'4" WN RF Flange A105 Class 150 lot {i}', f"Carbon {i} - Flanges") for i in range(3)] + \
+        [crow("SO", '4" SO RF Flange A105 Class 150', "Slip 1 - Flanges")]
+hl_lines = pq.clean_rows(hrows)
+HREAD = {"HF": P("weld neck flange", "hastelloy c276", ["asme b16.5"], process=["forging"], special_material=["hastelloy"]),
+         "SO": P("slip-on flange", "carbon steel a105", ["asme b16.5"], process=["forging"])}
+hidx = pq.PastQuoteIndex(hl_lines)
+hidx.apply_tags({ln.tag_key: HREAD.get(ln.rfq_row_id) or (
+    P("machined part", "hastelloy c276", process=["cnc turning"], special_material=["hastelloy"])
+    if ln.rfq_row_id.startswith("H") else P("weld neck flange", "carbon steel a105", ["asme b16.5"], process=["forging"]))
+    for ln in hl_lines})
+hf = top(hidx, '4" Weld Neck Flange RF 150# Hastelloy C276 B16.5',
+         P("weld neck flange", "hastelloy c276", ["asme b16.5"], process=["forging"], special_material=["hastelloy"]))
+ids = [m.line.rfq_row_id for m in hf]
+check("Hastelloy flange: the Hastelloy flange first, then Hastelloy work and carbon steel flanges taken in turn",
+      ids[0] == "HF" and ids[1].startswith("H") and ids[2].startswith("C") and ids[3].startswith("H") and ids[4].startswith("C"),
+      str(ids))
+check("…all three carbon steel flanges make the ten despite ten Hastelloy parts; the slip-on does not",
+      len(hf) == 10 and sum(i.startswith("C") for i in ids) == 3 and "SO" not in ids, str(ids))
 
 # The two cases the DB-frequency rule got wrong.
 many = pq.clean_rows([crow(f"H{i}", f"Hastelloy C276 part {i}", f"Trump {i} - Hastelloy") for i in range(10)] +
@@ -442,31 +473,29 @@ many = pq.clean_rows([crow(f"H{i}", f"Hastelloy C276 part {i}", f"Trump {i} - Ha
 mstore = {}
 for ln in many:
     if "Hastelloy" in ln.part_name:
-        t = P("machined part", "hastelloy c276", process=["cnc turning"], special_material=["hastelloy"])
+        t_ = P("machined part", "hastelloy c276", process=["cnc turning"], special_material=["hastelloy"])
     elif "Brass" in ln.part_name:
-        t = P("turned bush", "free cutting brass", process=["cnc turning"], special_material=["free cutting brass"],
-              coating=["chrome plating"])
+        t_ = P("turned bush", "free cutting brass", process=["cnc turning"], special_material=["free cutting brass"],
+               coating=["chrome plating"])
     else:
-        t = P("bracket", "mild steel", process=["sheet metal fabrication"])
-    mstore[ln.tag_key] = t
+        t_ = P("bracket", "mild steel", process=["sheet metal fabrication"])
+    mstore[ln.tag_key] = t_
 midx = pq.PastQuoteIndex(many)
 midx.apply_tags(mstore)
-hl = midx.find_capability(P("machined part", "hastelloy c276", process=["cnc milling"], special_material=["hastelloy"]),
-                          level, limit=5)
-check("rare in the market but frequent in our quotes: still a lead (Hastelloy on 10 of 16 RFQs)",
-      len(hl) == 5 and all("Hastelloy" in m.line.title for m in hl), str([m.line.title for m in hl]))
+hl = top(midx, "Hastelloy milled block", P("milled block", "hastelloy c276", process=["cnc milling"],
+                                           special_material=["hastelloy"]), limit=5)
+check("rare in the market but frequent in our quotes: still the special capability (Hastelloy on 10 of 16 RFQs)",
+      len(hl) == 5 and all("Hastelloy" in m.line.title and m.level == "capability" for m in hl), str([m.line.title for m in hl]))
 check("common in the market but rare in our quotes: not a lead (CNC turning on one RFQ)",
-      midx.find_capability(P("pin", "mild steel", process=["cnc turning"]), level) == [])
-combo = P("bush", "free cutting brass", process=["cnc turning"], special_material=["free cutting brass"],
+      top(midx, "Pin", P("pin", "mild steel", process=["cnc turning"])) == [])
+combo = P("pin", "free cutting brass", process=["cnc turning"], special_material=["free cutting brass"],
           coating=["chrome plating"])
-check("the whole combination of common capabilities is a lead (turned, brass, chrome plated)",
-      [m.line.title for m in midx.find_capability(combo, level)] == ["Baba 1 - Brass"])
+check("another product sharing the whole common combination is a lead (turned, brass, chrome plated)",
+      [(m.line.title, m.level) for m in top(midx, "Brass pin", combo)] == [("Baba 1 - Brass", "capability")])
 check("…but part of the combination is not",
-      midx.find_capability(P("bush", "free cutting brass", process=["cnc turning"], special_material=["free cutting brass"],
-                             coating=["nickel plating"]), level) == [])
-check("up to the limit, and only leads that qualify",
-      len(midx.find_capability(P("part", "hastelloy", special_material=["hastelloy"]), level, limit=5)) == 5
-      and len(midx.find_capability(combo, level, limit=5)) == 1)
+      top(midx, "Brass pin", P("pin", "free cutting brass", process=["cnc turning"], special_material=["free cutting brass"],
+                               coating=["nickel plating"])) == [])
+check("a coating is never the special capability", cap.special_tags(P(coating=["pvd coating"]), lambda t: "rare") == {})
 
 qf = Q("M6 Weld Washer", weld)
 ff = next(l for l in cl if l.part_name == "M6 Flat Washer DIN 125").fp
@@ -475,14 +504,11 @@ weld_hit = pq.compare(qf, next(l for l in cl if l.part_name == "M6 Weld Washer")
 check("a flat washer is still a washer for a weld washer: similar, saying the style and feature differ",
       flat_hit and flat_hit[0] == "similar" and flat_hit[2] == "differs in style, feature", str(flat_hit))
 check("…ranked well below a weld washer", weld_hit and weld_hit[1] > flat_hit[1] + 10, str((weld_hit, flat_hit)))
-check("a weld nut is another product: a capability lead, never a similar part",
-      pq.compare(qf, next(l for l in cl if l.part_name == "M6 Square Weld Nut").fp) is None)
 
 wr = pq.Wanted("Moulded Rubber Part Ø38", "Moulded Rubber Part Ø38", Q("Moulded Rubber Part Ø38 NBR 60 Shore A", rubber))
-csec = pq.render_section([(wr, [])], [("Moulded Rubber Part Ø38", m) for m in leads])
+csec = pq.render_section([(wr, leads)])
 check("capability leads are shown with the shared capability",
-      "[Shakti 27 - Aluminium Boxes](https://onedrive.example/G1) — Moulded Rubber Part Ø38 (capability: rubber compression moulding)"
-      in csec, csec)
+      "— Moulded Rubber Part Ø38 (capability: rubber compression moulding" in csec, csec)
 
 # ---- the model's readings: cached, named consistently, never from a fixed list ------------
 with tempfile.TemporaryDirectory() as d:

@@ -480,7 +480,7 @@ def write_past_quotes(settings: Settings, out: TriageOutputPayload) -> int:
     number of RFQ items that got a past reference.
     """
     from . import capabilities as cap
-    from .past_quotes import apply_profile, attach_section, load_index, render_section, wanted_from_extraction
+    from .past_quotes import apply_profile, attach_section, load_index, render_section, select, wanted_from_extraction
 
     if not settings.enable_past_quotes:
         return 0
@@ -503,48 +503,32 @@ def write_past_quotes(settings: Settings, out: TriageOutputPayload) -> int:
             for w in wanted:
                 apply_profile(w.fp, profiles.get(w.key))
         per_product = max(1, settings.past_quotes_per_product)
-        # Up to 20 candidates per item, ranked; the summary keeps the best few per
-        # product — a family's rows share the limit, the same part first.
-        results = [(w, index.find(w.fp, exclude_rfq=out.row_id)) for w in wanted]
-        keep: Dict[str, set] = {}
-        for name in dict.fromkeys(w.product for w in wanted):
-            ranked = sorted((m for w, ms in results if w.product == name for m in ms),
-                            key=lambda m: (m.level != "same", -m.score))
-            keep[name] = set(list(dict.fromkeys(m.line.rfq_row_id for m in ranked))[:per_product])
-        results = [(w, [m for m in ms if m.line.rfq_row_id in keep[w.product]]) for w, ms in results]
-        found = [(w, ms) for w, ms in results if ms]
-        # Who can make it: only for products with no same part on record, and only
-        # up to the per-product limit — never padded with leads that do not qualify.
-        capability = []
         level = cap.levels_for(settings).level
+        # Every match worth ranking per item; then per product (a family's rows
+        # together) the best few: the same part, the special capability first,
+        # mixed with the same part type, then the rest.
+        results = [(w, index.find(w.fp, level, exclude_rfq=out.row_id)) for w in wanted]
+        found = []
         for name in dict.fromkeys(w.product for w in wanted):
-            mine = [m for w, ms in found if w.product == name for m in ms]
-            rfqs = {m.line.rfq_row_id for m in mine}
-            room = per_product - len(rfqs)
-            if any(m.level == "same" for m in mine) or room <= 0:
-                continue
-            leads: Dict[str, Any] = {}
-            for w in wanted:
-                if w.product != name or w.key not in profiles:
-                    continue
-                for cm in index.find_capability(profiles[w.key], level, exclude_rfqs=rfqs | {out.row_id}, limit=room):
-                    if cm.line.rfq_row_id not in leads or cm.score > leads[cm.line.rfq_row_id].score:
-                        leads[cm.line.rfq_row_id] = cm
-            capability += [(name, cm) for cm in sorted(leads.values(), key=lambda c: -c.score)[:room]]
-        same = sum(1 for _, ms in found if ms[0].level == "same")
-        print(f"[INFO] run_id={out.run_id} | past quotes | {len(wanted)} item(s) looked up: "
-              f"{same} quoted before, {len(found) - same} closely similar, "
-              f"{len({n for n, _ in capability})} with a capability lead")
-        if not found and not capability:
+            rows = [(w, ms) for w, ms in results if w.product == name]
+            chosen = select([m for _, ms in rows for m in ms], per_product)
+            if chosen:
+                found.append((rows[0][0], chosen))
+        shown = [m for _, ms in found for m in ms]
+        print(f"[INFO] run_id={out.run_id} | past quotes | {len(wanted)} item(s) looked up for "
+              f"{len(found)} product(s): {sum(m.level == 'same' for m in shown)} same, "
+              f"{sum(m.level == 'similar' for m in shown)} similar, "
+              f"{sum(m.level == 'capability' for m in shown)} capability lead(s)")
+        if not found:
             return 0
-        text = attach_section(out.triage_text or "", render_section(found, capability))
+        text = attach_section(out.triage_text or "", render_section(found))
         regenerate_row_id = str((out.structured or {}).get("regenerate_row_id") or "")
         if settings.enable_triage_writeback and regenerate_row_id:
             glide_set_regenerate_response(settings, regenerate_row_id, text)
         elif settings.enable_triage_writeback:
             print(f"[WARN] run_id={out.run_id} | past quotes | summary row id unknown — section not written")
         out.triage_text = text
-        return len(found) + len({n for n, _ in capability})
+        return len(found)
     except Exception as e:
         print(f"[WARN] run_id={out.run_id} | past quotes | skipped: {type(e).__name__}: {e}")
         return 0
