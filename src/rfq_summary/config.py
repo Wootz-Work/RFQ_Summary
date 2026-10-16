@@ -126,7 +126,8 @@ class Settings(BaseSettings):
     past_quotes_db_url: str = Field(default="", alias="PAST_QUOTES_DB_URL")
     past_quotes_table: str = Field(default="", alias="PAST_QUOTES_TABLE")
     past_quotes_refresh_hours: float = Field(default=24.0, alias="PAST_QUOTES_REFRESH_HOURS")
-    past_quotes_per_product: int = Field(default=5, alias="PAST_QUOTES_PER_PRODUCT")
+    past_quotes_per_product: int = Field(default=10, alias="PAST_QUOTES_PER_PRODUCT")
+    past_quotes_max_rows: int = Field(default=500, alias="PAST_QUOTES_MAX_ROWS")   # rows looked up per family
     # Capability leads ("who can make it"): needs every past line tagged once by the
     # model — off until the cost is agreed. Off means no model calls at all.
     enable_past_quotes_capability: bool = Field(default=False, alias="ENABLE_PAST_QUOTES_CAPABILITY")

@@ -1,16 +1,23 @@
 """
-capabilities.py — what it takes to make a part, as tags a supplier search can use.
+capabilities.py — the model's reading of a quoted part, cached.
 
-Same and similar parts answer "what did it cost?". Capability answers "who can
-make it?": a weld nut supplier for a weld washer, a rubber moulder for any
-moulded rubber part. A word in the name is not enough for that — "moulded"
-covers HDPE and NBR alike — so each quoted line is tagged once by the model
-(prompts/past_quote_capabilities.md) with its process, special features,
-coating and material, and the tags are cached by text so a line is never
-tagged twice.
+Nothing here is a hand-written list of part types, styles, materials or
+finishes. Each quoted line is read once by the model
+(prompts/past_quote_capabilities.md) into a profile:
 
-Tags are compared loosely: "rubber moulding" matches "rubber compression
-moulding", "zinc flake" matches "zinc flake coating".
+  kind              the kind of product, without its style (washer, flange)
+  part_type         what the part is, including the style that makes it a
+                    different product (weld neck vs slip-on flange)
+  material          the grade, normalised (316 / 316L / A4 read the same)
+  charge            a charge line (freight, tooling …) rather than a product
+  process, feature, coating, special_material
+                    what it takes to make it — the capabilities a supplier needs
+
+To keep the names consistent without a fixed vocabulary, every request is
+shown the names already in use, drawn from the profiles read so far, so the
+vocabulary is whatever the quote history itself contains. Profiles are cached
+by text, so a line is never read twice. Names are compared loosely: "rubber
+moulding" matches "rubber compression moulding".
 """
 from __future__ import annotations
 
@@ -19,15 +26,13 @@ import json
 import os
 import re
 import threading
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Set
 
-KINDS = ("process", "feature", "coating", "material")
-Tags = Dict[str, List[str]]
-
-_GENERIC = {"fastener", "fasteners", "steel", "metal", "standard part", "hardware", "part", "component",
-            "carbon steel", "mild steel", "plain", "none", "unknown", "generic"}
-_FILLER = {"and", "of", "the", "with", "for", "a", "to", "-", "&"}
+KINDS = ("process", "feature", "coating", "special_material")      # capability lists
+TEXT_LIMIT = 600                     # characters of a part's text the model is shown
+Profile = Dict[str, Any]
 
 
 def text_key(text: str) -> str:
@@ -42,43 +47,88 @@ def _stem(word: str) -> str:
 
 
 def tag_tokens(tag: str) -> FrozenSet[str]:
-    words = re.findall(r"[a-z0-9]+", (tag or "").lower().replace("moulding", "mould").replace("molding", "mould")
-                       .replace("molded", "mould").replace("moulded", "mould"))
-    return frozenset(_stem(w) for w in words if w not in _FILLER)
+    """Words and numbers of a name; '8.8', 'b16.5' and 'a4-80' stay whole, so a grade or class is never lost."""
+    words = re.findall(r"[a-z0-9]+(?:[.\-]\d+)*", (tag or "").lower())
+    return frozenset(_stem(w) if w.isalpha() else w for w in words if len(w) > 1 or w.isdigit())
+
+
+def relation(a: str, b: str) -> str:
+    """
+    How two names relate: 'same' (the same words), 'close' (one is the other
+    with words added — 'rod end' and 'spherical rod end'), '' when either is
+    blank, else 'different'.
+    """
+    ta, tb = tag_tokens(a), tag_tokens(b)
+    if not ta or not tb:
+        return ""
+    if ta == tb:
+        return "same"
+    small, big = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
+    return "close" if len(small) >= 2 and small <= big else "different"
 
 
 def tags_match(a: str, b: str) -> bool:
     """Equal, or one is the other with words added ('zinc flake' ⊂ 'zinc flake coating')."""
-    ta, tb = tag_tokens(a), tag_tokens(b)
-    if not ta or not tb:
-        return False
-    if ta == tb:
-        return True
-    small, big = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
-    return len(small) >= 2 and small <= big
+    return relation(a, b) in ("same", "close")
 
 
-def clean_tags(raw: Any) -> Tags:
-    out: Tags = {k: [] for k in KINDS}
+def _name(v: Any) -> str:
+    return re.sub(r"\s+", " ", str(v or "")).strip().lower()[:60]
+
+
+def clean_profile(raw: Any) -> Profile:
+    out: Profile = {"kind": "", "part_type": "", "material": "", "standards": [], "part_code": "", "charge": False,
+                    **{k: [] for k in KINDS}}
     if not isinstance(raw, dict):
         return out
+    out["kind"] = _name(raw.get("kind"))
+    out["part_type"] = _name(raw.get("part_type"))
+    out["material"] = _name(raw.get("material"))
+    std = raw.get("standards") or []
+    out["standards"] = [_name(x) for x in ([std] if isinstance(std, str) else std) if _name(x)][:4]
+    out["part_code"] = str(raw.get("part_code") or "").strip()[:60]
+    out["charge"] = str(raw.get("charge")).strip().lower() in ("true", "1", "yes")
     for kind in KINDS:
         vals = raw.get(kind) or []
         if isinstance(vals, str):
             vals = [vals]
         for v in vals[:3]:
-            t = re.sub(r"\s+", " ", str(v or "")).strip().lower()[:40]
-            if t and t not in _GENERIC and t not in out[kind]:
+            t = _name(v)[:40]
+            if t and t not in out[kind]:
                 out[kind].append(t)
     return out
 
 
-def all_tags(tags: Optional[Tags]) -> Set[str]:
-    return {t for kind in KINDS for t in (tags or {}).get(kind, [])}
+# Kept for callers that only deal in capability lists.
+clean_tags = clean_profile
 
 
-def parse_reply(reply: str) -> Dict[str, Tags]:
-    """The model's JSON object → {id: tags}. Anything unreadable is dropped, never guessed."""
+def all_tags(profile: Optional[Profile]) -> Set[str]:
+    """The capability names of a profile (not its part type or grade)."""
+    return {t for kind in KINDS for t in (profile or {}).get(kind, []) or []}
+
+
+SPECIAL_WEIGHT = {"rare": 3, "specialist": 2}
+
+
+def special_tags(profile: Optional[Profile], level: Any) -> Dict[str, int]:
+    """
+    What decides who can make a part: its feature, process and special-material
+    names that are specialist or rare among suppliers, with a weight (rare 3,
+    specialist 2). Coatings never count — any maker can have a part plated or
+    coated outside, so a coating ranks only as a finish.
+    """
+    out: Dict[str, int] = {}
+    for kind in ("feature", "process", "special_material"):
+        for t in (profile or {}).get(kind) or []:
+            w = SPECIAL_WEIGHT.get(level(t) if level else "")
+            if w:
+                out[t] = max(out.get(t, 0), w)
+    return out
+
+
+def parse_reply(reply: str) -> Dict[str, Profile]:
+    """The model's JSON object → {id: profile}. Anything unreadable is dropped, never guessed."""
     text = reply or ""
     start, end = text.find("{"), text.rfind("}")
     if start < 0 or end <= start:
@@ -87,45 +137,71 @@ def parse_reply(reply: str) -> Dict[str, Tags]:
         data = json.loads(text[start:end + 1])
     except ValueError:
         return {}
-    return {str(k): clean_tags(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    return {str(k): clean_profile(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
+
+# Bumped whenever the profile's fields change: a cache written in an older
+# format is read again from scratch rather than half-understood.
+PROFILE_FORMAT = 3
 
 
 class TagStore:
-    """Tags by text key, kept in memory and (optionally) in a JSON file across restarts."""
+    """Profiles by text key, in memory and (optionally) in a JSON file across restarts."""
 
     def __init__(self, path: str = ""):
         self.path = path
         self.lock = threading.Lock()
-        self.tags: Dict[str, Tags] = {}
+        self.save_lock = threading.Lock()     # batches read in parallel: one write to the file at a time
+        self.tags: Dict[str, Profile] = {}
         if path and os.path.exists(path):
             try:
                 with open(path, encoding="utf-8") as f:
-                    self.tags = {k: clean_tags(v) for k, v in (json.load(f) or {}).items()}
+                    data = json.load(f) or {}
+                if data.get("format") == PROFILE_FORMAT:
+                    self.tags = {k: clean_profile(v) for k, v in (data.get("profiles") or {}).items()}
+                else:
+                    print(f"[INFO] capabilities | profile cache {path} is in an older format — parts will be read again")
             except Exception as e:
-                print(f"[WARN] capabilities | tag cache {path} unreadable, starting empty: {type(e).__name__}: {e}")
+                print(f"[WARN] capabilities | profile cache {path} unreadable, starting empty: {type(e).__name__}: {e}")
 
-    def get(self, key: str) -> Optional[Tags]:
+    def get(self, key: str) -> Optional[Profile]:
         with self.lock:
             return self.tags.get(key)
 
-    def put(self, found: Dict[str, Tags]) -> None:
+    def put(self, found: Dict[str, Profile]) -> None:
         with self.lock:
             self.tags.update(found)
         self.save()
+
+    def vocabulary(self, per_field: int = 80) -> Dict[str, List[str]]:
+        """The names in use so far, most used first — what new readings should reuse."""
+        with self.lock:
+            profiles = list(self.tags.values())
+        counts: Dict[str, Counter] = {f: Counter() for f in ("kind", "part_type", "material", *KINDS)}
+        for p in profiles:
+            if p.get("charge"):
+                continue
+            for f in ("kind", "part_type", "material"):
+                if p.get(f):
+                    counts[f][p[f]] += 1
+            for kind in KINDS:
+                counts[kind].update(p.get(kind) or [])
+        return {f: [n for n, _ in c.most_common(per_field)] for f, c in counts.items() if c}
 
     def save(self) -> None:
         if not self.path:
             return
         try:
-            with self.lock:
-                data = json.dumps(self.tags)
-            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
-            tmp = self.path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                f.write(data)
-            os.replace(tmp, self.path)
+            with self.save_lock:
+                with self.lock:
+                    data = json.dumps({"format": PROFILE_FORMAT, "profiles": self.tags})
+                os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+                tmp = self.path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    f.write(data)
+                os.replace(tmp, self.path)
         except Exception as e:
-            print(f"[WARN] capabilities | tag cache not saved: {type(e).__name__}: {e}")
+            print(f"[WARN] capabilities | profile cache not saved: {type(e).__name__}: {e}")
 
 
 _stores: Dict[str, TagStore] = {}
@@ -140,26 +216,33 @@ def store_for(settings: Any) -> TagStore:
         return _stores[path]
 
 
-def _ask_model(settings: Any, items: List[Dict[str, str]], run_id: str) -> Dict[str, Tags]:
+def _tag_settings(settings: Any) -> Any:
+    model = (getattr(settings, "past_quotes_tag_model", "") or "").strip()
+    return settings.model_copy(update={"anthropic_model": model, "anthropic_model_fallbacks": ""}) if model else settings
+
+
+def _ask_model(settings: Any, items: List[Dict[str, str]], run_id: str,
+               vocabulary: Optional[Dict[str, List[str]]] = None) -> Dict[str, Profile]:
     from .llm import generate_text, load_prompt_file
 
-    model = (getattr(settings, "past_quotes_tag_model", "") or "").strip()
-    s = settings.model_copy(update={"anthropic_model": model, "anthropic_model_fallbacks": ""}) if model else settings
-    system = load_prompt_file(getattr(settings, "prompt_past_quote_capabilities_file", "")
-                              or "prompts/past_quote_capabilities.md")
-    reply = generate_text(s, system, json.dumps(items, ensure_ascii=False), max_tokens=12000,
-                          thinking=True, effort="low", run_id=run_id, label="capability_tags")
+    template = load_prompt_file(getattr(settings, "prompt_past_quote_capabilities_file", "")
+                                or "prompts/past_quote_capabilities.md")
+    vocab = json.dumps(vocabulary or {}, ensure_ascii=False) if vocabulary else "(none yet — you are naming the first parts)"
+    reply = generate_text(_tag_settings(settings), template.replace("{{vocabulary}}", vocab),
+                          json.dumps(items, ensure_ascii=False), max_tokens=16000,
+                          thinking=True, effort="low", run_id=run_id, label="part_profiles")
     return parse_reply(reply)
 
 
-def tag_texts(settings: Any, texts: Dict[str, str], *, run_id: str = "", batch: int = 50,
-              workers: int = 3) -> Dict[str, Tags]:
+def tag_texts(settings: Any, texts: Dict[str, str], *, run_id: str = "", batch: int = 40,
+              workers: int = 3) -> Dict[str, Profile]:
     """
-    {key: text} → {key: tags}, from the cache where possible; the rest are asked
-    of the model in batches. A failed batch is logged and left untagged.
+    {key: text} → {key: profile}, from the cache where possible; the rest are read
+    by the model in batches. The first batch runs alone so later ones are shown
+    the names it settled on. A failed batch is logged and left unread.
     """
     store = store_for(settings)
-    out: Dict[str, Tags] = {}
+    out: Dict[str, Profile] = {}
     todo: Dict[str, str] = {}
     for key, text in texts.items():
         hit = store.get(key)
@@ -172,28 +255,30 @@ def tag_texts(settings: Any, texts: Dict[str, str], *, run_id: str = "", batch: 
     keys = list(todo)
     chunks = [keys[i:i + batch] for i in range(0, len(keys), batch)]
 
-    def one(chunk: List[str]) -> Dict[str, Tags]:
+    def one(chunk: List[str]) -> Dict[str, Profile]:
         try:
-            found = _ask_model(settings, [{"id": k, "text": todo[k][:400]} for k in chunk], run_id)
+            found = _ask_model(settings, [{"id": k, "text": todo[k][:TEXT_LIMIT]} for k in chunk], run_id,
+                               store.vocabulary())
             found = {k: v for k, v in found.items() if k in todo}
             store.put(found)
             return found
         except Exception as e:
-            print(f"[WARN] capabilities | {len(chunk)} item(s) not tagged: {type(e).__name__}: {e}")
+            print(f"[WARN] capabilities | {len(chunk)} item(s) not read: {type(e).__name__}: {e}")
             return {}
 
-    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        for found in pool.map(one, chunks):
-            out.update(found)
+    out.update(one(chunks[0]))
+    if len(chunks) > 1:
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+            for found in pool.map(one, chunks[1:]):
+                out.update(found)
     return out
 
 
 # ----------------------------------------------------------------------------- scarcity
 #
 # Whether a shared capability is a lead depends on how hard it is to find among
-# suppliers — not on how often it appears in our own quotes. Hastelloy is a lead
-# however many Hastelloy RFQs we have handled; CNC turning is not one however
-# few. Each tag is rated once by the model and cached next to the line tags.
+# suppliers — not on how often it appears in our own quotes. Each capability
+# name is rated once by the model and cached beside the profiles.
 
 LEVELS = ("common", "specialist", "rare")
 
@@ -219,7 +304,7 @@ class LevelStore:
                 print(f"[WARN] capabilities | scarcity cache {path} unreadable, starting empty: {type(e).__name__}: {e}")
 
     def level(self, tag: str) -> str:
-        """The tag's level, or that of a rated tag it matches; '' when unknown."""
+        """The name's level, or that of a rated name it matches; '' when unknown."""
         with self.lock:
             if tag in self.levels:
                 return self.levels[tag]
@@ -232,15 +317,15 @@ class LevelStore:
         with self.lock:
             self.levels.update({k: v for k, v in found.items() if v in LEVELS})
             data = json.dumps(self.levels)
-        if not self.path:
-            return
-        try:
-            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
-            with open(self.path + ".tmp", "w", encoding="utf-8") as f:
-                f.write(data)
-            os.replace(self.path + ".tmp", self.path)
-        except Exception as e:
-            print(f"[WARN] capabilities | scarcity cache not saved: {type(e).__name__}: {e}")
+            if not self.path:
+                return
+            try:
+                os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+                with open(self.path + ".tmp", "w", encoding="utf-8") as f:
+                    f.write(data)
+                os.replace(self.path + ".tmp", self.path)
+            except Exception as e:
+                print(f"[WARN] capabilities | scarcity cache not saved: {type(e).__name__}: {e}")
 
 
 _level_stores: Dict[str, LevelStore] = {}
@@ -257,11 +342,9 @@ def levels_for(settings: Any) -> LevelStore:
 def _ask_levels(settings: Any, tags: List[str], run_id: str) -> Dict[str, str]:
     from .llm import generate_text, load_prompt_file
 
-    model = (getattr(settings, "past_quotes_tag_model", "") or "").strip()
-    s = settings.model_copy(update={"anthropic_model": model, "anthropic_model_fallbacks": ""}) if model else settings
     system = load_prompt_file(getattr(settings, "prompt_capability_scarcity_file", "")
                               or "prompts/capability_scarcity.md")
-    reply = generate_text(s, system, json.dumps(tags, ensure_ascii=False), max_tokens=8000,
+    reply = generate_text(_tag_settings(settings), system, json.dumps(tags, ensure_ascii=False), max_tokens=8000,
                           thinking=True, effort="low", run_id=run_id, label="capability_scarcity")
     start, end = (reply or "").find("{"), (reply or "").rfind("}")
     try:
@@ -273,7 +356,7 @@ def _ask_levels(settings: Any, tags: List[str], run_id: str) -> Dict[str, str]:
 
 
 def rate_tags(settings: Any, tags: Iterable[str], *, run_id: str = "", batch: int = 150) -> None:
-    """Rate every tag not yet rated (or matched by a rated one)."""
+    """Rate every capability name not yet rated (or matched by a rated one)."""
     store = levels_for(settings)
     todo = sorted({t for t in tags if t and not store.level(t)})
     for i in range(0, len(todo), batch):
@@ -281,4 +364,4 @@ def rate_tags(settings: Any, tags: Iterable[str], *, run_id: str = "", batch: in
         try:
             store.put(_ask_levels(settings, chunk, run_id))
         except Exception as e:
-            print(f"[WARN] capabilities | {len(chunk)} tag(s) not rated: {type(e).__name__}: {e}")
+            print(f"[WARN] capabilities | {len(chunk)} capability name(s) not rated: {type(e).__name__}: {e}")
