@@ -695,7 +695,8 @@ def load_index(settings: Any, *, force: bool = False) -> Optional[PastQuoteIndex
 
 
 _backfill_lock = threading.Lock()
-_backfill_retry_at = {"t": 0.0}
+_backfill = {"retry_at": 0.0, "running": False, "started": 0.0, "finished": 0.0, "last": ""}
+RETRY_MINUTES = 30
 
 
 def _start_backfill(settings: Any, index: "PastQuoteIndex") -> None:
@@ -703,12 +704,20 @@ def _start_backfill(settings: Any, index: "PastQuoteIndex") -> None:
     todo = {ln.tag_key: ln.tag_text for ln in index.lines if ln.tags is None}
     levels = cap.levels_for(settings)
     unrated = any(not levels.level(t) for ln in index.lines for t in cap.all_tags(ln.tags))
-    if not (todo or unrated) or time.time() < _backfill_retry_at["t"]:
+    if not (todo or unrated):
+        return
+    wait = _backfill["retry_at"] - time.time()
+    if wait > 0:
+        print(f"[INFO] past quotes | {len(todo)} past line(s) still unread — next try in {int(wait // 60) + 1} min "
+              f"(last failure: {cap.LAST_ERROR['message'][:160] or 'unknown'})")
         return
     if not _backfill_lock.acquire(blocking=False):
+        print(f"[INFO] past quotes | reading of past lines already running "
+              f"(started {int((time.time() - _backfill['started']) // 60)} min ago)")
         return
 
     def run():
+        _backfill.update(running=True, started=time.time())
         try:
             print(f"[INFO] past quotes | reading {len(todo)} past line(s) in the background")
             found = cap.tag_texts(settings, todo, run_id="past-quotes-backfill")
@@ -721,11 +730,82 @@ def _start_backfill(settings: Any, index: "PastQuoteIndex") -> None:
                 print(f"[INFO] past quotes | e.g. {ln.part_name[:50]!r} -> type={ln.fp.ptype!r} "
                       f"material={ln.fp.material!r} capabilities={sorted(cap.all_tags(ln.tags))}")
             if len(found) < len(todo):
-                _backfill_retry_at["t"] = time.time() + 1800     # some batches failed: try again in 30 min
+                _backfill["retry_at"] = time.time() + RETRY_MINUTES * 60
+                print(f"[WARN] past quotes | {len(todo) - len(found)} past line(s) not read — "
+                      f"retrying in {RETRY_MINUTES} min")
+            _backfill["last"] = f"{n} of {len(index.lines)} read; {len(found)} of {len(todo)} this run"
+        except Exception as e:
+            _backfill["retry_at"] = time.time() + RETRY_MINUTES * 60
+            _backfill["last"] = f"failed: {type(e).__name__}: {e}"
+            print(f"[WARN] past quotes | reading past lines failed: {type(e).__name__}: {e}")
         finally:
+            _backfill.update(running=False, finished=time.time())
             _backfill_lock.release()
 
     threading.Thread(target=run, name="past-quotes-backfill", daemon=True).start()
+
+
+_keeper = {"started": False}
+
+
+def start_keeper(settings_loader: Callable[[], Any]) -> None:
+    """
+    At service start: load the past quotes and start reading them, then look
+    again every 30 minutes — retrying anything a failed run left unread and
+    re-reading the table when it is older than PAST_QUOTES_REFRESH_HOURS —
+    without waiting for an RFQ to come in.
+    """
+    if _keeper["started"]:
+        return
+    _keeper["started"] = True
+
+    def loop():
+        while True:
+            try:
+                settings = settings_loader()
+                if settings.enable_past_quotes and settings.enable_past_quotes_capability:
+                    load_index(settings)
+            except Exception as e:
+                print(f"[WARN] past quotes | background check failed: {type(e).__name__}: {e}")
+            time.sleep(RETRY_MINUTES * 60)
+
+    threading.Thread(target=loop, name="past-quotes-keeper", daemon=True).start()
+
+
+def read_now(settings: Any) -> str:
+    """Start reading unread past lines now, skipping any retry wait. Lines already read are never paid for twice."""
+    _backfill["retry_at"] = 0.0
+    if not getattr(settings, "enable_past_quotes_capability", False):
+        return "ENABLE_PAST_QUOTES_CAPABILITY is not true — nothing is read"
+    if _backfill["running"]:
+        return "already reading"
+    index = load_index(settings)            # loads the table if needed, and starts the reading
+    if index is None:
+        return "past quotes table could not be loaded — see the log"
+    return "reading started" if _backfill["running"] or any(ln.tags is None for ln in index.lines) else "nothing left to read"
+
+
+def status(settings: Any) -> Dict[str, Any]:
+    """Counts only — what the status page shows. No part names, prices or customers."""
+    index = _cache["index"]
+    lines = index.lines if index else []
+    read = sum(1 for ln in lines if ln.tags is not None)
+    now = time.time()
+    return {
+        "enabled": bool(getattr(settings, "enable_past_quotes", False)),
+        "model_reading_enabled": bool(getattr(settings, "enable_past_quotes_capability", False)),
+        "model": (getattr(settings, "past_quotes_tag_model", "") or getattr(settings, "anthropic_model", "")),
+        "table_loaded_minutes_ago": int((now - _cache["at"]) // 60) if index else None,
+        "past_lines": len(lines),
+        "read": read,
+        "unread": len(lines) - read,
+        "unique_texts_saved": len(cap.store_for(settings).tags),
+        "reading_now": _backfill["running"],
+        "next_retry_in_minutes": max(0, int((_backfill["retry_at"] - now) // 60) + 1) if _backfill["retry_at"] > now else 0,
+        "last_run": _backfill["last"],
+        "last_error": cap.LAST_ERROR["message"],
+        "cache_path": getattr(settings, "past_quotes_tag_cache_path", ""),
+    }
 
 
 # ----------------------------------------------------------------------------- the section

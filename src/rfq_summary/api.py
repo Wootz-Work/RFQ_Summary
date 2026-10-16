@@ -5,7 +5,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Literal
 import time
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import Header, FastAPI, HTTPException, Response
 from pydantic import ValidationError
 
 from .config import load_settings, Settings
@@ -34,12 +34,31 @@ def health():
     return {"ok": True}
 
 
+@app.get("/past-quotes/status")
+def past_quotes_status():
+    """How far the model's reading of past quotes has got — counts only, nothing about any customer."""
+    from .past_quotes import status
+    return status(load_settings())
+
+
+@app.post("/past-quotes/read-now")
+def past_quotes_read_now(x_admin_key: str = Header(default="")):
+    """Start reading past quotes now. Needs PAST_QUOTES_ADMIN_KEY in the X-Admin-Key header; off when unset."""
+    import hmac
+    from .past_quotes import read_now, status
+    settings = load_settings()
+    key = (settings.past_quotes_admin_key or "").strip()
+    if not key or not hmac.compare_digest(x_admin_key.strip(), key):
+        raise HTTPException(status_code=403, detail="set PAST_QUOTES_ADMIN_KEY and send it as X-Admin-Key")
+    return {"result": read_now(settings), **status(settings)}
+
+
 @app.get("/")
 def root():
     return {
         "ok": True,
         "service": "rfq-summary",
-        "endpoints": ["/rfq/run", "/rfq/pricing", "/rfq/summary", "/query/triage", "/query/classify-rfq", "/query/regenerate-triage", "/query/regenerate-query", "/health"],
+        "endpoints": ["/rfq/run", "/rfq/pricing", "/rfq/summary", "/query/triage", "/query/classify-rfq", "/query/regenerate-triage", "/query/regenerate-query", "/past-quotes/status", "/health"],
     }
 
 
@@ -592,6 +611,11 @@ async def _startup():
         return
     app.state.dispatcher_started = True
     asyncio.create_task(_dispatcher_loop())
+    try:
+        from .past_quotes import start_keeper
+        start_keeper(load_settings)            # read past quotes at boot; retry every 30 min
+    except Exception as e:
+        print(f"[WARN] past quotes | background reading not started: {type(e).__name__}: {e}")
 
 
 async def _enqueue_or_reject(mode: Mode, data: dict, obj: InputPayload) -> Dict[str, Any]:

@@ -31,6 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Set
 
 KINDS = ("process", "feature", "coating", "special_material")      # capability lists
+LAST_ERROR: Dict[str, str] = {"message": ""}     # the latest failed read, for the status page
 TEXT_LIMIT = 600                     # characters of a part's text the model is shown
 Profile = Dict[str, Any]
 
@@ -254,6 +255,8 @@ def tag_texts(settings: Any, texts: Dict[str, str], *, run_id: str = "", batch: 
         return out
     keys = list(todo)
     chunks = [keys[i:i + batch] for i in range(0, len(keys), batch)]
+    done = {"n": 0, "failed": 0}
+    count_lock = threading.Lock()
 
     def one(chunk: List[str]) -> Dict[str, Profile]:
         try:
@@ -261,10 +264,17 @@ def tag_texts(settings: Any, texts: Dict[str, str], *, run_id: str = "", batch: 
                                store.vocabulary())
             found = {k: v for k, v in found.items() if k in todo}
             store.put(found)
-            return found
         except Exception as e:
             print(f"[WARN] capabilities | {len(chunk)} item(s) not read: {type(e).__name__}: {e}")
-            return {}
+            LAST_ERROR["message"] = f"{type(e).__name__}: {str(e)[:300]}"
+            found = {}
+        with count_lock:
+            done["n"] += len(found)
+            done["failed"] += len(chunk) - len(found)
+            if len(chunks) > 1:
+                print(f"[INFO] capabilities | run_id={run_id} | read {done['n']} of {len(todo)}"
+                      + (f" ({done['failed']} not read)" if done["failed"] else ""))
+        return found
 
     out.update(one(chunks[0]))
     if len(chunks) > 1:

@@ -606,4 +606,61 @@ check("capability on: the rubber moulders reach the summary", n == 1 and calls["
       and "capability: rubber compression moulding" in calls["set"][0], str(calls))
 check("capability is off by default", not Settings().enable_past_quotes_capability)
 
+# ---- running the reading: status, manual start, retry wait ---------------------------------
+import io
+import contextlib
+from fastapi import HTTPException
+from rfq_summary import api
+
+st_s = _settings(ENABLE_PAST_QUOTES_CAPABILITY="true", PAST_QUOTES_ADMIN_KEY="sekret")
+pq._cache.update(index=cidx, at=__import__("time").time())
+stat = pq.status(st_s)
+check("the status page gives counts only", stat["past_lines"] == len(cl) and stat["read"] == len(cl)
+      and stat["unread"] == 0 and not any("Weld" in str(v) or "Shakti" in str(v) for v in stat.values()), str(stat))
+check("manual start is refused when model reading is off",
+      "not true" in pq.read_now(_settings(ENABLE_PAST_QUOTES_CAPABILITY="false")))
+for bad in ("", "wrong"):
+    try:
+        orig_ls = api.load_settings
+        api.load_settings = lambda: st_s
+        api.past_quotes_read_now(x_admin_key=bad)
+        check(f"manual start needs the admin key ({bad or 'none'} given)", False)
+    except HTTPException as e:
+        check(f"manual start needs the admin key ({bad or 'none'} given)", e.status_code == 403)
+    finally:
+        api.load_settings = orig_ls
+try:
+    api.load_settings = lambda: _settings(ENABLE_PAST_QUOTES_CAPABILITY="true")
+    api.past_quotes_read_now(x_admin_key="")
+    check("with no admin key configured the endpoint is off", False)
+except HTTPException as e:
+    check("with no admin key configured the endpoint is off", e.status_code == 403)
+finally:
+    api.load_settings = orig_ls
+
+unread = pq.PastQuoteIndex(pq.clean_rows([row("U1", "M8 Hex Nut DIN 934 8")]))
+pq._backfill["retry_at"] = __import__("time").time() + 600
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    pq._start_backfill(st_s, unread)
+check("a retry wait is logged with its reason, never silent", "next try in" in buf.getvalue(), buf.getvalue())
+started = []
+orig_tt = cap.tag_texts
+cap.tag_texts = lambda s, texts, **k: started.append(len(texts)) or {}
+orig_li = pq.load_index
+pq.load_index = lambda s, **k: (pq._start_backfill(s, unread), unread)[1]
+try:
+    res = pq.read_now(st_s)
+    import time as _t
+    for _ in range(50):
+        if not pq._backfill["running"] and started:
+            break
+        _t.sleep(0.05)
+finally:
+    cap.tag_texts, pq.load_index = orig_tt, orig_li
+check("manual start skips the retry wait and reads the unread lines", res == "reading started" and started == [1],
+      str((res, started)))
+pq._backfill["retry_at"] = 0.0
+pq._cache.update(index=None, at=0.0)
+
 print("\nALL PASSED" if ok else "\nFAILURES ABOVE")
