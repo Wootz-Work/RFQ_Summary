@@ -18,6 +18,7 @@ from .glide_client import glide_upsert_zai_response_by_rfq_id, glide_update_all_
 from .costing_workbook import Commons, build_costing_workbook, tabs_from_extraction
 from .onedrive import download_file, upload_file, upload_configured
 from .gsheet_logger import append_rows, build_chunked_log_rows
+from . import strike_progress
 
 
 def _print_terminal(out: OutputPayload) -> None:
@@ -388,6 +389,7 @@ def _write_extracted_products(settings: Settings, rfq_row_id: str, out: TriageOu
     """
     extraction = out.product_extraction
     if extraction is None or not extraction.products:
+        strike_progress.no_products(extraction, settings)
         why = "; ".join((extraction.parse_errors if extraction else None) or []) or "no product lines"
         print(f"[INFO] run_id={out.run_id} | no products extracted ({why}) — "
               f"no product rows written and no costing workbook built")
@@ -396,25 +398,33 @@ def _write_extracted_products(settings: Settings, rfq_row_id: str, out: TriageOu
     print(f"[INFO] run_id={out.run_id} | product extraction grouped {grouping_summary(extraction)}")
 
     if not settings.enable_product_writeback:
+        strike_progress.task("products", "skipped", "PRODUCT_WRITEBACK_DISABLED")
+        strike_progress.task("queries", "blocked", "PRODUCTS_NOT_CONFIRMED")
         print(f"[INFO] run_id={out.run_id} | product writeback disabled; {len(extraction.products)} line(s) not written")
         return 0, 0
 
     if not (settings.glide_all_product_table or "").strip():
+        strike_progress.task("products", "skipped", "PRODUCT_TABLE_NOT_CONFIGURED")
+        strike_progress.task("queries", "blocked", "PRODUCTS_NOT_CONFIRMED")
         print(
             f"[WARN] run_id={out.run_id} | GLIDE_ALL_PRODUCT_TABLE not configured; "
             f"{len(extraction.products)} product line(s) not written"
         )
         return 0, 0
 
+    strike_progress.products_start(extraction)
     _attach_costing_workbook(settings, out, rfq_row_id, extraction, rfq_title)
 
     try:
         row_ids = glide_add_product_rows(settings, rfq_row_id, extraction.products)
     except Exception as e:
         print(f"[WARN] run_id={out.run_id} | product writeback failed: {type(e).__name__}: {e}")
+        strike_progress.task("products", "unconfirmed", "PRODUCT_WRITE_UNCONFIRMED")
+        strike_progress.task("queries", "blocked", "PRODUCTS_NOT_CONFIRMED")
         return 0, 0
 
     products_written = len(row_ids)
+    strike_progress.products_saved(row_ids, extraction, settings)
     resolved = {
         product.index: row_id
         for product, row_id in zip(extraction.products, row_ids)
@@ -440,10 +450,13 @@ def _write_extracted_products(settings: Settings, rfq_row_id: str, out: TriageOu
         )
 
         try:
+            strike_progress.queries_start(extraction.queries, resolved, settings)
             queries_written = glide_add_query_rows(settings, rfq_row_id, extraction.queries, resolved)
+            strike_progress.queries_saved(queries_written, settings)
             print(f"[INFO] run_id={out.run_id} | wrote {queries_written} query row(s)")
         except Exception as e:
             print(f"[WARN] run_id={out.run_id} | query writeback failed: {type(e).__name__}: {e}")
+            strike_progress.task("queries", "unconfirmed", "QUERY_WRITE_UNCONFIRMED")
 
     return products_written, queries_written
 
@@ -632,6 +645,7 @@ def write_triage(settings: Settings, inp: QueryPayload, out: TriageOutputPayload
             },
         )
         # Kept so the summary can be extended once the products are known (past quotes).
+        strike_progress.summary_saved(regenerate_row_id, out.triage_text)
         out.structured = {**(out.structured or {}), "regenerate_row_id": regenerate_row_id or ""}
         glide_update_all_rfq_triage_outputs(
             settings,
@@ -640,6 +654,9 @@ def write_triage(settings: Settings, inp: QueryPayload, out: TriageOutputPayload
             out.costing_estimate_text or "",
             out.costing_estimate_reason_text or "",
         )
+
+    else:
+        strike_progress.task("zai_summary", "skipped", "SUMMARY_WRITEBACK_DISABLED")
 
     # Log to Sheets (same sheet schema; different field names)
     fields = {

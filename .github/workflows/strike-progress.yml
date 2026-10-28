@@ -1,0 +1,16 @@
+name: Strike progress reporting
+on:
+  pull_request:
+    branches: [dev]
+permissions:
+  contents: read
+jobs:
+  reporting:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python test_strike_progress.py
+      - run: python -m py_compile src/rfq_summary/strike_progress.py src/rfq_summary/api.py src/rfq_summary/task.py src/rfq_summary/writer.py src/rfq_summary/glide_client.py

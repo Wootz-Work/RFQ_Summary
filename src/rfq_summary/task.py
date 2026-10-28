@@ -14,6 +14,7 @@ from .search import PerplexitySearchClient
 from .llm import load_prompt_file, generate_text
 from .product_extraction import parse_product_extraction
 from .emailer import send_change_notification
+from . import strike_progress
 from .glide_client import (
     glide_fetch_last_regenerate_response,
     glide_query_all_companies,
@@ -882,6 +883,7 @@ def run_query_triage(settings: Settings, payload: QueryPayload, run_id: Optional
                 # is actually set.
                 settings.product_extraction_effort or None,
             )
+            strike_progress.task("products", "running")
         model_text, triage_llm_ms = triage_future.result()
         costing_model_text, costing_llm_ms = costing_future.result()
     except Exception:
