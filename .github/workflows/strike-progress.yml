@@ -12,5 +12,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: python test_strike_progress.py
+      - run: pip install pydantic pydantic-settings httpx tenacity python-dotenv openpyxl pillow langchain-core rich
+      - run: python -m unittest test_strike_progress test_strike_rerun
       - run: python -m py_compile src/rfq_summary/strike_progress.py src/rfq_summary/api.py src/rfq_summary/task.py src/rfq_summary/writer.py src/rfq_summary/glide_client.py

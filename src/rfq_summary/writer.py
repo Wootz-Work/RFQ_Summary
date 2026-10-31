@@ -8,13 +8,13 @@ import json
 import re
 import zipfile
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
 from .config import Settings
 from .schema import InputPayload, OutputPayload, QueryPayload, TriageOutputPayload, RfqClassificationInputPayload, RfqClassificationOutputPayload, RfqRegenerateTriageInputPayload, RfqRegenerateTriageOutputPayload, RfqQueryInputPayload, RfqQueryOutputPayload
 from .glide_client import glide_set_regenerate_response
-from .glide_client import glide_upsert_zai_response_by_rfq_id, glide_update_all_rfq_triage_outputs, glide_update_prospect_rfq_classification, glide_add_zai_regenerate_row, glide_add_product_rows, glide_add_query_rows, glide_fetch_rfq_folder, glide_set_all_rfq_columns
+from .glide_client import glide_upsert_zai_response_by_rfq_id, glide_update_all_rfq_triage_outputs, glide_update_prospect_rfq_classification, glide_add_zai_regenerate_row, glide_add_product_rows, glide_add_query_rows, glide_fetch_rfq_folder, glide_set_all_rfq_columns, glide_find_rows
 from .costing_workbook import Commons, build_costing_workbook, tabs_from_extraction
 from .onedrive import download_file, upload_file, upload_configured
 from .gsheet_logger import append_rows, build_chunked_log_rows
@@ -412,6 +412,21 @@ def _write_extracted_products(settings: Settings, rfq_row_id: str, out: TriageOu
         )
         return 0, 0
 
+    if strike_progress.is_retry():
+        # A retry attempt never adds product rows on top of ones an earlier attempt may have saved, and never guesses
+        # when it cannot check. Rows found, or a failed check, leave Products unconfirmed for the team to verify.
+        try:
+            blocked = "PRODUCT_ROWS_EXIST" if glide_find_rows(
+                settings, settings.glide_all_product_table, {settings.glide_col_product_rfq_id: rfq_row_id}, limit=1) else None
+        except Exception as e:
+            print(f"[WARN] run_id={out.run_id} | retry could not check for saved product rows: {type(e).__name__}: {e}")
+            blocked = "PRODUCT_CHECK_FAILED"
+        if blocked:
+            print(f"[INFO] run_id={out.run_id} | retry: not writing products ({blocked})")
+            strike_progress.task("products", "unconfirmed", blocked)
+            strike_progress.task("queries", "blocked", "PRODUCTS_NOT_CONFIRMED")
+            return 0, 0
+
     strike_progress.products_start(extraction)
     _attach_costing_workbook(settings, out, rfq_row_id, extraction, rfq_title)
 
@@ -448,6 +463,18 @@ def _write_extracted_products(settings: Settings, rfq_row_id: str, out: TriageOu
             f"[INFO] run_id={out.run_id} | {customer} Customer / "
             f"{len(extraction.team_queries())} Team queries"
         )
+
+        if strike_progress.is_retry():
+            try:
+                blocked = "QUERY_ROWS_EXIST" if glide_find_rows(
+                    settings, settings.glide_queries_table, {settings.glide_col_query_rfq_id: rfq_row_id}, limit=1) else None
+            except Exception as e:
+                print(f"[WARN] run_id={out.run_id} | retry could not check for saved query rows: {type(e).__name__}: {e}")
+                blocked = "QUERY_CHECK_FAILED"
+            if blocked:
+                print(f"[INFO] run_id={out.run_id} | retry: not writing queries ({blocked})")
+                strike_progress.task("queries", "unconfirmed", blocked)
+                return products_written, 0
 
         try:
             strike_progress.queries_start(extraction.queries, resolved, settings)
@@ -609,6 +636,58 @@ def _product_log_fields(out: TriageOutputPayload, products_written: int, queries
     }
 
 
+def _initial_summary_for_retry(settings: Settings, rfq_row_id: str) -> Optional[dict]:
+    """
+    Retry attempts only. Returns {"row_id", "text"} for the initial summary already saved for this RFQ, {"absent": True}
+    when there is none, or {"failed": True} when the check itself could not be completed (nothing is then written).
+    Never returns None for a retry; None is reserved by the caller for "not a retry".
+    """
+    try:
+        rows = glide_find_rows(settings, settings.glide_zai_regenerate_table, {
+            settings.glide_col_zai_regenerate_rfq_id: rfq_row_id,
+            settings.glide_col_zai_regenerate_version: "0",
+        }, limit=1)
+    except Exception as e:
+        print(f"[WARN] retry | could not check for an already-saved summary: {type(e).__name__}: {e}")
+        return {"failed": True}
+    if not rows:
+        return {"absent": True}
+    row = rows[0]
+    row_id = next((str(row[key]).strip() for key in ("Row ID", "$rowID", "rowID", "row_id") if isinstance(row.get(key), str) and row[key].strip()), "")
+    text = row.get(settings.glide_col_zai_regenerate_response)
+    return {"row_id": row_id, "text": text if isinstance(text, str) else ""}
+
+
+def _confirm_retry_summary(settings: Settings, out: TriageOutputPayload, state: dict) -> None:
+    """Retry attempts: reuse the summary row an earlier attempt saved, add one only if there is none, never add a second."""
+    if state.get("failed"):
+        strike_progress.task("zai_summary", "unconfirmed", "SUMMARY_CHECK_FAILED")
+        return
+    if state.get("absent"):
+        generated_at = datetime.now(timezone.utc).isoformat()
+        regenerate_row_id = glide_add_zai_regenerate_row(settings, {
+            settings.glide_col_zai_regenerate_rfq_id: out.row_id,
+            settings.glide_col_zai_regenerate_response: out.triage_text or "",
+            settings.glide_col_zai_regenerate_response_generated_time: generated_at,
+            settings.glide_col_zai_regenerate_requested_time: generated_at,
+            settings.glide_col_zai_regenerate_requested_by: "system@wootz.work",
+            settings.glide_col_zai_regenerate_type: "instruction",
+            settings.glide_col_zai_regenerate_version: "0",
+        })
+        strike_progress.summary_saved(regenerate_row_id, out.triage_text)
+        out.structured = {**(out.structured or {}), "regenerate_row_id": regenerate_row_id or ""}
+        return
+    row_id, text = state.get("row_id") or "", state.get("text") or ""
+    if row_id and not text.strip() and (out.triage_text or "").strip():
+        # The earlier attempt created the row but its response never landed: fill that same row.
+        if glide_set_regenerate_response(settings, row_id, out.triage_text or ""):
+            text = out.triage_text or ""
+    # The past-quotes step must not rewrite a summary this attempt did not create.
+    out.structured = {**(out.structured or {}), "regenerate_row_id": ""}
+    strike_progress.summary_saved(row_id or None, text)
+    print(f"[INFO] run_id={out.run_id} | retry reused the saved summary row {row_id or '(unknown id)'}; no second row added")
+
+
 def write_triage(settings: Settings, inp: QueryPayload, out: TriageOutputPayload) -> None:
     """
     Writes the initial triage output into the ZAI Regenerate table.
@@ -632,21 +711,27 @@ def write_triage(settings: Settings, inp: QueryPayload, out: TriageOutputPayload
         if missing:
             raise RuntimeError(f"Missing ZAI Regenerate triage writeback configuration: {', '.join(missing)}")
 
-        regenerate_row_id = glide_add_zai_regenerate_row(
-            settings,
-            {
-                settings.glide_col_zai_regenerate_rfq_id: out.row_id,
-                settings.glide_col_zai_regenerate_response: out.triage_text or "",
-                settings.glide_col_zai_regenerate_response_generated_time: generated_at,
-                settings.glide_col_zai_regenerate_requested_time: requested_at,
-                settings.glide_col_zai_regenerate_requested_by: requested_by,
-                settings.glide_col_zai_regenerate_type: "instruction",
-                settings.glide_col_zai_regenerate_version: "0",
-            },
-        )
-        # Kept so the summary can be extended once the products are known (past quotes).
-        strike_progress.summary_saved(regenerate_row_id, out.triage_text)
-        out.structured = {**(out.structured or {}), "regenerate_row_id": regenerate_row_id or ""}
+        # A Strike retry attempt first looks for the initial summary an earlier attempt may already have saved,
+        # so a retry never adds a second one. First attempts and legacy calls skip this and behave as before.
+        retry_state = _initial_summary_for_retry(settings, out.row_id) if strike_progress.is_retry() else None
+        if retry_state is None:
+            regenerate_row_id = glide_add_zai_regenerate_row(
+                settings,
+                {
+                    settings.glide_col_zai_regenerate_rfq_id: out.row_id,
+                    settings.glide_col_zai_regenerate_response: out.triage_text or "",
+                    settings.glide_col_zai_regenerate_response_generated_time: generated_at,
+                    settings.glide_col_zai_regenerate_requested_time: requested_at,
+                    settings.glide_col_zai_regenerate_requested_by: requested_by,
+                    settings.glide_col_zai_regenerate_type: "instruction",
+                    settings.glide_col_zai_regenerate_version: "0",
+                },
+            )
+            # Kept so the summary can be extended once the products are known (past quotes).
+            strike_progress.summary_saved(regenerate_row_id, out.triage_text)
+            out.structured = {**(out.structured or {}), "regenerate_row_id": regenerate_row_id or ""}
+        else:
+            _confirm_retry_summary(settings, out, retry_state)
         glide_update_all_rfq_triage_outputs(
             settings,
             out.row_id,

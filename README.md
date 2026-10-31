@@ -6,7 +6,7 @@ Worker/service that ingests RFQ JSON + attachments and produces a summary output
 ## Optional Strike task reporting
 
 `STRIKE_PROGRESS_ENABLED=false` by default. When enabled, triage requests may add
-`_strike: { operationId, rfqRowId, taskCallbackUrl }` without changing the existing
+`_strike: { operationId, rfqRowId, taskCallbackUrl, attempt }` without changing the existing
 request fields or acknowledgement. `taskCallbackUrl` must exactly match the HTTPS
 `STRIKE_PROGRESS_CALLBACK_URL` configured on this service, with path
 `/api/integrations/task-events`. Set `STRIKE_PROGRESS_SIGNING_SECRET` to the native
@@ -26,6 +26,22 @@ not retry RFQ work, change writer return values, block on callback HTTP in the
 business path, or propagate reporting errors into existing processing. Legacy
 requests and other endpoint modes do not report. No dispatcher, work queue,
 prompts, model calls or business-write behavior is replaced.
+
+### Retry attempts
+
+When a person presses Retry in Strike, Strike sends a new triage request with `_strike.attempt` greater than 1 and a
+new `operationId`. First attempts and legacy callers (no `attempt`) behave exactly as before. On a retry attempt only,
+this service first looks for rows an earlier attempt already saved for the same RFQ, and never adds rows on top of them:
+
+- **Summary:** reuses the initial (version `0`) ZAI Regenerate row if one exists, fills its response if it arrived empty,
+  and adds a row only when none exists. The past-quotes step does not rewrite a reused row.
+- **Products:** adds none if any product row exists for the RFQ, and reports `PRODUCT_ROWS_EXIST`.
+- **Queries:** adds none if any query row exists for the RFQ, and reports `QUERY_ROWS_EXIST`.
+- **Could not check:** if a lookup fails, nothing is written and the task reports `*_CHECK_FAILED`. "Could not check" is never
+  treated as "nothing there". An `attempt` value that is present but unreadable is treated as a retry.
+
+Rows found by a retry are left for the team to verify; Strike keeps that task unconfirmed. Queries cannot be retried alone,
+because their product links come from the same extraction as the products.
 
 Notifications queued in memory can be lost on process exit. Strike must retain
 unconfirmed status when evidence is missing; this feature does not promise
