@@ -108,6 +108,7 @@ class Observation:
     secret: str = field(repr=False)
     timeout: float = 2.0
     retries: int = 5
+    attempt: int = 1
     sequences: dict = field(default_factory=dict)
     states: dict = field(default_factory=dict)
     query_ids: list = field(default_factory=list)
@@ -163,9 +164,13 @@ def begin_run(payload: dict, run_id: str, row_id: str, settings: Any, mode: str 
             _warn("STRIKE_PROGRESS_METADATA_INVALID")
             return token
         operation_id = str(uuid.UUID(meta["operationId"]))
+        # Strike sets attempt > 1 when a person asked to retry. A missing value means a first or legacy call; a value that is
+        # present but unreadable is treated as a retry, so the rows-already-saved checks still apply.
+        attempt = meta.get("attempt", 1)
+        attempt = attempt if isinstance(attempt, int) and not isinstance(attempt, bool) and 1 <= attempt <= 50 else 2
         observer = Observation(operation_id, row_id, run_id, url, secret,
                                float(getattr(settings, "strike_progress_timeout_sec", 2)),
-                               int(getattr(settings, "strike_progress_retries", 5)))
+                               int(getattr(settings, "strike_progress_retries", 5)), attempt)
         _current.set(observer)
         return token
     except Exception:
@@ -183,6 +188,16 @@ def _safe(fn):
             _warn("STRIKE_PROGRESS_OBSERVATION_UNCONFIRMED")
         return None
     return call
+
+
+@_safe
+def _retry(observer):
+    return observer.attempt > 1
+
+
+def is_retry() -> bool:
+    """True only for a retry attempt requested from Strike. First attempts and legacy callers return False."""
+    return bool(_retry())
 
 
 @_safe

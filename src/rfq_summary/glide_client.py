@@ -534,6 +534,35 @@ def glide_add_query_rows(
     return written
 
 
+def glide_find_rows(settings: Settings, table: str, filters: Dict[str, str], limit: int = 25) -> List[dict]:
+    """
+    Read-only: rows of `table` where every given column equals its value (Glide queryTables SQL).
+
+    Used by a Strike retry attempt to see what an earlier attempt already saved before writing anything.
+    It raises when the lookup cannot be completed, because "could not check" must never be treated as "nothing there".
+    """
+    table = (table or "").strip()
+    columns = [(str(col or "").strip(), value) for col, value in (filters or {}).items()]
+    if not table or not columns or any(not col for col, _ in columns):
+        raise RuntimeError("Missing table or column for the already-saved rows check.")
+    if '"' in table or any('"' in col for col, _ in columns):
+        raise RuntimeError("Invalid table or column name for the already-saved rows check.")
+    if not settings.glide_api_key or not settings.glide_app_id:
+        raise RuntimeError("Missing GLIDE_API_KEY/GLIDE_APP_ID.")
+
+    where = " AND ".join(f'"{col}" = ${i}' for i, (col, _) in enumerate(columns, start=1))
+    sql = f'SELECT * FROM "{table}" WHERE {where} LIMIT {max(1, min(int(limit), 200))}'
+    payload = {"appID": settings.glide_app_id, "queries": [{"sql": sql, "params": [value for _, value in columns]}]}
+    with httpx.Client(timeout=60) as client:
+        r = client.post("https://api.glideapp.io/api/function/queryTables", headers=_glide_headers(settings), json=payload)
+        r.raise_for_status()
+        data = r.json()
+    rows = (data or [])[0].get("rows") if isinstance(data, list) and data else None
+    if not isinstance(rows, list):
+        raise RuntimeError("Unexpected response from the already-saved rows check.")
+    return [row for row in rows if isinstance(row, dict)]
+
+
 def _glide_query_rowid_by_rfq_id(settings: Settings, rfq_id: str) -> Optional[str]:
     """
     Uses Glide Advanced API (queryTables) with SQL to find the ZAI Responses row where:
