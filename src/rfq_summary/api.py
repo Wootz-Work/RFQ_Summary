@@ -13,6 +13,7 @@ from .schema import InputPayload, QueryPayload, RfqClassificationInputPayload, R
 from .task import run_pricing, run_summary, run_all, run_query_triage, run_rfq_classification, run_regenerate_triage, run_regenerate_query, resolve_product_extraction
 from .writer import write_all, write_triage, write_products, write_past_quotes, write_rfq_classification, write_regenerated_triage, write_regenerated_query
 from .gsheet_logger import log_job_event, log_progress_event
+from . import strike_progress
 
 Mode = Literal["pricing", "summary", "all", "triage", "classify", "regenerate_triage", "query_regenerate"]
 
@@ -373,6 +374,7 @@ def _queue_size() -> int:
 
 async def _run_job(job: Job) -> None:
     settings = load_settings()
+    progress_token = strike_progress.begin_run(job.payload, job.run_id, job.row_id, settings, job.mode)
 
     t_start = time.perf_counter()
     queue_wait_ms = int((t_start - float(getattr(job, "enqueued_at", t_start))) * 1000)
@@ -447,6 +449,7 @@ async def _run_job(job: Job) -> None:
                 print(f"[STEP 1/4] run_id={job.run_id} | received_at={qobj.received_at!r} attachment_urls={qobj.attachment_urls}")
 
                 print(f"[STEP 2/4] run_id={job.run_id} | Running TRIAGE task...")
+                strike_progress.task("zai_summary", "running")
                 t0 = time.perf_counter()
                 out = await asyncio.to_thread(run_query_triage, settings, qobj, job.run_id)
                 print(f"[STEP 2/4] run_id={job.run_id} | TRIAGE done in {int((time.perf_counter()-t0)*1000)}ms")
@@ -546,6 +549,7 @@ async def _run_job(job: Job) -> None:
             pass
 
     except asyncio.TimeoutError:
+        strike_progress.unfinished("PROVIDER_TIMEOUT")
         total_ms = int((time.perf_counter() - t_start) * 1000)
         print(f"\n{'='*60}")
         print(f"[JOB TIMEOUT] run_id={job.run_id} mode={job.mode} row_id={job.row_id} total_ms={total_ms}")
@@ -568,6 +572,8 @@ async def _run_job(job: Job) -> None:
             log_progress_event(settings, job.run_id, job.mode, job.row_id, event="FAILED", message=f"total_ms={total_ms} err={type(e).__name__}: {e}")
         except Exception:
             pass
+    finally:
+        strike_progress.end_run(progress_token)
 
 async def _dispatcher_loop() -> None:
     while True:

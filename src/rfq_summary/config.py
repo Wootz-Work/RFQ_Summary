@@ -7,6 +7,13 @@ from pydantic import AliasChoices, Field
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    # Optional status observations only; existing triage processing is unchanged.
+    enable_strike_progress: bool = Field(default=False, alias="STRIKE_PROGRESS_ENABLED")
+    strike_progress_callback_url: str = Field(default="", alias="STRIKE_PROGRESS_CALLBACK_URL")
+    strike_progress_signing_secret: str = Field(default="", alias="STRIKE_PROGRESS_SIGNING_SECRET", repr=False)
+    strike_progress_timeout_sec: float = Field(default=2, ge=0.1, le=10, alias="STRIKE_PROGRESS_TIMEOUT_SEC")
+    strike_progress_retries: int = Field(default=5, ge=0, le=12, alias="STRIKE_PROGRESS_RETRIES")
+
     # ========================
     # LLM (Claude / Anthropic)
     # ========================

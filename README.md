@@ -3,6 +3,40 @@ RFQ_Summary
 
 Worker/service that ingests RFQ JSON + attachments and produces a summary output.
 
+## Optional Strike task reporting
+
+`STRIKE_PROGRESS_ENABLED=false` by default. When enabled, triage requests may add
+`_strike: { operationId, rfqRowId, taskCallbackUrl }` without changing the existing
+request fields or acknowledgement. `taskCallbackUrl` must exactly match the HTTPS
+`STRIKE_PROGRESS_CALLBACK_URL` configured on this service, with path
+`/api/integrations/task-events`. Set `STRIKE_PROGRESS_SIGNING_SECRET` to the native
+Strike service's callback signing key; keep it server-side.
+
+The additive observer reports `zai_summary`, `products` and `queries` at existing
+write/error points. Successful events require confirmed record IDs; query events
+also check the intended RFQ/product links. Incomplete extraction, missing returned
+IDs, disabled writes and ambiguous saves remain unconfirmed/skipped. A valid empty
+extraction can explicitly report no products or no queries. Event sequences are
+independent per task and bound to the particular operation, RFQ and provider run.
+
+One bounded daemon sender signs the exact JSON bytes using HMAC-SHA256 over
+`timestamp + "\n" + body`, with `X-Strike-Timestamp` and `X-Strike-Signature` headers.
+It refuses redirects and retries the same notification in the background. It does
+not retry RFQ work, change writer return values, block on callback HTTP in the
+business path, or propagate reporting errors into existing processing. Legacy
+requests and other endpoint modes do not report. No dispatcher, work queue,
+prompts, model calls or business-write behavior is replaced.
+
+Notifications queued in memory can be lost on process exit. Strike must retain
+unconfirmed status when evidence is missing; this feature does not promise
+durable/exactly-once provider processing or repair pre-existing backend issues.
+
+Run the reporting tests without credentials or external calls:
+
+```sh
+python test_strike_progress.py
+```
+
 ## Product extraction (`/query/triage`)
 
 When the generation endpoint is hit, the email body and its parsed attachments feed

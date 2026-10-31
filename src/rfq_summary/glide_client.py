@@ -3,6 +3,7 @@ from __future__ import annotations
 import httpx
 from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional
 from .config import Settings
+from . import strike_progress
 
 if TYPE_CHECKING:
     from .schema import ExtractedProduct, ExtractedQuery
@@ -528,6 +529,7 @@ def glide_add_query_rows(
             )
             r.raise_for_status()
             written += len(batch)
+            strike_progress.query_batch(r, len(batch))
 
     return written
 
